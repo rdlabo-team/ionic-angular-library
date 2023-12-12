@@ -9,6 +9,7 @@
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
+    "prebuild": "ng build photo-editor --configuration=production",
     "release": "np --no-tests --no-publish && node ./release.js"
   },
   "private": true,
