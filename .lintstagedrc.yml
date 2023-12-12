@@ -4,4 +4,3 @@
   - prettier --parser angular --write
 "*.scss":
   - prettier --parser scss --write
-"*.{js,json,yml,md}": prettier --write
