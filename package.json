@@ -7,7 +7,8 @@
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\""
+    "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
+    "release": "np --no-tests --no-publish && node ./release.js"
   },
   "private": true,
   "dependencies": {
@@ -30,6 +31,7 @@
     "@angular/cli": "^17.0.3",
     "@angular/compiler-cli": "^17.0.0",
     "@types/jasmine": "~5.1.0",
+    "child_process": "^1.0.2",
     "husky": "^8.0.3",
     "jasmine-core": "~5.1.0",
     "karma": "~6.4.0",
@@ -39,7 +41,10 @@
     "karma-jasmine-html-reporter": "~2.1.0",
     "lint-staged": "^15.2.0",
     "ng-packagr": "^17.0.0",
+    "np": "^9.2.0",
+    "path": "^0.12.7",
     "prettier": "^3.1.1",
-    "typescript": "~5.2.2"
+    "typescript": "~5.2.2",
+    "write-pkg": "^7.0.0"
   }
 }
