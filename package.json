@@ -1,6 +1,7 @@
 {
   "name": "@rdlabo/ionic-angular-library",
   "version": "0.0.1",
+  "type": "module",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
