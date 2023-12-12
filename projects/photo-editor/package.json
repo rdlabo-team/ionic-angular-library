@@ -4,8 +4,8 @@
   "peerDependencies": {
     "@angular/common": "^17.0.0",
     "@angular/core": "^17.0.0",
-    "tui-image-editor": "^3.15.3",
-    "@ionic/angular": "^7.6.0"
+    "@ionic/angular": "^7.6.0",
+    "tui-image-editor": "^3.15.3"
   },
   "dependencies": {
     "tslib": "^2.3.0"
