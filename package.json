@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-library",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "ng": "ng",
