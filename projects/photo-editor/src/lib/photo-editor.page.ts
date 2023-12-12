@@ -1,22 +1,47 @@
-import { Component, ElementRef, inject, Input, OnDestroy, OnInit, signal, ViewChild } from '@angular/core';
+import {
+  Component,
+  ElementRef,
+  inject,
+  Input,
+  OnDestroy,
+  OnInit,
+  signal,
+  ViewChild,
+} from '@angular/core';
 import { CommonModule, NgOptimizedImage } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
   IonButton,
   IonButtons,
-  IonContent, IonFooter,
-  IonHeader, IonIcon, IonRange, IonText, IonToolbar,
+  IonContent,
+  IonFooter,
+  IonHeader,
+  IonIcon,
+  IonRange,
+  IonText,
+  IonToolbar,
   ModalController,
   RangeCustomEvent,
   ViewDidEnter,
-  ViewDidLeave
+  ViewDidLeave,
 } from '@ionic/angular/standalone';
 import ImageEditor from 'tui-image-editor';
 import { filterPreset } from './filter-preset';
 import { Subscription } from 'rxjs';
 import { toObservable } from '@angular/core/rxjs-interop';
 import { addIcons } from 'ionicons';
-import { closeOutline, send, cropOutline, colorFilterOutline, sunnyOutline, expandOutline, tabletLandscapeOutline, squareOutline, refreshOutline, checkmarkOutline } from 'ionicons/icons';
+import {
+  closeOutline,
+  send,
+  cropOutline,
+  colorFilterOutline,
+  sunnyOutline,
+  expandOutline,
+  tabletLandscapeOutline,
+  squareOutline,
+  refreshOutline,
+  checkmarkOutline,
+} from 'ionicons/icons';
 
 interface IFilter {
   name: string;
@@ -32,9 +57,24 @@ interface IFilter {
   templateUrl: './photo-editor.page.html',
   styleUrls: ['./photo-editor.page.scss'],
   standalone: true,
-  imports: [CommonModule, FormsModule, NgOptimizedImage, IonHeader, IonToolbar, IonButtons, IonButton, IonIcon, IonContent, IonFooter, IonText, IonRange],
+  imports: [
+    CommonModule,
+    FormsModule,
+    NgOptimizedImage,
+    IonHeader,
+    IonToolbar,
+    IonButtons,
+    IonButton,
+    IonIcon,
+    IonContent,
+    IonFooter,
+    IonText,
+    IonRange,
+  ],
 })
-export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave {
+export class PhotoEditorPage
+  implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave
+{
   @Input() isSend: boolean = false;
   @Input() requireSquare: boolean = false;
   @Input() value!: string;
@@ -45,7 +85,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   };
 
   public $filters = signal<IFilter[]>([]);
-  public $footerMenu = signal<'filter' | 'menu' | 'crop' | 'brightness'>('menu');
+  public $footerMenu = signal<'filter' | 'menu' | 'crop' | 'brightness'>(
+    'menu',
+  );
   public $currentCrop = signal<'cover' | '16/9' | '1' | 'auto'>('cover');
   public $currentRotate = signal<number>(0);
   public $photoCrop = signal<{
@@ -66,21 +108,46 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
 
   public modalCtrl = inject(ModalController);
 
-  private canvasContainerObserver: MutationObserver = new MutationObserver((mutationsList: MutationRecord[]) => {
-    if (mutationsList.find((mutation) => mutation.type === 'attributes' && mutation.attributeName === 'style')) {
-      // Cover the image editor with the parent element
-      this.editorRef.nativeElement.style.minWidth = mutationsList[0].target.parentElement!.style.maxWidth;
-      this.editorRef.nativeElement.style.minHeight = mutationsList[0].target.parentElement!.style.maxHeight;
+  private canvasContainerObserver: MutationObserver = new MutationObserver(
+    (mutationsList: MutationRecord[]) => {
+      if (
+        mutationsList.find(
+          (mutation) =>
+            mutation.type === 'attributes' &&
+            mutation.attributeName === 'style',
+        )
+      ) {
+        // Cover the image editor with the parent element
+        this.editorRef.nativeElement.style.minWidth =
+          mutationsList[0].target.parentElement!.style.maxWidth;
+        this.editorRef.nativeElement.style.minHeight =
+          mutationsList[0].target.parentElement!.style.maxHeight;
 
-      this.$photoCrop.set({
-        width: mutationsList[0].target.parentElement!.querySelector('canvas')!.width,
-        height: mutationsList[0].target.parentElement!.querySelector('canvas')!.height,
-      });
-    }
-  });
+        this.$photoCrop.set({
+          width:
+            mutationsList[0].target.parentElement!.querySelector('canvas')!
+              .width,
+          height:
+            mutationsList[0].target.parentElement!.querySelector('canvas')!
+              .height,
+        });
+      }
+    },
+  );
 
   constructor() {
-    addIcons({ closeOutline, send, cropOutline, colorFilterOutline, sunnyOutline, expandOutline, tabletLandscapeOutline, squareOutline, refreshOutline, checkmarkOutline });
+    addIcons({
+      closeOutline,
+      send,
+      cropOutline,
+      colorFilterOutline,
+      sunnyOutline,
+      expandOutline,
+      tabletLandscapeOutline,
+      squareOutline,
+      refreshOutline,
+      checkmarkOutline,
+    });
   }
 
   ngOnInit() {
@@ -98,7 +165,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   }
 
   ngOnDestroy() {
-    this.initSubscription$.forEach((subscription) => subscription.unsubscribe());
+    this.initSubscription$.forEach((subscription) =>
+      subscription.unsubscribe(),
+    );
   }
 
   async ionViewDidEnter() {
@@ -108,20 +177,29 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
     });
     await new Promise<void>((resolve) => {
       const interval = setInterval(() => {
-        const find = this.editorRef.nativeElement.querySelector('.tui-image-editor-canvas-container');
+        const find = this.editorRef.nativeElement.querySelector(
+          '.tui-image-editor-canvas-container',
+        );
         if (find) {
           clearInterval(interval);
           resolve();
         }
       });
     });
-    this.canvasContainerObserver.observe(this.editorRef.nativeElement.querySelector('.tui-image-editor-canvas-container'), {
-      attributes: true,
-      childList: false,
-      subtree: true,
-    });
+    this.canvasContainerObserver.observe(
+      this.editorRef.nativeElement.querySelector(
+        '.tui-image-editor-canvas-container',
+      ),
+      {
+        attributes: true,
+        childList: false,
+        subtree: true,
+      },
+    );
     const blob = await fetch(this.value).then((res) => res.blob());
-    await this.editorInstance.loadImageFromFile(new File([blob], 'data.png', { type: blob.type }));
+    await this.editorInstance.loadImageFromFile(
+      new File([blob], 'data.png', { type: blob.type }),
+    );
     this.$footerMenu.set(this.requireSquare ? 'crop' : 'menu');
   }
 
@@ -131,7 +209,12 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   }
 
   public changeCrop(crop: 'cover' | '16/9' | '1' | 'auto') {
-    const rect = crop === 'cover' ? this.$photoCrop().width / this.$photoCrop().height : crop === '16/9' ? 16 / 9 : 1;
+    const rect =
+      crop === 'cover'
+        ? this.$photoCrop().width / this.$photoCrop().height
+        : crop === '16/9'
+          ? 16 / 9
+          : 1;
     this.editorInstance.setCropzoneRect(crop !== 'auto' ? rect : undefined);
     this.$currentCrop.set(crop);
   }
@@ -167,7 +250,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
     if (this.editorInstance.hasFilter('brightness')) {
       await this.editorInstance.removeFilter('brightness');
     }
-    this.editorInstance.applyFilter('brightness', { brightness: Number(event.detail.value) / 255 });
+    this.editorInstance.applyFilter('brightness', {
+      brightness: Number(event.detail.value) / 255,
+    });
   }
 
   public imageSave() {
@@ -180,14 +265,18 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
 
     const defaultInstance = new ImageEditor(document.createElement('div'), {
       cssMaxWidth: this.filterImageSize,
-      cssMaxHeight: (this.$photoCrop().height * this.filterImageSize) / this.$photoCrop().width,
+      cssMaxHeight:
+        (this.$photoCrop().height * this.filterImageSize) /
+        this.$photoCrop().width,
     });
     const blob = await fetch(
       this.editorInstance.toDataURL({
         multiplier: this.filterImageSize / this.$photoCrop().width,
       }),
     ).then((res) => res.blob());
-    await defaultInstance.loadImageFromFile(new File([blob], 'defaultInstance.png', { type: blob.type }));
+    await defaultInstance.loadImageFromFile(
+      new File([blob], 'defaultInstance.png', { type: blob.type }),
+    );
 
     for (const filter of this.filterPreset()) {
       if (filter.type !== 'Default') {
@@ -199,7 +288,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
         option: filter.option,
         data: defaultInstance.toDataURL(),
         width: this.filterImageSize,
-        height: (this.$photoCrop().height * this.filterImageSize) / this.$photoCrop().width,
+        height:
+          (this.$photoCrop().height * this.filterImageSize) /
+          this.$photoCrop().width,
       });
       if (filter.type !== 'Default') {
         await defaultInstance.removeFilter(filter.type);
