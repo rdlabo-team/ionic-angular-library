@@ -1,5 +1,3 @@
-# rdlabo-team/ionic-angular-library
-
 These libraries is a collection of components and services that are useful for developing Ionic Angular applications.
 
 ## @rdlabo/ionic-angular-photo-editor
@@ -49,3 +47,5 @@ The image url or base64 string.
 #### label
 
 If set, the label is overwritten.
+
+List is [here](https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionary.ts).
