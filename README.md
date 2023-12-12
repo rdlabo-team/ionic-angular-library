@@ -1,27 +1,51 @@
-# IonicAngularLibrary
+# rdlabo-team/ionic-angular-library
 
-This project was generated with [Angular CLI](https://github.com/angular/angular-cli) version 17.0.3.
+These libraries is a collection of components and services that are useful for developing Ionic Angular applications.
 
-## Development server
+## @rdlabo/ionic-angular-photo-editor
 
-Run `ng serve` for a dev server. Navigate to `http://localhost:4200/`. The application will automatically reload if you change any of the source files.
+This is a photo editor page for modal page of Ionic Angular project.
 
-## Code scaffolding
+### Installation
 
-Run `ng generate component component-name` to generate a new component. You can also use `ng generate directive|pipe|service|class|guard|interface|enum|module`.
+```bash
+npm install @rdlabo/ionic-angular-photo-editor
+```
 
-## Build
+### Usage
 
-Run `ng build` to build the project. The build artifacts will be stored in the `dist/` directory.
+```typescript
+import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor';
 
-## Running unit tests
+(async () => {
+  const modal = await this.modalCtrl.create({
+    component: PhotoEditorPage,
+    componentProps: {
+      requireSquare: false,
+      value: 'https://picsum.photos/200/300',
+      label: {
+        save: '送信', // change '保存' to '送信'
+      },
+    },
+  });
+  await modal.present();
+  const { data } = await modal.onWillDismiss<IPhotoEditorDismiss>();
+  if (data?.value) {
+    console.log(data.value);
+  }
+})();
+```
 
-Run `ng test` to execute the unit tests via [Karma](https://karma-runner.github.io).
+### Options
 
-## Running end-to-end tests
+#### requireSquare
 
-Run `ng e2e` to execute the end-to-end tests via a platform of your choice. To use this command, you need to first add a package that implements end-to-end testing capabilities.
+If true, the image must be cropped to a square at first.
 
-## Further help
+#### value
 
-To get more help on the Angular CLI use `ng help` or go check out the [Angular CLI Overview and Command Reference](https://angular.io/cli) page.
+The image url or base64 string.
+
+#### label
+
+If set, the label is overwritten.

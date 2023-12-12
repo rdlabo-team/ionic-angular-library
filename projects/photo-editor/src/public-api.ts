@@ -2,5 +2,5 @@
  * Public API Surface of photo-editor
  */
 
-export * from './lib/photo-editor.service';
-export * from './lib/photo-editor.page';
+export * from './lib/page/photo-editor.page';
+export * from './lib/types';

@@ -1,25 +1,23 @@
-export const filterPreset = (): {
-  name: string;
-  type: string;
-  option: any;
-}[] => [
+import { IDictionary, IFilterPreset } from './types';
+
+export const filterPreset = (dictionary: IDictionary): IFilterPreset[] => [
   {
-    name: 'オリジナル',
+    name: dictionary.original,
     type: 'Default',
     option: null,
   },
   // {
-  //   name: '反転',
+  //   name: dictionary.invert,
   //   type: 'Invert',
   //   option: null,
   // },
   {
-    name: 'セピア',
+    name: dictionary.sepia,
     type: 'Sepia',
     option: null,
   },
   {
-    name: 'ヴィンテージ',
+    name: dictionary.vintage,
     type: 'vintage',
     option: null,
   },
@@ -29,17 +27,17 @@ export const filterPreset = (): {
     option: { blur: 0.1 },
   },
   {
-    name: 'グレースケール',
+    name: dictionary.grayscale,
     type: 'Grayscale',
     option: null,
   },
   // {
-  //   name: '輪郭',
+  //   name: dictionary.sharpen,
   //   type: 'Sharpen',
   //   option: null,
   // },
   // {
-  //   name: 'エンボス',
+  //   name: dictionary.emboss,
   //   type: 'Emboss',
   //   option: null,
   // },
