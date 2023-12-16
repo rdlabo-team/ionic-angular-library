@@ -18,12 +18,13 @@ import {
   IonLabel,
   IonTitle,
   IonListHeader,
+  IonApp,
 } from '@ionic/angular/standalone';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterOutlet, IonHeader, IonToolbar, IonContent, IonList, IonItem, IonLabel, IonTitle, IonListHeader],
+  imports: [CommonModule, RouterOutlet, IonHeader, IonToolbar, IonContent, IonList, IonItem, IonLabel, IonTitle, IonListHeader, IonApp],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })

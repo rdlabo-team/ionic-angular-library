@@ -1,5 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
-import { ActionSheetController, Platform } from '@ionic/angular';
+import { ActionSheetController, Platform } from '@ionic/angular/standalone';
 import { Camera, CameraResultType, CameraSource, ImageOptions } from '@capacitor/camera';
 import { GalleryPhotos } from '@capacitor/camera/dist/esm/definitions';
 import ImageEditor from 'tui-image-editor';
@@ -47,7 +47,7 @@ export class PhotoFileService {
       ],
     });
     await actionSheet.present();
-    const { data } = await actionSheet.onDidDismiss();
+    const { data } = await actionSheet.onDidDismiss<'camera' | 'album'>();
     if (!data) {
       return [];
     }

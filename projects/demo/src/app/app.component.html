@@ -1,12 +1,14 @@
-<ion-header>
-  <ion-toolbar><ion-title>Demo</ion-title></ion-toolbar>
-</ion-header>
-<ion-content>
-  <ion-list>
-    <ion-list-header><ion-label>&#64;rdlabo/ionic-angular-photo-editor</ion-label></ion-list-header>
-    <ion-item (click)="selectPhoto('viewer')" [button]="true"><ion-label>Select Photo and View</ion-label></ion-item>
-    <ion-item (click)="selectPhoto('editor')" [button]="true"><ion-label>Select Photo and Edit</ion-label></ion-item>
-    <ion-item (click)="launchEditor()" [button]="true"><ion-label>Launch Photo Editor</ion-label></ion-item>
-    <ion-item (click)="launchViewer()" [button]="true"><ion-label>Launch Photo Viewer</ion-label></ion-item>
-  </ion-list>
-</ion-content>
+<ion-app>
+  <ion-header>
+    <ion-toolbar><ion-title>Demo</ion-title></ion-toolbar>
+  </ion-header>
+  <ion-content>
+    <ion-list>
+      <ion-list-header><ion-label>&#64;rdlabo/ionic-angular-photo-editor</ion-label></ion-list-header>
+      <ion-item (click)="selectPhoto('viewer')" [button]="true"><ion-label>Select Photo and View</ion-label></ion-item>
+      <ion-item (click)="selectPhoto('editor')" [button]="true"><ion-label>Select Photo and Edit</ion-label></ion-item>
+      <ion-item (click)="launchEditor()" [button]="true"><ion-label>Launch Photo Editor</ion-label></ion-item>
+      <ion-item (click)="launchViewer()" [button]="true"><ion-label>Launch Photo Viewer</ion-label></ion-item>
+    </ion-list>
+  </ion-content>
+</ion-app>
