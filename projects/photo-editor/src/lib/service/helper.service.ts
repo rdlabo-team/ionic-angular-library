@@ -11,15 +11,24 @@ import {
   squareOutline,
   sunnyOutline,
   tabletLandscapeOutline,
+  removeOutline,
 } from 'ionicons/icons';
+import { register } from 'swiper/element';
 
 @Injectable({
   providedIn: 'root',
 })
-export class PhotoEditorService {
+export class HelperService {
   constructor() {}
 
-  initializeIcons(): void {
+  initializeViewerIcons(): void {
+    addIcons({
+      closeOutline,
+      removeOutline,
+    });
+  }
+
+  initializeEditorIcons(): void {
     addIcons({
       closeOutline,
       send,

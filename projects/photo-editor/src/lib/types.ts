@@ -36,3 +36,7 @@ export interface IFilterPreset {
 export interface IPhotoEditorDismiss {
   value: string;
 }
+
+export interface IPhotoViewerDismiss {
+  delete: boolean;
+}

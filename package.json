@@ -1,7 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-library",
   "version": "0.0.2",
-  "type": "module",
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
@@ -10,6 +9,7 @@
     "test": "ng test",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
     "prebuild": "ng build photo-editor --configuration=production",
+    "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node ./release.js"
   },
   "private": true,

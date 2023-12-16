@@ -7,14 +7,14 @@ import { filterPreset } from '../filter-preset';
 import { Subscription } from 'rxjs';
 import { toObservable } from '@angular/core/rxjs-interop';
 import { IDictionary, IPhotoEditorDismiss, IFilter, ISize } from '../types';
-import { PhotoEditorService } from '../service/photo-editor.service';
+import { HelperService } from '../service/helper.service';
 import { ionComponents } from '../ion-components';
 import { dictionary } from '../dictionary';
 
 @Component({
   selector: 'app-editor-image',
   templateUrl: './photo-editor.page.html',
-  styleUrls: ['./photo-editor.page.scss'],
+  styleUrls: ['./core.scss', './photo-editor.page.scss'],
   standalone: true,
   imports: [CommonModule, FormsModule, NgOptimizedImage, ...ionComponents],
 })
@@ -49,7 +49,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   private editorInstance!: ImageEditor;
   private initSubscription$: Subscription[] = [];
   private readonly filterImageSize = 240;
-  private readonly service = inject(PhotoEditorService);
+  private readonly service = inject(HelperService);
 
   modalCtrl = inject(ModalController);
 
@@ -67,7 +67,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   });
 
   constructor() {
-    this.service.initializeIcons();
+    this.service.initializeEditorIcons();
   }
 
   ngOnInit() {
