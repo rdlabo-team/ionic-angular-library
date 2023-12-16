@@ -3,6 +3,7 @@ import { ActionSheetController, Platform } from '@ionic/angular/standalone';
 import { Camera, CameraResultType, CameraSource, ImageOptions } from '@capacitor/camera';
 import { GalleryPhotos } from '@capacitor/camera/dist/esm/definitions';
 import ImageEditor from 'tui-image-editor';
+import { PhotoEditorErrors } from '../photoEditorErrors';
 
 @Injectable({
   providedIn: 'root',
@@ -49,7 +50,7 @@ export class PhotoFileService {
     await actionSheet.present();
     const { data } = await actionSheet.onDidDismiss<'camera' | 'album'>();
     if (!data) {
-      return [];
+      return Promise.reject(PhotoEditorErrors.cancel);
     }
 
     if (data === 'camera') {
@@ -62,10 +63,10 @@ export class PhotoFileService {
         presentationStyle: 'popover',
       };
       const image = await Camera.getPhoto(defaultCamera).catch(() => undefined);
-
       if (!image?.dataUrl) {
-        return [];
+        return Promise.reject(PhotoEditorErrors.cancel);
       }
+
       if (!image.dataUrl.includes('capacitor://localhost')) {
         return [image.dataUrl];
       }
@@ -78,16 +79,16 @@ export class PhotoFileService {
         width: this.$photoMaxSize(),
         limit,
         presentationStyle: 'popover',
-      }).catch(
-        () =>
-          ({
-            photos: [],
-          }) as GalleryPhotos,
-      );
+      }).catch(() => undefined);
+
+      if (!images) {
+        return Promise.reject(PhotoEditorErrors.cancel);
+      }
 
       return Promise.all(images.photos.map(async (image) => await this.loadPhotoFromFilePath(image.webPath)));
     }
 
+    // Not run on this line. This is for lint
     return [];
   }
 
@@ -95,7 +96,7 @@ export class PhotoFileService {
     const inputFile: HTMLInputElement | null = document.querySelector('input#browserPhotoUploader');
 
     if (!inputFile) {
-      return Promise.reject('[error] Input DOM is not found.');
+      return Promise.reject(PhotoEditorErrors.initialize);
     }
 
     return new Promise((resolve, reject) => {
@@ -103,14 +104,14 @@ export class PhotoFileService {
         'change',
         (e: Event) => {
           if (!(e.target as HTMLInputElement).files || !(e.target as HTMLInputElement).files![0]) {
-            reject('[error] File is not selected.');
+            reject(PhotoEditorErrors.cancel);
           }
           const file = (e.target as HTMLInputElement).files![0];
           const reader = new FileReader();
 
           reader.onload = (() => {
             if (file.type.indexOf('image') < 0) {
-              reject('[error] Upload file is not image.');
+              reject(PhotoEditorErrors.type);
             }
 
             return async (event) => {
