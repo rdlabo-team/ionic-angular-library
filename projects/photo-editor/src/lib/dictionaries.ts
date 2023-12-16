@@ -1,4 +1,4 @@
-import {IDictionaryForEditor, IDictionaryForService, IDictionaryForViewer} from './types';
+import { IDictionaryForEditor, IDictionaryForService, IDictionaryForViewer } from './types';
 
 export const dictionaryForEditor = (): IDictionaryForEditor => ({
   // UI labels

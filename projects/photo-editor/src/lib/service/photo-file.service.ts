@@ -4,8 +4,8 @@ import { Camera, CameraResultType, CameraSource, ImageOptions } from '@capacitor
 import { GalleryPhotos } from '@capacitor/camera/dist/esm/definitions';
 import ImageEditor from 'tui-image-editor';
 import { PhotoEditorErrors } from '../photoEditorErrors';
-import {dictionaryForService} from '../dictionaries';
-import {IDictionaryForService} from '../types';
+import { dictionaryForService } from '../dictionaries';
+import { IDictionaryForService } from '../types';
 
 @Injectable({
   providedIn: 'root',
