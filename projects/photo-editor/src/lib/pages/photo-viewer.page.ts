@@ -27,6 +27,7 @@ import { dictionaryForEditor, dictionaryForViewer } from '../dictionaries';
   standalone: true,
   imports: [NgFor, NgIf, ...ionComponents],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
+  providers: [HelperService],
 })
 export class PhotoViewerPage implements OnInit, OnDestroy {
   protected dictionary: IDictionaryForViewer = dictionaryForViewer();

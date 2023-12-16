@@ -13,11 +13,8 @@ import {
   tabletLandscapeOutline,
   removeOutline,
 } from 'ionicons/icons';
-import { register } from 'swiper/element';
 
-@Injectable({
-  providedIn: 'root',
-})
+@Injectable()
 export class HelperService {
   constructor() {}
 

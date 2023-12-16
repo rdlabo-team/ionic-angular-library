@@ -17,6 +17,7 @@ import { dictionaryForEditor } from '../dictionaries';
   styleUrls: ['./core.scss', './photo-editor.page.scss'],
   standalone: true,
   imports: [CommonModule, FormsModule, NgOptimizedImage, ...ionComponents],
+  providers: [HelperService],
 })
 export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave {
   protected dictionary: IDictionaryForEditor = dictionaryForEditor();
