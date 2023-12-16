@@ -8,12 +8,22 @@ import {
   IPhotoViewerDismiss,
   PhotoFileService,
 } from '@rdlabo/ionic-angular-photo-editor';
-import { ModalController, IonHeader, IonToolbar, IonContent, IonList, IonItem, IonLabel, IonTitle } from '@ionic/angular/standalone';
+import {
+  ModalController,
+  IonHeader,
+  IonToolbar,
+  IonContent,
+  IonList,
+  IonItem,
+  IonLabel,
+  IonTitle,
+  IonListHeader,
+} from '@ionic/angular/standalone';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterOutlet, IonHeader, IonToolbar, IonContent, IonList, IonItem, IonLabel, IonTitle],
+  imports: [CommonModule, RouterOutlet, IonHeader, IonToolbar, IonContent, IonList, IonItem, IonLabel, IonTitle, IonListHeader],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
