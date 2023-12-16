@@ -36,6 +36,7 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
   @Input() index: number = 0;
   @Input() isCircle = false;
   @Input() enableDelete = false;
+  @Input() enableFooterSafeArea = false;
   @Input() set labels(d: IDictionaryForViewer) {
     this.dictionary = Object.assign(this.dictionary, d);
   }

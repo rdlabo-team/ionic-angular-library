@@ -130,7 +130,11 @@ If set, the image is displayed in a circle.
 
 #### enableDelete: boolean
 
-If set, the delete button is displayed.
+If true, the delete button is displayed.
+
+#### enableFooterSafeArea: boolean
+
+If true, enable footer safe area for iOS.
 
 #### labels: IDictionaryForViewer
 
