@@ -37,12 +37,13 @@ export class AppComponent {
     const modal = await this.modalCtrl.create({
       component: PhotoViewerPage,
       componentProps: {
-        imageUrls: [
-          'https://dy60q458bmneq.cloudfront.net/attachment/110807_1702425701017_0.png',
-          'https://dy60q458bmneq.cloudfront.net/attachment/110807_1702425701017_0.png',
-        ],
+        imageUrls: ['https://picsum.photos/200/300', 'https://picsum.photos/200/300'],
         index: 1,
         isCircle: false,
+        enableDelete: true,
+        labels: {
+          delete: 'Delete',
+        },
       },
     });
     await modal.present();

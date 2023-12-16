@@ -2,20 +2,22 @@ These libraries is a collection of components and services that are useful for d
 
 [Demo site is here.](https://rdlabo-ionic-angular-library.netlify.app/)
 
-## @rdlabo/ionic-angular-photo-editor
+# @rdlabo/ionic-angular-photo-editor
 
-This is a photo editor page for modal page of Ionic Angular project.
+This is a photo editor and viewer for modal page of Ionic Angular project.
 
-### Installation
+## Installation
 
 ```bash
 npm install @rdlabo/ionic-angular-photo-editor
 ```
 
-### Usage
+## Usage
+
+### PhotoEditorPage
 
 ```typescript
-import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoEditorPage, IPhotoEditorDismiss } from '@rdlabo/ionic-angular-photo-editor';
 
 (async () => {
   const modal = await this.modalCtrl.create({
@@ -38,16 +40,66 @@ import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor';
 
 ### Options
 
-#### requireSquare
+#### requireSquare: boolean
 
 If true, the image must be cropped to a square at first.
 
-#### value
+#### value: string
 
 The image url or base64 string.
 
-#### label
+#### labels: IDictionaryForEditor
 
 If set, the label is overwritten.
 
-List is [here](https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionary.ts).
+List is [here](https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).
+
+
+### PhotoViewerPage
+
+```typescript
+import { PhotoViewerPage, IPhotoViewerDismiss } from '@rdlabo/ionic-angular-photo-editor';
+
+(async () => {
+  const modal = await this.modalCtrl.create({
+    component: PhotoViewerPage,
+    componentProps: {
+      imageUrls: [
+        'https://picsum.photos/200/300',
+        'https://picsum.photos/200/300',
+      ],
+      index: 0,
+      isCircle: false,
+    },
+  });
+  await modal.present();
+  const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
+  if (data?.delete) {
+    // User delete image
+  }
+})();
+```
+
+### Options
+
+#### imageUrls: string[]
+
+The image url or base64 string[].
+
+#### index: number
+
+The index of imageUrls.
+
+#### isCircle: boolean
+
+If set, the image is displayed in a circle.
+
+#### enableDelete: boolean
+
+If set, the delete button is displayed.
+
+#### labels: IDictionaryForViewer
+
+If set, the label is overwritten.
+
+List is [here](https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).

@@ -6,10 +6,10 @@ import ImageEditor from 'tui-image-editor';
 import { filterPreset } from '../filter-preset';
 import { Subscription } from 'rxjs';
 import { toObservable } from '@angular/core/rxjs-interop';
-import { IDictionary, IPhotoEditorDismiss, IFilter, ISize } from '../types';
+import { IDictionaryForEditor, IPhotoEditorDismiss, IFilter, ISize } from '../types';
 import { HelperService } from '../service/helper.service';
 import { ionComponents } from '../ion-components';
-import { dictionary } from '../dictionary';
+import { dictionaryForEditor } from '../dictionaries';
 
 @Component({
   selector: 'app-editor-image',
@@ -19,12 +19,12 @@ import { dictionary } from '../dictionary';
   imports: [CommonModule, FormsModule, NgOptimizedImage, ...ionComponents],
 })
 export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave {
-  protected dictionary: IDictionary = dictionary();
+  protected dictionary: IDictionaryForEditor = dictionaryForEditor();
   protected filterPreset = filterPreset(this.dictionary);
 
   @Input() requireSquare: boolean = false;
   @Input() value!: string;
-  @Input() set label(d: IDictionary) {
+  @Input() set labels(d: IDictionaryForEditor) {
     this.dictionary = Object.assign(this.dictionary, d);
     this.filterPreset = filterPreset(this.dictionary);
   }

@@ -16,8 +16,9 @@ import { NgFor, NgIf } from '@angular/common';
 import { SwiperContainer } from 'swiper/element';
 import { ionComponents } from '../ion-components';
 import { HelperService } from '../service/helper.service';
-import { IPhotoViewerDismiss } from '../types';
+import { IDictionaryForEditor, IDictionaryForViewer, IPhotoViewerDismiss } from '../types';
 import { register } from 'swiper/element/bundle';
+import { dictionaryForEditor, dictionaryForViewer } from '../dictionaries';
 
 @Component({
   selector: 'app-photo-image',
@@ -28,10 +29,16 @@ import { register } from 'swiper/element/bundle';
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
 })
 export class PhotoViewerPage implements OnInit, OnDestroy {
+  protected dictionary: IDictionaryForViewer = dictionaryForViewer();
+
   @Input() imageUrls: string[] = [];
   @Input() index: number = 0;
   @Input() isCircle = false;
   @Input() enableDelete = false;
+  @Input() set labels(d: IDictionaryForViewer) {
+    this.dictionary = Object.assign(this.dictionary, d);
+  }
+
   @ViewChild('swiper') swiper!: ElementRef<SwiperContainer>;
 
   watchSwipe$!: Subscription;

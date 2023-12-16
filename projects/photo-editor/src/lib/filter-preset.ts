@@ -1,6 +1,6 @@
-import { IDictionary, IFilterPreset } from './types';
+import { IDictionaryForEditor, IFilterPreset } from './types';
 
-export const filterPreset = (dictionary: IDictionary): IFilterPreset[] => [
+export const filterPreset = (dictionary: IDictionaryForEditor): IFilterPreset[] => [
   {
     name: dictionary.original,
     type: 'Default',

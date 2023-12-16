@@ -1,6 +1,6 @@
-import { IDictionary } from './types';
+import { IDictionaryForEditor, IDictionaryForViewer } from './types';
 
-export const dictionary = (): IDictionary => ({
+export const dictionaryForEditor = (): IDictionaryForEditor => ({
   // UI labels
   save: '保存',
   crop: '切り抜き・回転',
@@ -16,4 +16,9 @@ export const dictionary = (): IDictionary => ({
   grayscale: 'グレースケール',
   sharpen: '輪郭',
   emboss: 'エンボス',
+});
+
+export const dictionaryForViewer = (): IDictionaryForViewer => ({
+  // UI labels
+  delete: '削除',
 });

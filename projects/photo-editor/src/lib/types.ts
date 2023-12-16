@@ -12,7 +12,7 @@ export interface ISize {
   height: number;
 }
 
-export interface IDictionary {
+export interface IDictionaryForEditor {
   save: string;
   crop: string;
   filter: string;
@@ -39,4 +39,8 @@ export interface IPhotoEditorDismiss {
 
 export interface IPhotoViewerDismiss {
   delete: boolean;
+}
+
+export interface IDictionaryForViewer {
+  delete: string;
 }
