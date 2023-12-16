@@ -112,6 +112,11 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
   }
 
   remove() {
-    this.modalCtrl.dismiss({ delete: true } as IPhotoViewerDismiss);
+    this.modalCtrl.dismiss({
+      delete: {
+        index: this.swiper.nativeElement.swiper.activeIndex,
+        value: this.imageUrls[this.swiper.nativeElement.swiper.activeIndex],
+      },
+    } as IPhotoViewerDismiss);
   }
 }

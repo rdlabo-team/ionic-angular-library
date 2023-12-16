@@ -38,7 +38,10 @@ export interface IPhotoEditorDismiss {
 }
 
 export interface IPhotoViewerDismiss {
-  delete: boolean;
+  delete: {
+    index: number;
+    value: string;
+  };
 }
 
 export interface IDictionaryForViewer {

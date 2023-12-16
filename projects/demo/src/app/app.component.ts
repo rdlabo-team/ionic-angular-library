@@ -84,6 +84,7 @@ export class AppComponent {
     await modal.present();
     const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
     if (data?.delete) {
+      console.log(data.delete);
       // User delete image
     }
   }
