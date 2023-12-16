@@ -3,7 +3,7 @@ import { CapacitorConfig } from '@capacitor/cli';
 const config: CapacitorConfig = {
   appId: 'jp.rdlabo.library.demo',
   appName: 'demo',
-  webDir: 'dist/demo',
+  webDir: 'dist/demo/browser',
   server: {
     androidScheme: 'https',
   },
