@@ -16,9 +16,9 @@ import { NgFor, NgIf } from '@angular/common';
 import { SwiperContainer } from 'swiper/element';
 import { ionComponents } from '../ion-components';
 import { HelperService } from '../service/helper.service';
-import { IDictionaryForEditor, IDictionaryForViewer, IPhotoViewerDismiss } from '../types';
+import { IDictionaryForViewer, IPhotoViewerDismiss } from '../types';
 import { register } from 'swiper/element/bundle';
-import { dictionaryForEditor, dictionaryForViewer } from '../dictionaries';
+import { dictionaryForViewer } from '../dictionaries';
 
 @Component({
   selector: 'app-photo-image',

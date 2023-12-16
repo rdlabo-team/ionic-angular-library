@@ -44,3 +44,9 @@ export interface IPhotoViewerDismiss {
 export interface IDictionaryForViewer {
   delete: string;
 }
+
+export interface IDictionaryForService {
+  camera: string;
+  album: string;
+  cancel: string;
+}

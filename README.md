@@ -37,6 +37,15 @@ import { PhotoFileService } from '@rdlabo/ionic-angular-photo-editor';
 
 export class AppComponent {
   private photoFileService = inject(PhotoFileService);
+
+  constructor() {
+    this.photoFileService.photoMaxSize = 1000;
+    this.photoFileService.labels = {
+      camera: 'Camera',
+      album: 'Album',
+      cancel: 'Cancel',
+    };
+  }
   
   async upload() {
     const file = await this.photoFileService.loadPhoto();
@@ -46,6 +55,15 @@ export class AppComponent {
   }
 }
 ````
+
+#### Options
+##### photoMaxSize
+
+The maximum size of the photo. Default is 1000.
+
+##### labels
+
+If set, the label is overwritten.
 
 
 ### PhotoEditorPage

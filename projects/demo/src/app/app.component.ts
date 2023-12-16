@@ -32,7 +32,14 @@ export class AppComponent {
   private photoFileService = inject(PhotoFileService);
   private modalCtrl = inject(ModalController);
 
-  constructor() {}
+  constructor() {
+    this.photoFileService.photoMaxSize = 1000;
+    this.photoFileService.labels = {
+      camera: 'Camera',
+      album: 'Album',
+      cancel: 'Cancel',
+    };
+  }
 
   async ngOnInit() {}
 

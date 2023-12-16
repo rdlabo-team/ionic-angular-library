@@ -4,6 +4,8 @@ import { Camera, CameraResultType, CameraSource, ImageOptions } from '@capacitor
 import { GalleryPhotos } from '@capacitor/camera/dist/esm/definitions';
 import ImageEditor from 'tui-image-editor';
 import { PhotoEditorErrors } from '../photoEditorErrors';
+import {dictionaryForService} from '../dictionaries';
+import {IDictionaryForService} from '../types';
 
 @Injectable({
   providedIn: 'root',
@@ -12,11 +14,16 @@ export class PhotoFileService {
   private readonly $photoMaxSize = signal<number>(1000);
   private readonly actionSheetCtrl = inject(ActionSheetController);
   private readonly platform = inject(Platform);
+  private dictionary: IDictionaryForService = dictionaryForService();
 
   constructor() {}
 
   set photoMaxSize(value: number) {
     this.$photoMaxSize.set(value);
+  }
+
+  set labels(d: IDictionaryForService) {
+    this.dictionary = Object.assign(this.dictionary, d);
   }
 
   async loadPhoto(limit: number): Promise<string[]> {
@@ -30,19 +37,19 @@ export class PhotoFileService {
     const actionSheet = await this.actionSheetCtrl.create({
       buttons: [
         {
-          text: 'カメラ撮影',
+          text: this.dictionary.camera,
           handler: () => {
             actionSheet.dismiss('camera');
           },
         },
         {
-          text: 'アルバムから選択',
+          text: this.dictionary.album,
           handler: () => {
             actionSheet.dismiss('album');
           },
         },
         {
-          text: 'キャンセル',
+          text: this.dictionary.cancel,
           role: 'cancel',
         },
       ],

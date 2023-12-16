@@ -1,4 +1,4 @@
-import { IDictionaryForEditor, IDictionaryForViewer } from './types';
+import {IDictionaryForEditor, IDictionaryForService, IDictionaryForViewer} from './types';
 
 export const dictionaryForEditor = (): IDictionaryForEditor => ({
   // UI labels
@@ -21,4 +21,11 @@ export const dictionaryForEditor = (): IDictionaryForEditor => ({
 export const dictionaryForViewer = (): IDictionaryForViewer => ({
   // UI labels
   delete: '削除',
+});
+
+export const dictionaryForService = (): IDictionaryForService => ({
+  // UI labels
+  camera: 'カメラ撮影',
+  album: 'アルバムから選択',
+  cancel: 'キャンセル',
 });
