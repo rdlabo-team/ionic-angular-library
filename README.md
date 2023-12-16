@@ -4,7 +4,7 @@ These libraries is a collection of components and services that are useful for d
 
 # @rdlabo/ionic-angular-photo-editor
 
-This is a photo editor and viewer for modal page of Ionic Angular project.
+This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor.
 
 ## Installation
 
@@ -12,7 +12,33 @@ This is a photo editor and viewer for modal page of Ionic Angular project.
 npm install @rdlabo/ionic-angular-photo-editor
 ```
 
+If you public your project to the web, you need to add the following input tag to the index.html.
+
+```html
+<div style="width: 0; height: 0; overflow: hidden">
+  <input id="browserPhotoUploader" type="file" accept="image/*" />
+</div>
+```
+
 ## Usage
+
+### PhotoFileService
+
+```typescript
+import { PhotoFileService } from '@rdlabo/ionic-angular-photo-editor';
+
+export class AppComponent {
+  private photoFileService = inject(PhotoFileService);
+  
+  async upload() {
+    const file = await this.photoFileService.loadPhoto();
+    if (file) {
+      // upload file
+    }
+  }
+}
+````
+
 
 ### PhotoEditorPage
 
