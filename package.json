@@ -4,7 +4,7 @@
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
-    "build": "ng build",
+    "build": "ng build demo",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
