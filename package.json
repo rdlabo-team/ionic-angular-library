@@ -1,6 +1,13 @@
 {
   "name": "@rdlabo/ionic-angular-library",
   "version": "0.0.4",
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:rdlabo-team/ionic-angular-library.git"
+  },
+  "bugs": {
+    "url": "git@github.com:rdlabo-team/ionic-angular-library.git/issues"
+  },
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
@@ -13,7 +20,7 @@
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node release.mjs"
   },
-  "private": true,
+  "private": false,
   "dependencies": {
     "@angular/animations": "^17.0.0",
     "@angular/common": "^17.0.0",

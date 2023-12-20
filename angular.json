@@ -27,12 +27,7 @@
             "inlineStyleLanguage": "scss",
             "assets": [
               "projects/demo/src/favicon.ico",
-              "projects/demo/src/assets",
-              {
-                "glob": "**/*.svg",
-                "input": "node_modules/ionicons/dist/ionicons/svg",
-                "output": "./svg"
-              }
+              "projects/demo/src/assets"
             ],
             "styles": [
               "projects/demo/src/styles.scss"
