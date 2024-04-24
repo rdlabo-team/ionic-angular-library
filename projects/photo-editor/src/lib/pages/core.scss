@@ -1,18 +1,63 @@
 :host {
-  --alway-dark: var(--ion-color-step-100, #2a2a2a);
-  --alway-dark-tint: var(--ion-color-step-200, #414141);
+  --editor-background: var(--ion-photo-editor-background, --ion-color-step-100, #2a2a2a);
+  --editor-background-tint: var(--ion-photo-editor-background-tint, --ion-color-step-200, #414141);
 
-  --alway-white: var(--ion-color-step-950, #f0f0f0);
-  --alway-white-tint: var(--ion-color-step-850, #dbdbdb);
+  --editor-color: var(--ion-photo-editor-color, --ion-color-step-950, #f0f0f0);
+  --editor-color-tint: var(--ion-photo-editor-color-tint, --ion-color-step-850, #dbdbdb);
+
+  --ion-color-photo-editor-primary: var(--ion-photo-editor-primary, --ion-color-primary, #4d8dff);
+  //--ion-color-photo-editor-primary-rgb: var(--ion-photo-editor-primary-rgb, --ion-color-primary-rgb, '77, 141, 255');
+  //--ion-color-photo-editor-primary-contrast: var(--ion-photo-editor-primary-contrast, --ion-color-primary-contrast, #000);
+  //--ion-color-photo-editor-primary-contrast-rgb: var(--ion-photo-editor-primary-contrast-rgb, --ion-color-primary-rgb, '0,0,0');
+  //--ion-color-photo-editor-primary-shade: var(--ion-photo-editor-primary-shade　--ion-color-primary-shade, #447ce0);
+  //--ion-color-photo-editor-primary-tint: var(--ion-photo-editor-primary-tint, --ion-color-primary-tint, #5f98ff);
+
+  --ion-color-photo-editor-danger: var(--ion-photo-editor-danger, #f24c58);
+  //--ion-color-photo-editor-danger-rgb: var(--ion-photo-editor-danger, '242,76,88');
+  //--ion-color-photo-editor-danger-contrast: var(--ion-photo-editor-danger, #000000);
+  //--ion-color-photo-editor-danger-contrast-rgb: var(--ion-photo-editor-danger, '0,0,0');
+  //--ion-color-photo-editor-danger-shade: var(--ion-photo-editor-danger, #d5434d);
+  //--ion-color-photo-editor-danger-tint: var(--ion-photo-editor-danger, #f35e69);
+
+  --ion-color-photo-editor-success: var(--ion-photo-editor-success, #2dd55b);
+  //--ion-color-photo-editor-success-rgb: var(--ion-photo-editor-success, '45,213,91');
+  //--ion-color-photo-editor-success-contrast: var(--ion-photo-editor-success, #000000);
+  //--ion-color-photo-editor-success-contrast-rgb: var(--ion-photo-editor-success, '0,0,0');
+  //--ion-color-photo-editor-success-shade: var(--ion-photo-editor-success, #28bb50);
+  //--ion-color-photo-editor-success-tint: var(--ion-photo-editor-success, #42d96b);
+}
+
+.ion-color-photo-editor-primary {
+  --ion-color-base: var(--ion-color-photo-editor-primary);
+  //--ion-color-base-rgb: var(--ion-color-photo-editor-primary-rgb);
+  //--ion-color-contrast: var(--ion-color-photo-editor-primary-contrast);
+  //--ion-color-contrast-rgb: var(--ion-color-photo-editor-primary-contrast-rgb);
+  //--ion-color-shade: var(--ion-color-photo-editor-primary-shade);
+  //--ion-color-tint: var(--ion-color-photo-editor-primary-tint);
+}
+
+.ion-color-photo-editor-danger {
+  --ion-color-base: var(--ion-color-photo-editor-danger);
+  //--ion-color-base-rgb: var(--ion-color-photo-editor-danger-rgb);
+  //--ion-color-contrast: var(--ion-color-photo-editor-danger-contrast);
+  //--ion-color-contrast-rgb: var(--ion-color-photo-editor-danger-contrast-rgb);
+  //--ion-color-shade: var(--ion-color-photo-editor-danger-shade);
+  //--ion-color-tint: var(--ion-color-photo-editor-danger-tint);
+}
+
+.ion-color-photo-editor-success {
+  --ion-color-base: var(--ion-color-photo-editor-success);
+  //--ion-color-base-rgb: var(--ion-color-photo-editor-success-rgb);
+  //--ion-color-contrast: var(--ion-color-photo-editor-success-contrast);
+  //--ion-color-contrast-rgb: var(--ion-color-photo-editor-success-contrast-rgb);
+  //--ion-color-shade: var(--ion-color-photo-editor-success-shade);
+  //--ion-color-tint: var(--ion-color-photo-editor-success-tint);
 }
 
 ion-content,
 ion-toolbar,
 ion-header,
 ion-footer {
-  /**
-   * var(--ion-color-dark)のLightのみ
-   */
-  background: var(--alway-dark);
-  --background: var(--alway-dark);
+  background: var(--editor-background) !important;
+  --background: var(--editor-background) !important;
 }

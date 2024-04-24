@@ -17,3 +17,11 @@
 @import '@ionic/angular/css/flex-utils.css';
 
 @import '@ionic/angular/css/ionic-swiper.css';
+
+:root {
+  --ion-photo-editor-background: #2a2a2a;
+  --ion-photo-editor-background-tint: #414141;
+
+  --ion-photo-editor-color: #f0f0f0;
+  --ion-photo-editor-color-tint: #dbdbdb;
+}
