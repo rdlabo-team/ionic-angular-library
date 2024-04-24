@@ -19,12 +19,34 @@ import {
   IonTitle,
   IonListHeader,
   IonApp,
+  IonNote,
+  IonIcon,
+  IonButtons,
+  IonButton,
 } from '@ionic/angular/standalone';
+import { addIcons } from 'ionicons';
+import { planetOutline } from 'ionicons/icons';
 
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterOutlet, IonHeader, IonToolbar, IonContent, IonList, IonItem, IonLabel, IonTitle, IonListHeader, IonApp],
+  imports: [
+    CommonModule,
+    RouterOutlet,
+    IonHeader,
+    IonToolbar,
+    IonContent,
+    IonList,
+    IonItem,
+    IonLabel,
+    IonTitle,
+    IonListHeader,
+    IonApp,
+    IonNote,
+    IonIcon,
+    IonButtons,
+    IonButton,
+  ],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
@@ -39,6 +61,9 @@ export class AppComponent {
       album: 'Album',
       cancel: 'Cancel',
     };
+    addIcons({
+      planetOutline,
+    });
   }
 
   async ngOnInit() {}
