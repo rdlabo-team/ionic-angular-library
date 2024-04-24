@@ -6,6 +6,18 @@ These libraries is a collection of components and services that are useful for d
 
 This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor.
 
+## Support Environment
+### 1.0.0
+- Angular >= 17.3
+- Ionic Angular >= v8
+- Capacitor >= v6
+
+### > 1.0.0
+- Angular = 17.0
+- Ionic Angular = v7
+- Capacitor = v5
+
+
 ## Installation
 
 ```bash
