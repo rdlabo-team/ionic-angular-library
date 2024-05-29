@@ -107,32 +107,40 @@ export class PhotoFileService {
     }
 
     return new Promise((resolve, reject) => {
-      inputFile!.addEventListener(
-        'change',
-        (e: Event) => {
-          if (!(e.target as HTMLInputElement).files || !(e.target as HTMLInputElement).files![0]) {
-            reject(PhotoEditorErrors.cancel);
+      const cancelMethod = (e: Event) => {
+        inputFile!.removeEventListener('cancel', cancelMethod, false);
+        inputFile!.removeEventListener('change', changeMethod, false);
+
+        reject(PhotoEditorErrors.cancel);
+      };
+      const changeMethod = (e: Event) => {
+        inputFile!.removeEventListener('cancel', cancelMethod, false);
+        inputFile!.removeEventListener('change', changeMethod, false);
+
+        if (!(e.target as HTMLInputElement).files || !(e.target as HTMLInputElement).files![0]) {
+          reject(PhotoEditorErrors.cancel);
+        }
+        const file = (e.target as HTMLInputElement).files![0];
+        const reader = new FileReader();
+
+        reader.onload = (() => {
+          if (file.type.indexOf('image') < 0) {
+            reject(PhotoEditorErrors.type);
           }
-          const file = (e.target as HTMLInputElement).files![0];
-          const reader = new FileReader();
 
-          reader.onload = (() => {
-            if (file.type.indexOf('image') < 0) {
-              reject(PhotoEditorErrors.type);
-            }
+          return async (event) => {
+            inputFile.value = '';
+            const result = event.target!.result as string;
+            const data = await this.loadPhotoFromFilePath(result);
+            resolve([data]);
+          };
+        })();
 
-            return async (event) => {
-              inputFile.value = '';
-              const result = event.target!.result as string;
-              const data = await this.loadPhotoFromFilePath(result);
-              resolve([data]);
-            };
-          })();
+        reader.readAsDataURL(file);
+      };
 
-          reader.readAsDataURL(file);
-        },
-        false,
-      );
+      inputFile!.addEventListener('cancel', cancelMethod, false);
+      inputFile!.addEventListener('change', changeMethod, false);
       inputFile.click();
     });
   }
