@@ -45,7 +45,7 @@ import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-heade
   ],
 })
 export class VirtualScrollHeaderPage implements OnInit {
-  sourceIonIcons = iconsData.icons.map((icon) => icon.name).slice(0, 80);
+  sourceIonIcons = iconsData.icons.map((icon) => icon.name);
   platform = inject(Platform);
   private cdkScrollElement = viewChild(CdkVirtualScrollViewport);
 
