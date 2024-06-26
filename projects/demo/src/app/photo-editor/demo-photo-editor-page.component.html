@@ -3,19 +3,13 @@
     <ion-toolbar>
       <ion-title>ionic-angular-photo-editor</ion-title>
       <ion-buttons slot="end">
-        <ion-button href="https://github.com/rdlabo-team/ionic-angular-library"
-          ><ion-icon name="planet-outline" slot="start"></ion-icon>GitHub</ion-button
-        >
+        <ion-button color="dark" href="https://github.com/rdlabo-team/ionic-angular-library"
+          ><ion-icon name="logo-github" slot="icon-only"></ion-icon
+        ></ion-button>
       </ion-buttons>
     </ion-toolbar>
   </ion-header>
   <ion-content>
-    <ion-item color="dark" lines="none">
-      <ion-label class="ion-padding-top ion-padding-bottom">
-        <ion-note color="light">% npm install &#64;rdlabo/ionic-angular-photo-editor</ion-note>
-      </ion-label>
-    </ion-item>
-
     <ion-list>
       <ion-list-header><ion-label>Demo</ion-label></ion-list-header>
       <ion-item (click)="selectPhoto('viewer')" [button]="true"><ion-label>Select Photo and View</ion-label></ion-item>
