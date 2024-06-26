@@ -1,3 +1,14 @@
+ion-header.hidden {
+  ion-toolbar {
+    --border-width: 0;
+    --min-height: 0;
+    --background: transparent;
+    --border-color: transparent;
+    --padding-top: 0;
+    --padding-bottom: 0;
+  }
+}
+
 ion-header.native-header {
   &:not(.scroll-header-hidden) {
     & > ion-toolbar {

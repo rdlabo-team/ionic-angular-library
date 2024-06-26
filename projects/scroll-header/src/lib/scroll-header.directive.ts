@@ -2,7 +2,7 @@ import { Directive, ElementRef, HostListener, inject, OnInit } from '@angular/co
 import { IonContent, ScrollDetail } from '@ionic/angular/standalone';
 
 @Directive({
-  selector: '[appScrollHeader]',
+  selector: '[rdlaboScrollHeader]',
   standalone: true,
 })
 export class ScrollHeaderDirective implements OnInit {

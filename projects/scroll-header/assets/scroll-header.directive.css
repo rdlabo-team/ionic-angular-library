@@ -1,0 +1,72 @@
+ion-header.hidden ion-toolbar {
+  --border-width: 0;
+  --min-height: 0;
+  --background: transparent;
+  --border-color: transparent;
+  --padding-top: 0;
+  --padding-bottom: 0;
+}
+
+ion-header.native-header:not(.scroll-header-hidden) {
+  box-shadow: none;
+}
+ion-header.native-header:not(.scroll-header-hidden) > ion-toolbar {
+  --border-color: transparent;
+}
+
+ion-content ion-header,
+ion-content > cdk-virtual-scroll-viewport ion-header {
+  opacity: 1;
+}
+ion-content ion-header > ion-toolbar:first-of-type,
+ion-content > cdk-virtual-scroll-viewport ion-header > ion-toolbar:first-of-type {
+  padding-top: 0;
+}
+ion-content ion-header > ion-toolbar.large,
+ion-content > cdk-virtual-scroll-viewport ion-header > ion-toolbar.large {
+  padding-top: 20px;
+}
+ion-content ion-header > ion-toolbar.large ion-title,
+ion-content ion-header > ion-toolbar.large ion-text.title,
+ion-content > cdk-virtual-scroll-viewport ion-header > ion-toolbar.large ion-title,
+ion-content > cdk-virtual-scroll-viewport ion-header > ion-toolbar.large ion-text.title {
+  font-size: 1.5rem;
+  font-weight: bold;
+}
+ion-content ion-header > ion-toolbar.large ion-buttons[slot=end],
+ion-content > cdk-virtual-scroll-viewport ion-header > ion-toolbar.large ion-buttons[slot=end] {
+  margin-right: 8px;
+}
+ion-content:not(.scroll-header-fixed).scroll-header-sticky ion-header,
+ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky ion-header {
+  position: sticky;
+  top: 0;
+  will-change: transform, opacity;
+}
+ion-content:not(.scroll-header-fixed).scroll-header-sticky.scroll-header-animated ion-header,
+ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky.scroll-header-animated ion-header {
+  transition: transform 0.4s ease 0s, opacity 0.4s ease 0s;
+}
+ion-content:not(.scroll-header-fixed).scroll-header-sticky:not(.scroll-header-hidden) ion-header,
+ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky:not(.scroll-header-hidden) ion-header {
+  transform: translateY(0%);
+}
+ion-content:not(.scroll-header-fixed):not(.scroll-header-sticky).scroll-header-no-border ion-header,
+ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed):not(.scroll-header-sticky).scroll-header-no-border ion-header {
+  box-shadow: none;
+}
+ion-content:not(.scroll-header-fixed):not(.scroll-header-sticky).scroll-header-no-border ion-header > ion-toolbar,
+ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed):not(.scroll-header-sticky).scroll-header-no-border ion-header > ion-toolbar {
+  --border-color: transparent;
+}
+ion-content:not(.scroll-header-fixed).scroll-header-hidden ion-header,
+ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-hidden ion-header {
+  transform: translateY(-100%);
+  opacity: 0.2;
+}
+
+ion-content.scroll-header-hidden ion-button.get-current-timeline {
+  transform: translateY(-150%);
+}
+
+/*# sourceMappingURL=scroll-header.directive.css.map */

@@ -1,13 +1,19 @@
-<ion-header [translucent]="true">
-  <ion-toolbar>
-    <ion-title>virtual-scroll-header</ion-title>
-  </ion-toolbar>
+<ion-header class="hidden">
+  <ion-toolbar><ion-title></ion-title></ion-toolbar>
 </ion-header>
 
-<ion-content [fullscreen]="true">
-  <ion-header collapse="condense">
+<ion-content [scrollY]="false" rdlaboVirtualScrollHeader>
+  <ion-header>
     <ion-toolbar>
-      <ion-title size="large">virtual-scroll-header</ion-title>
+      <ion-title>virtual-scroll-header</ion-title>
     </ion-toolbar>
   </ion-header>
+  <cdk-virtual-scroll-viewport minBufferPx="900" maxBufferPx="1350" [itemSize]="44" class="ion-content-scroll-host">
+    <ion-list>
+      <ion-item *cdkVirtualFor="let item of sourceIonIcons; trackBy: trackByFn; let i = index">
+        <ion-icon slot="start" [name]="item"></ion-icon>
+        <ion-label>{{ item }}</ion-label>
+      </ion-item>
+    </ion-list>
+  </cdk-virtual-scroll-viewport>
 </ion-content>

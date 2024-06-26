@@ -4,7 +4,7 @@ import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { fromEvent, Subscription } from 'rxjs';
 
 @Directive({
-  selector: '[appVirtualScrollHeader]',
+  selector: '[rdlaboVirtualScrollHeader]',
   standalone: true,
 })
 export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {

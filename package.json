@@ -17,7 +17,7 @@
     "cap": "npm run build -- --configuration production && npx cap copy",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
     "prebuild:photo-editor": "ng build photo-editor --configuration=production",
-    "prebuild:scroll-header": "ng build scroll-header --configuration=production",
+    "prebuild:scroll-header": "sass projects/scroll-header/src/assets/scroll-header.directive.scss projects/scroll-header/css/scroll-header.directive.css && ng build scroll-header --configuration=production",
     "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header",
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node release.mjs"
@@ -44,7 +44,7 @@
     "zone.js": "~0.14.2"
   },
   "devDependencies": {
-    "@angular-devkit/build-angular": "^18.0.0",
+    "@angular-devkit/build-angular": "^18.0.5",
     "@angular/cli": "^18.0.0",
     "@angular/compiler-cli": "^18.0.0",
     "@capacitor/cli": "^6.0.0",

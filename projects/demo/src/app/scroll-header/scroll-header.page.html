@@ -1,13 +1,19 @@
-<ion-header [translucent]="true">
-  <ion-toolbar>
-    <ion-title>scroll-header</ion-title>
-  </ion-toolbar>
+<ion-header class="hidden">
+  <ion-toolbar></ion-toolbar>
 </ion-header>
-
-<ion-content [fullscreen]="true">
-  <ion-header collapse="condense">
+<ion-content rdlaboScrollHeader>
+  <ion-header>
     <ion-toolbar>
-      <ion-title size="large">scroll-header</ion-title>
+      <ion-title>scroll-header</ion-title>
     </ion-toolbar>
   </ion-header>
+  <ion-list>
+    <ion-list-header><ion-label>Ionicons</ion-label></ion-list-header>
+    @for (item of sourceIonIcons; track item) {
+      <ion-item>
+        <ion-icon slot="start" [name]="item"></ion-icon>
+        <ion-label>{{ item }}</ion-label>
+      </ion-item>
+    }
+  </ion-list>
 </ion-content>

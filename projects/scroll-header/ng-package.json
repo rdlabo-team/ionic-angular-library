@@ -3,5 +3,6 @@
   "dest": "../../dist/scroll-header",
   "lib": {
     "entryFile": "src/public-api.ts"
-  }
+  },
+  "assets": ["./css/**/*"]
 }
