@@ -6,7 +6,7 @@ import ImageEditor from 'tui-image-editor';
 import { filterPreset } from '../filter-preset';
 import { Subscription } from 'rxjs';
 import { toObservable } from '@angular/core/rxjs-interop';
-import { IDictionaryForEditor, IPhotoEditorDismiss, IFilter, ISize } from '../types';
+import { IDictionaryForEditor, IFilter, IPhotoEditorDismiss, ISize } from '../types';
 import { HelperService } from '../service/helper.service';
 import { ionComponents } from '../ion-components';
 import { dictionaryForEditor } from '../dictionaries';

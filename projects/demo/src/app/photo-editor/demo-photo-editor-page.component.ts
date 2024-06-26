@@ -17,7 +17,7 @@ import {
   IonToolbar,
   ModalController,
 } from '@ionic/angular/standalone';
-import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoFileService, PhotoViewerPage, PhotoEditorPage } from 'photo-editor';
+import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileService, PhotoViewerPage } from 'photo-editor';
 import { addIcons } from 'ionicons';
 import { planetOutline } from 'ionicons/icons';
 

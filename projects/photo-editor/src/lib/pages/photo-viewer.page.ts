@@ -1,14 +1,4 @@
-import {
-  Component,
-  CUSTOM_ELEMENTS_SCHEMA,
-  ElementRef,
-  inject,
-  Input,
-  OnDestroy,
-  OnInit,
-  ViewChild,
-  ViewEncapsulation,
-} from '@angular/core';
+import { Component, CUSTOM_ELEMENTS_SCHEMA, ElementRef, inject, Input, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { IonicSlides, ModalController } from '@ionic/angular/standalone';
 import { Navigation, Zoom } from 'swiper/modules';
 import { fromEvent, Subscription, throttleTime, withLatestFrom, zipWith } from 'rxjs';

@@ -7,11 +7,11 @@ import {
   cropOutline,
   expandOutline,
   refreshOutline,
+  removeOutline,
   send,
   squareOutline,
   sunnyOutline,
   tabletLandscapeOutline,
-  removeOutline,
 } from 'ionicons/icons';
 
 @Injectable()
