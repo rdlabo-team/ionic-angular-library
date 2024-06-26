@@ -18,6 +18,9 @@
     "paths": {
       "photo-editor": [
         "./dist/photo-editor"
+      ],
+      "scroll-header": [
+        "./dist/scroll-header"
       ]
     },
     "target": "ES2022",

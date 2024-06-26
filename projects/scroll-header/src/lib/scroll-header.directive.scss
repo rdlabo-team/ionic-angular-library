@@ -1,0 +1,80 @@
+ion-header.native-header {
+  &:not(.scroll-header-hidden) {
+    & > ion-toolbar {
+      --border-color: transparent;
+    }
+
+    box-shadow: none;
+  }
+}
+
+ion-content,
+ion-content > cdk-virtual-scroll-viewport {
+  ion-header {
+    opacity: 1;
+
+    & > ion-toolbar {
+      &:first-of-type {
+        // safe-area対応
+        padding-top: 0;
+      }
+      &.large {
+        padding-top: 20px;
+        ion-title,
+        ion-text.title {
+          font-size: 1.5rem;
+          font-weight: bold;
+        }
+        ion-buttons[slot='end'] {
+          margin-right: 8px;
+        }
+      }
+    }
+  }
+
+  &:not(.scroll-header-fixed) {
+    &.scroll-header-sticky {
+      ion-header {
+        position: sticky;
+        top: 0;
+        will-change: transform, opacity;
+      }
+      &.scroll-header-animated {
+        ion-header {
+          transition:
+            transform 0.4s ease 0s,
+            opacity 0.4s ease 0s;
+        }
+      }
+
+      &:not(.scroll-header-hidden) {
+        ion-header {
+          transform: translateY(0%);
+        }
+      }
+    }
+
+    &:not(.scroll-header-sticky).scroll-header-no-border {
+      ion-header {
+        & > ion-toolbar {
+          --border-color: transparent;
+        }
+
+        box-shadow: none;
+      }
+    }
+
+    &.scroll-header-hidden {
+      ion-header {
+        transform: translateY(-100%);
+        opacity: 0.2;
+      }
+    }
+  }
+}
+
+ion-content.scroll-header-hidden {
+  ion-button.get-current-timeline {
+    transform: translateY(-150%);
+  }
+}

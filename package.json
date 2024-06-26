@@ -16,7 +16,9 @@
     "test": "ng test",
     "cap": "npm run build -- --configuration production && npx cap copy",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
-    "prebuild": "ng build photo-editor --configuration=production",
+    "prebuild:photo-editor": "ng build photo-editor --configuration=production",
+    "prebuild:scroll-header": "ng build scroll-header --configuration=production",
+    "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header",
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node release.mjs"
   },
@@ -36,6 +38,7 @@
     "@capacitor/ios": "^6.0.0",
     "@ionic/angular": "^8.0.0",
     "@rdlabo/ionic-angular-photo-editor": "file:dist/photo-editor",
+    "@rdlabo/ionic-angular-scroll-header": "file:dist/scroll-header",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
     "zone.js": "~0.14.2"
@@ -61,5 +64,8 @@
     "prettier": "^3.1.1",
     "typescript": "~5.4.5",
     "write-pkg": "^7.0.0"
+  },
+  "peerDependencies": {
+    "@angular/cdk": "^18.0.0"
   }
 }
