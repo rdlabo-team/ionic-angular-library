@@ -153,6 +153,25 @@
     }
   },
   "cli": {
-    "analytics": false
+    "schematicCollections": ["@ionic/angular-toolkit"],
+    "analytics": "d798c364-4b03-4fed-88a1-24f2a20d600d"
+  },
+  "schematics": {
+    "@ionic/angular-toolkit:component": {
+      "styleext": "scss"
+    },
+    "@ionic/angular-toolkit:page": {
+      "styleext": "scss",
+      "standalone": true
+    },
+    "@schematics/angular:directive": {
+      "standalone": true
+    },
+    "@schematics/angular:component": {
+      "standalone": true
+    },
+    "@schematics/angular:pipe": {
+      "standalone": true
+    }
   }
 }

@@ -23,6 +23,7 @@ import {
   IonIcon,
   IonButtons,
   IonButton,
+  IonRouterOutlet,
 } from '@ionic/angular/standalone';
 import { addIcons } from 'ionicons';
 import { planetOutline } from 'ionicons/icons';
@@ -30,87 +31,8 @@ import { planetOutline } from 'ionicons/icons';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [
-    CommonModule,
-    RouterOutlet,
-    IonHeader,
-    IonToolbar,
-    IonContent,
-    IonList,
-    IonItem,
-    IonLabel,
-    IonTitle,
-    IonListHeader,
-    IonApp,
-    IonNote,
-    IonIcon,
-    IonButtons,
-    IonButton,
-  ],
+  imports: [IonRouterOutlet, IonApp],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
 })
-export class AppComponent {
-  private photoFileService = inject(PhotoFileService);
-  private modalCtrl = inject(ModalController);
-
-  constructor() {
-    this.photoFileService.photoMaxSize = 1000;
-    this.photoFileService.labels = {
-      camera: 'Camera',
-      album: 'Album',
-      cancel: 'Cancel',
-    };
-    addIcons({
-      planetOutline,
-    });
-  }
-
-  async ngOnInit() {}
-
-  async selectPhoto(type: 'editor' | 'viewer') {
-    if (type === 'editor') {
-      const data = await this.photoFileService.loadPhoto(1);
-      await this.launchEditor(data[0]);
-    } else {
-      const data = await this.photoFileService.loadPhoto(2);
-      await this.launchViewer(data);
-    }
-  }
-
-  async launchEditor(photoData: string = 'https://picsum.photos/200/300') {
-    const modal = await this.modalCtrl.create({
-      component: PhotoEditorPage,
-      componentProps: {
-        requireSquare: false,
-        value: photoData,
-      },
-    });
-    await modal.present();
-    const { data } = await modal.onWillDismiss<IPhotoEditorDismiss>();
-    if (data?.value) {
-      console.log(data.value);
-    }
-  }
-
-  async launchViewer(photoData: string[] = ['https://picsum.photos/200/300', 'https://picsum.photos/200/300']) {
-    const modal = await this.modalCtrl.create({
-      component: PhotoViewerPage,
-      componentProps: {
-        imageUrls: photoData,
-        index: 1,
-        isCircle: false,
-        enableDelete: true,
-        labels: {
-          delete: 'Delete',
-        },
-      },
-    });
-    await modal.present();
-    const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
-    if (data?.delete) {
-      console.log(data.delete);
-      // User delete image
-    }
-  }
-}
+export class AppComponent {}

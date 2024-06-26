@@ -48,6 +48,7 @@
     "@angular/cli": "^18.0.0",
     "@angular/compiler-cli": "^18.0.0",
     "@capacitor/cli": "^6.0.0",
+    "@ionic/angular-toolkit": "^11.0.1",
     "@types/jasmine": "~5.1.0",
     "child_process": "^1.0.2",
     "husky": "^8.0.3",
