@@ -9,7 +9,7 @@ npm install @rdlabo/ionic-angular-scroll-header
 ```
 
 And import CSS for directive:
-```diff:scss
+```diff
 + @import '@rdlabo/ionic-angular-scroll-header/css/scroll-header.directive.css';
 
 + /* If you use cdk virtual scroll */
@@ -93,7 +93,7 @@ But I preferred to explicitly set up ion-header and ion-toolbar for safe-area.
 
 it is possible: by adding `native-header` to the class name, you can have two Headers more smoothly.
 
-```diff:html
+```diff
 - <ion-header class="hidden"><ion-toolbar></ion-toolbar></ion-header>
 + <ion-header class="native-header">
 +   <ion-toolbar><ion-title>Native Header</ion-title></ion-toolbar>
