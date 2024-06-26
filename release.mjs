@@ -3,7 +3,7 @@ import path from 'path';
 import pkg from './package.json' assert { type: 'json' };
 import { exec } from 'child_process';
 
-const workspaces = ['photo-editor'];
+const workspaces = ['photo-editor', 'scroll-header'];
 
 workspaces.forEach(async (workspace) => {
   const buildPackagePath = path.resolve('./projects/' + workspace);
