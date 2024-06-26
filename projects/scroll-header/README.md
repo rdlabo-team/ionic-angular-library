@@ -1,24 +1,70 @@
-# ScrollHeader
+# @rdlabo/ionic-angular-scroll-header
 
-This library was generated with [Angular CLI](https://github.com/angular/angular-cli) version 18.0.0.
+This is directive for scroll with Header.
 
-## Code scaffolding
+## Installation
 
-Run `ng generate component component-name --project scroll-header` to generate a new component. You can also use `ng generate directive|pipe|service|class|guard|interface|enum|module --project scroll-header`.
-> Note: Don't forget to add `--project scroll-header` or else it will be added to the default project in your `angular.json` file. 
+```bash
+npm install @rdlabo/ionic-angular-scroll-header
+```
 
-## Build
+And import CSS for directive:
 
-Run `ng build scroll-header` to build the project. The build artifacts will be stored in the `dist/` directory.
+```diff:scss
++ @import '@rdlabo/ionic-angular-scroll-header/css/scroll-header.directive.css';
 
-## Publishing
++ /* If you use cdk virtual scroll */
++ cdk-virtual-scroll-viewport {
++   width: 100%;
++   height: 100%;
++   .cdk-virtual-scroll-content-wrapper {
++     position: relative;
++   }
++ }
+```
 
-After building your library with `ng build scroll-header`, go to the dist folder `cd dist/scroll-header` and run `npm publish`.
+## Usage
 
-## Running unit tests
+### Scroll of IonContent
 
-Run `ng test scroll-header` to execute the unit tests via [Karma](https://karma-runner.github.io).
+Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab2
+Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-header/scroll-header.page.html
 
-## Further help
+```html
+<ion-header class="hidden"><ion-toolbar></ion-toolbar></ion-header> <!-- set hidden header for safe-area -->
+<ion-content rdlaboScrollHeader>
+  <ion-header>
+    <ion-toolbar>...</ion-toolbar> <!-- Default Header for display -->
+  </ion-header>
+  ...Your Content
+</ion-content>
+```
 
-To get more help on the Angular CLI use `ng help` or go check out the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+### Scroll of CdkVirtualScroll (Angular Material)
+
+Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab3
+Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/virtual-scroll-header/virtual-scroll-header.page.html
+
+```html
+<ion-header class="hidden"><ion-toolbar></ion-toolbar></ion-header> <!-- set hidden header for safe-area -->
+<ion-content rdlaboVirtualScrollHeader>
+  <ion-header>
+    <ion-toolbar>...</ion-toolbar> <!-- Default Header for display -->
+  </ion-header>
+  <cdk-virtual-scroll-viewport minBufferPx="900" maxBufferPx="1350" [itemSize]="44" class="ion-content-scroll-host">
+    ...Your Content
+  </cdk-virtual-scroll-viewport>
+</ion-content>
+```
+
+# FQA
+## Why do I need to set hidden header for safe-area?
+Of course, it is also possible to set a safe-area in ion-content as follows.
+
+```css
+ion-content {
+  padding-top: var(--ion-safe-area-top, 0);
+}
+```
+
+But I preferred to explicitly set up ion-header and ion-toolbar for safe-area.
