@@ -31,6 +31,6 @@ cdk-virtual-scroll-viewport {
   width: 100%;
   height: 100%;
   .cdk-virtual-scroll-content-wrapper {
-    position: relative;
+    padding-top: inherit;
   }
 }

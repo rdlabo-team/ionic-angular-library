@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, effect, inject, OnInit, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -47,7 +47,24 @@ import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-heade
 export class VirtualScrollHeaderPage implements OnInit {
   sourceIonIcons = iconsData.icons.map((icon) => icon.name).slice(0, 80);
   platform = inject(Platform);
-  constructor() {}
+  private cdkScrollElement = viewChild(CdkVirtualScrollViewport);
+
+  constructor() {
+    /**
+     * for bug fix
+     * url: https://github.com/angular/components/issues/27104
+     */
+    effect(() => {
+      const nativeEl = this.cdkScrollElement()?.elementRef.nativeElement;
+      if (nativeEl) {
+        const last = nativeEl.lastElementChild;
+        if (nativeEl.firstElementChild && last) {
+          nativeEl.replaceChild(nativeEl.firstElementChild, nativeEl.lastElementChild);
+          nativeEl.insertBefore(last, nativeEl.firstElementChild);
+        }
+      }
+    });
+  }
 
   ngOnInit() {}
 

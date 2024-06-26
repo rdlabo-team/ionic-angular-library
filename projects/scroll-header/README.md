@@ -9,7 +9,6 @@ npm install @rdlabo/ionic-angular-scroll-header
 ```
 
 And import CSS for directive:
-
 ```diff:scss
 + @import '@rdlabo/ionic-angular-scroll-header/css/scroll-header.directive.css';
 
@@ -18,7 +17,7 @@ And import CSS for directive:
 +   width: 100%;
 +   height: 100%;
 +   .cdk-virtual-scroll-content-wrapper {
-+     position: relative;
++     padding-top: inherit;
 +   }
 + }
 ```
