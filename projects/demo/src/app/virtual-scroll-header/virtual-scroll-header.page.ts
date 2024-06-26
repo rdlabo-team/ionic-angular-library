@@ -1,4 +1,4 @@
-import { Component, OnInit } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -13,6 +13,7 @@ import {
   IonListHeader,
   IonTitle,
   IonToolbar,
+  Platform,
 } from '@ionic/angular/standalone';
 import { CdkFixedSizeVirtualScroll, CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import iconsData from 'ionicons/dist/ionicons.json';
@@ -44,7 +45,8 @@ import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-heade
   ],
 })
 export class VirtualScrollHeaderPage implements OnInit {
-  sourceIonIcons = iconsData.icons.map((icon) => icon.name).slice(0, 50);
+  sourceIonIcons = iconsData.icons.map((icon) => icon.name).slice(0, 80);
+  platform = inject(Platform);
   constructor() {}
 
   ngOnInit() {}

@@ -13,8 +13,14 @@
       </ion-buttons>
     </ion-toolbar>
   </ion-header>
-  <cdk-virtual-scroll-viewport minBufferPx="900" maxBufferPx="1350" [itemSize]="44" class="ion-content-scroll-host">
+  <cdk-virtual-scroll-viewport
+    minBufferPx="900"
+    maxBufferPx="1350"
+    [itemSize]="platform.is('ios') ? 44 : 47"
+    class="ion-content-scroll-host"
+  >
     <ion-list>
+      <ion-list-header><ion-label>Ionicons</ion-label></ion-list-header>
       <ion-item *cdkVirtualFor="let item of sourceIonIcons; trackBy: trackByFn; let i = index">
         <ion-icon slot="start" [name]="item"></ion-icon>
         <ion-label>{{ item }}</ion-label>

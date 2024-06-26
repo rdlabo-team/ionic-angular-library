@@ -1,5 +1,8 @@
 import { Routes } from '@angular/router';
 import { TabsPage } from './tabs.page';
+import { DemoPhotoEditorPage } from '../photo-editor/demo-photo-editor-page.component';
+import { ScrollHeaderPage } from '../scroll-header/scroll-header.page';
+import { VirtualScrollHeaderPage } from '../virtual-scroll-header/virtual-scroll-header.page';
 
 export const routes: Routes = [
   {
@@ -8,15 +11,15 @@ export const routes: Routes = [
     children: [
       {
         path: 'tab1',
-        loadComponent: () => import('../photo-editor/demo-photo-editor-page.component').then((m) => m.DemoPhotoEditorPage),
+        component: DemoPhotoEditorPage,
       },
       {
         path: 'tab2',
-        loadComponent: () => import('../scroll-header/scroll-header.page').then((m) => m.ScrollHeaderPage),
+        component: ScrollHeaderPage,
       },
       {
         path: 'tab3',
-        loadComponent: () => import('../virtual-scroll-header/virtual-scroll-header.page').then((m) => m.VirtualScrollHeaderPage),
+        component: VirtualScrollHeaderPage,
       },
       {
         path: '',
