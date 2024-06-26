@@ -29,6 +29,16 @@ And import CSS for directive:
 Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab2
 Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-header/scroll-header.page.html
 
+```ts
+import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
+@Component({
+  ...
+  imports: [
+    ScrollHeaderDirective
+  ],
+})
+```
+
 ```html
 <ion-header class="hidden"><ion-toolbar></ion-toolbar></ion-header> <!-- set hidden header for safe-area -->
 <ion-content rdlaboScrollHeader>
@@ -43,6 +53,17 @@ Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/
 
 Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab3
 Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/virtual-scroll-header/virtual-scroll-header.page.html
+
+```ts
+import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
+
+@Component({
+  ...
+  imports: [
+    VirtualScrollHeaderDirective
+  ],
+})
+```
 
 ```html
 <ion-header class="hidden"><ion-toolbar></ion-toolbar></ion-header> <!-- set hidden header for safe-area -->
