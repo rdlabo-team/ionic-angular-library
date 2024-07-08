@@ -17,7 +17,7 @@ import {
 } from '@ionic/angular/standalone';
 import { CdkFixedSizeVirtualScroll, CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import iconsData from 'ionicons/dist/ionicons.json';
-import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
+import { VirtualScrollHeaderDirective, FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
 
 @Component({
   selector: 'app-virtual-scroll-header',
@@ -42,6 +42,7 @@ import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-heade
     VirtualScrollHeaderDirective,
     IonButton,
     IonButtons,
+    FixVirtualScrollElementDirective,
   ],
 })
 export class VirtualScrollHeaderPage implements OnInit {
@@ -49,22 +50,7 @@ export class VirtualScrollHeaderPage implements OnInit {
   platform = inject(Platform);
   private cdkScrollElement = viewChild(CdkVirtualScrollViewport);
 
-  constructor() {
-    /**
-     * for bug fix
-     * url: https://github.com/angular/components/issues/27104
-     */
-    effect(() => {
-      const nativeEl = this.cdkScrollElement()?.elementRef.nativeElement;
-      if (nativeEl) {
-        const last = nativeEl.lastElementChild;
-        if (nativeEl.firstElementChild && last) {
-          nativeEl.replaceChild(nativeEl.firstElementChild, nativeEl.lastElementChild);
-          nativeEl.insertBefore(last, nativeEl.firstElementChild);
-        }
-      }
-    });
-  }
+  constructor() {}
 
   ngOnInit() {}
 

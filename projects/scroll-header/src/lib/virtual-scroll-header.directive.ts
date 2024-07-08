@@ -2,6 +2,7 @@ import { contentChild, Directive, ElementRef, inject, OnDestroy, OnInit } from '
 import { IonContent } from '@ionic/angular/standalone';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { fromEvent, Subscription } from 'rxjs';
+import { waitFindDom } from './helper';
 
 @Directive({
   selector: 'ion-content[rdlaboVirtualScrollHeader]',
@@ -23,8 +24,8 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
 
   async ngOnInit() {
     await Promise.all([
-      this.#waitFindDom(this.#elementRef.nativeElement, 'ion-header'),
-      this.#waitFindDom(this.#elementRef.nativeElement, 'cdk-virtual-scroll-viewport'),
+      waitFindDom(this.#elementRef.nativeElement, 'ion-header'),
+      waitFindDom(this.#elementRef.nativeElement, 'cdk-virtual-scroll-viewport'),
     ]);
 
     this.#scrollHeader = this.#elementRef.nativeElement.querySelector('ion-header');
@@ -106,17 +107,5 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
     }
 
     this.#beforeScrollTop = scrollOffset;
-  }
-
-  #waitFindDom(nativeElement: HTMLElement, selector: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const interval = setInterval(() => {
-        const find = nativeElement.querySelector(selector);
-        if (find) {
-          clearInterval(interval);
-          resolve();
-        }
-      });
-    });
   }
 }

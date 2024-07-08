@@ -1,5 +1,6 @@
 import { Directive, ElementRef, HostListener, inject, OnInit } from '@angular/core';
 import { IonContent, ScrollDetail } from '@ionic/angular/standalone';
+import { waitFindDom } from './helper';
 
 @Directive({
   selector: 'ion-content[rdlaboScrollHeader]',
@@ -16,7 +17,7 @@ export class ScrollHeaderDirective implements OnInit {
   constructor() {}
 
   async ngOnInit() {
-    await this.#waitFindDom(this.#elementRef.nativeElement, 'ion-header');
+    await waitFindDom(this.#elementRef.nativeElement, 'ion-header');
 
     this.#elementRef.nativeElement.scrollEvents = true;
     this.#scrollHeader = this.#elementRef.nativeElement.querySelector('ion-header');
@@ -86,17 +87,5 @@ export class ScrollHeaderDirective implements OnInit {
     }
 
     this.#beforeScrollTop = $event.detail.scrollTop;
-  }
-
-  #waitFindDom(nativeElement: HTMLElement, selector: string): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const interval = setInterval(() => {
-        const find = nativeElement.querySelector(selector);
-        if (find) {
-          clearInterval(interval);
-          resolve();
-        }
-      });
-    });
   }
 }

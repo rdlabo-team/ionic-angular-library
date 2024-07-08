@@ -77,6 +77,29 @@ import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-heade
 </ion-content>
 ```
 
+### Fix https://github.com/angular/components/issues/27104
+
+> bug(COMPONENT): CDK Virtual Scroller jump back/flickers to items on top #27104
+
+```ts
+import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
+
+@Component({
+  ...
+  imports: [
+  FixVirtualScrollElementDirective
+  ],
+})
+```
+
+```html
+<ion-content>
+  <cdk-virtual-scroll-viewport rdlaboFixVirtualScrollElement minBufferPx="900" maxBufferPx="1350" [itemSize]="44" class="ion-content-scroll-host">
+    ...Your Content
+  </cdk-virtual-scroll-viewport>
+</ion-content>
+```
+
 # FQA
 ## Why do I need to set hidden header for safe-area?
 Of course, it is also possible to set a safe-area in ion-content as follows.
