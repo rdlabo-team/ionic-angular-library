@@ -1,24 +1,54 @@
-# DynamicSizeVirtualScroll
+# @rdlabo/ngx-cdk-scroll-strategies
 
-This library was generated with [Angular CLI](https://github.com/angular/angular-cli) version 17.3.0.
+This is strategies of dynamic item size for `@angular/cdk/scrolling`. This allows you set specify each item size in the array to be used for Virtual Scroll.
 
-## Code scaffolding
+This is a simple coding concept:
 
-Run `ng generate component component-name --project dynamic-size-virtual-scroll` to generate a new component. You can also use `ng generate directive|pipe|service|class|guard|interface|enum|module --project dynamic-size-virtual-scroll`.
-> Note: Don't forget to add `--project dynamic-size-virtual-scroll` or else it will be added to the default project in your `angular.json` file. 
+```html
+<cdk-virtual-scroll-viewport [itemDynamicSizes]="[{ itemSize: 100 } , { itemSize: 80} , { itemSize: 90 } , { itemSize: 100}]">
+  <div *cdkVirtualFor="let item of [100, 80, 90, 100]; trackBy: trackByFn" [style.height.px]="item">
+    itemSize: {{ item }}
+  </div>
+</cdk-virtual-scroll-viewport>
+```
 
-## Build
+Use `[itemDynamicSizes]` directive instead of `[itemSize]` or `[autosize]` directive. `[itemDynamicSizes]` value's type is `itemDynamicSize[]`.
 
-Run `ng build dynamic-size-virtual-scroll` to build the project. The build artifacts will be stored in the `dist/` directory.
 
-## Publishing
+## Installation
 
-After building your library with `ng build dynamic-size-virtual-scroll`, go to the dist folder `cd dist/dynamic-size-virtual-scroll` and run `npm publish`.
+```bash
+npm install @rdlabo/ngx-cdk-scroll-strategies
+```
 
-## Running unit tests
+## Usage
 
-Run `ng test dynamic-size-virtual-scroll` to execute the unit tests via [Karma](https://karma-runner.github.io).
+Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab4
+Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/scroll-strategies.page.ts
 
-## Further help
+```ts
+import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
 
-To get more help on the Angular CLI use `ng help` or go check out the [Angular CLI Overview and Command Reference](https://angular.io/cli) page.
+@Component({
+  ...
+  imports: [
+    CdkDynamicSizeVirtualScroll
+  ],
+})
+export class ScrollStrategiesPage implements OnInit {
+  readonly items = signal<itemDynamicSize[]>([]);
+  readonly dynamicSize = computed<itemDynamicSize[]>(() => {
+    return this.items().map((item) => ({ trackId: item.trackId, itemSize: item.itemSize }));
+  });
+}
+```
+
+```html
+<cdk-virtual-scroll-viewport [itemDynamicSizes]="dynamicSize()" minBufferPx="900" maxBufferPx="1350">
+  <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
+    itemSize: {{ item.itemSize }}
+  </div>
+</cdk-virtual-scroll-viewport>
+```
+
+Other than this, it works the same way as `@angular/cdk/scroll`.
