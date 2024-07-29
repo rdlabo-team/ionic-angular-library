@@ -1,4 +1,4 @@
-import { calcIndex, itemDynamicSize } from './dynamic-size-virtual-scroll.directive';
+import { calcIndex, itemDynamicSize } from './dynamic-size-virtual-scroll-strategy';
 
 describe('DynamicSizeVirtualScrollStrategy', () => {
   const dynamicSizes: itemDynamicSize[] = [...Array(100)].map((_, i) => ({

@@ -3,4 +3,4 @@
  */
 
 export * from './lib/dynamic-size-virtual-scroll.service';
-export * from './lib/dynamic-size-virtual-scroll.directive';
+export * from './lib/dynamic-size-virtual-scroll-strategy';

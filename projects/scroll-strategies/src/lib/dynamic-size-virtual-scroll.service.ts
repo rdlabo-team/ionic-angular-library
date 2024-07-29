@@ -1,6 +1,6 @@
 import { computed, Injectable, Signal } from '@angular/core';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { itemDynamicSize } from './dynamic-size-virtual-scroll.directive';
+import { itemDynamicSize } from './dynamic-size-virtual-scroll-strategy';
 
 @Injectable({
   providedIn: 'root',

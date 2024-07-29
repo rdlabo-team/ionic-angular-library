@@ -18,6 +18,7 @@
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
     "prebuild:photo-editor": "ng build photo-editor --configuration=production",
     "prebuild:scroll-header": "sass projects/scroll-header/src/assets/scroll-header.directive.scss projects/scroll-header/css/scroll-header.directive.css && ng build scroll-header --configuration=production",
+    "prebuild:scroll-strategies": "ng build scroll-strategies --configuration=production",
     "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header",
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node release.mjs"
