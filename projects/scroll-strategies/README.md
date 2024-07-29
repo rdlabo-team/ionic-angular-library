@@ -51,7 +51,7 @@ export class ScrollStrategiesPage implements OnInit {
 </cdk-virtual-scroll-viewport>
 ```
 
-Other than this, it works the same way as `@angular/cdk/scroll`.
+Other than this, it works the same way as `@angular/cdk/scrolling`.
 
 
 # FQA
