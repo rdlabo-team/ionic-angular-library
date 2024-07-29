@@ -5,13 +5,13 @@ This is a photo editor and viewer for modal page of Ionic Angular project using 
 ## Installation
 
 ```bash
-npm install @rdlabo/ionic-angular-photo-editor
+npm install @rdlabo/ionic-angular-photo-editor 
 ```
 
 If you use capacitor, you need to install plugin:
 
 ```bash
-npm install @capacitor/camera
+npm install @capacitor/camera swiper tui-image-editor
 ```
 
 And set permission. more info is here: [Camera](https://capacitorjs.com/docs/apis/camera#android-configuration)
