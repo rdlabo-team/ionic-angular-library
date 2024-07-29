@@ -26,8 +26,8 @@ And import CSS for directive:
 
 ### Scroll of IonContent
 
-Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab2
-Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-header/scroll-header.page.html
+- Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab2
+- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-header/scroll-header.page.html
 
 ```ts
 import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';

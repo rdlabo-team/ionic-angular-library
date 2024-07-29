@@ -23,8 +23,8 @@ npm install @rdlabo/ngx-cdk-scroll-strategies
 
 ## Usage
 
-Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab4
-Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/scroll-strategies.page.ts
+- Demo: https://rdlabo-ionic-angular-library.netlify.app/tabs/tab4
+- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/scroll-strategies.page.ts
 
 ```ts
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
