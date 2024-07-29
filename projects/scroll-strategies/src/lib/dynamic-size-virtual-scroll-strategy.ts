@@ -196,7 +196,7 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
       if (endBuffer < this._minBufferPx && newRange.end != dataLength) {
         // const expandEnd = Math.ceil((this._maxBufferPx - endBuffer) / this._itemDynamicSize);
         const expandEnd =
-          endBuffer === 0 && dataLength > newRange.end
+          endBuffer === 0 && dataLength <= newRange.end
             ? dataLength - newRange.end
             : Math.ceil(calcIndex(this._itemDynamicSize, this._maxBufferPx - endBuffer, newRange.end));
 
