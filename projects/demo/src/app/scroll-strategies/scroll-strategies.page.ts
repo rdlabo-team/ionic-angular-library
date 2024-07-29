@@ -3,7 +3,9 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { IonContent, IonHeader, IonTitle, IonToolbar } from '@ionic/angular/standalone';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
+
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
+// import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '../../../../scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy';
 import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
 
 type Item = itemDynamicSize & {
