@@ -13,9 +13,18 @@
 </ion-header>
 
 <ion-content [scrollY]="false">
-  <cdk-virtual-scroll-viewport rdlaboFixVirtualScrollElement [itemDynamicSizes]="dynamicSize()" minBufferPx="900" maxBufferPx="1350">
+  <cdk-virtual-scroll-viewport
+    class="ion-content-scroll-host"
+    rdlaboFixVirtualScrollElement
+    [itemDynamicSizes]="dynamicSize()"
+    minBufferPx="900"
+    maxBufferPx="1350"
+  >
     <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
       itemSize: {{ item.itemSize }}
     </div>
+    <ion-infinite-scroll (ionInfinite)="loadInfinite($any($event))">
+      <ion-infinite-scroll-content></ion-infinite-scroll-content>
+    </ion-infinite-scroll>
   </cdk-virtual-scroll-viewport>
 </ion-content>

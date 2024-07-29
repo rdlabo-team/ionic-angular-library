@@ -1,10 +1,22 @@
 import { Component, computed, OnInit, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonTitle, IonToolbar } from '@ionic/angular/standalone';
+import {
+  IonBackButton,
+  IonButton,
+  IonButtons,
+  IonContent,
+  IonHeader,
+  IonIcon,
+  IonInfiniteScroll,
+  IonInfiniteScrollContent,
+  IonTitle,
+  IonToolbar,
+} from '@ionic/angular/standalone';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from 'scroll-strategies';
 import { FixVirtualScrollElementDirective } from 'scroll-header';
+import { InfiniteScrollCustomEvent } from '@ionic/angular';
 
 type Item = itemDynamicSize & {
   trackId: number;
@@ -30,6 +42,8 @@ type Item = itemDynamicSize & {
     IonButtons,
     IonIcon,
     IonBackButton,
+    IonInfiniteScroll,
+    IonInfiniteScrollContent,
   ],
 })
 export class ScrollSimplePage implements OnInit {
@@ -45,14 +59,24 @@ export class ScrollSimplePage implements OnInit {
   constructor() {}
 
   ngOnInit() {
-    this.items.set(
-      Array.from({ length: 10000 }).map((_, index) => {
-        return {
-          trackId: index,
-          itemSize: Math.floor(Math.random() * (this.max - this.min) + this.min),
-        };
-      }),
-    );
+    this.items.set(this.#createItems(500));
+  }
+
+  async loadInfinite(event: InfiniteScrollCustomEvent) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    this.items.update((items) => {
+      return [...items, ...this.#createItems(500)];
+    });
+    await event.target.complete();
+  }
+
+  #createItems(length: number) {
+    return Array.from({ length }).map((_, index) => {
+      return {
+        trackId: index,
+        itemSize: Math.floor(Math.random() * (this.max - this.min) + this.min),
+      };
+    });
   }
 
   trackByFn = (_: number, item: Item) => item.trackId;
