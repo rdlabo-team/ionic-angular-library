@@ -59,14 +59,14 @@ export class ScrollSimplePage implements OnInit {
   constructor() {}
 
   ngOnInit() {
-    this.items.set(this.#createItems(500));
+    this.items.set(this.#createItems(200));
   }
 
   async loadInfinite(event: InfiniteScrollCustomEvent) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     this.items.update((items) => {
       // You must create new array.
-      return [...items, ...this.#createItems(500)];
+      return [...items, ...this.#createItems(200)];
     });
     await event.target.complete();
   }
