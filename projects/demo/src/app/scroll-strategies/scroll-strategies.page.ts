@@ -34,6 +34,7 @@ export class ScrollStrategiesPage implements OnInit {
   readonly min = 20;
   readonly max = 80;
 
+  // Use signals for using computed.
   readonly items = signal<Item[]>([]);
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.items().map((item) => ({ trackId: item.trackId, itemSize: item.itemSize }));
