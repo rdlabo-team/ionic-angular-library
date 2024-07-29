@@ -1,7 +1,7 @@
 import { Component, computed, effect, OnInit, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { IonContent, IonHeader, IonTitle, IonToolbar } from '@ionic/angular/standalone';
+import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonTitle, IonToolbar } from '@ionic/angular/standalone';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
@@ -28,6 +28,9 @@ type Item = itemDynamicSize & {
     CdkVirtualForOf,
     CdkDynamicSizeVirtualScroll,
     FixVirtualScrollElementDirective,
+    IonButton,
+    IonButtons,
+    IonIcon,
   ],
 })
 export class ScrollStrategiesPage implements OnInit {
