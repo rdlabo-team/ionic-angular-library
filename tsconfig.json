@@ -16,8 +16,8 @@
     "moduleResolution": "node",
     "importHelpers": true,
     "paths": {
-      "dynamic-size-virtual-scroll": [
-        "./dist/dynamic-size-virtual-scroll"
+      "scroll-strategies": [
+        "./dist/scroll-strategies"
       ],
       "photo-editor": [
         "./dist/photo-editor"
