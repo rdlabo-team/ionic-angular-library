@@ -43,7 +43,7 @@ export class ScrollStrategiesPage implements OnInit {
 
   ngOnInit() {
     this.items.set(
-      Array.from({ length: 1000 }).map((_, index) => {
+      Array.from({ length: 10000 }).map((_, index) => {
         return {
           trackId: index,
           itemSize: Math.floor(Math.random() * (this.max - this.min) + this.min),
