@@ -7,35 +7,35 @@ import { ScrollStrategiesPage } from '../scroll-strategies/scroll-strategies.pag
 
 export const routes: Routes = [
   {
-    path: 'tabs',
+    path: 'main',
     component: TabsPage,
     children: [
       {
-        path: 'tab1',
+        path: 'photo-editor',
         component: DemoPhotoEditorPage,
       },
       {
-        path: 'tab2',
+        path: 'scroll-header',
         component: ScrollHeaderPage,
       },
       {
-        path: 'tab3',
+        path: 'virtual-scroll-header',
         component: VirtualScrollHeaderPage,
       },
       {
-        path: 'tab4',
+        path: 'scroll-strategies',
         component: ScrollStrategiesPage,
       },
       {
         path: '',
-        redirectTo: '/tabs/tab1',
+        redirectTo: '/main/photo-editor',
         pathMatch: 'full',
       },
     ],
   },
   {
     path: '',
-    redirectTo: '/tabs/tab1',
+    redirectTo: '/main/photo-editor',
     pathMatch: 'full',
   },
 ];
