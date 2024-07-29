@@ -1,0 +1,13 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-title>DynamicSizeVirtualScroll</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content [scrollY]="false">
+  <cdk-virtual-scroll-viewport rdlaboFixVirtualScrollElement [itemDynamicSizes]="dynamicSize()" minBufferPx="900" maxBufferPx="1350">
+    <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
+      itemSize: {{ item.itemSize }}
+    </div>
+  </cdk-virtual-scroll-viewport>
+</ion-content>

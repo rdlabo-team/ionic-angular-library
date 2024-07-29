@@ -16,6 +16,9 @@
     "moduleResolution": "node",
     "importHelpers": true,
     "paths": {
+      "scroll-strategies": [
+        "./dist/scroll-strategies"
+      ],
       "photo-editor": [
         "./dist/photo-editor"
       ],

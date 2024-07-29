@@ -18,7 +18,8 @@
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
     "prebuild:photo-editor": "ng build photo-editor --configuration=production",
     "prebuild:scroll-header": "sass projects/scroll-header/src/assets/scroll-header.directive.scss projects/scroll-header/css/scroll-header.directive.css && ng build scroll-header --configuration=production",
-    "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header",
+    "prebuild:scroll-strategies": "ng build scroll-strategies --configuration=production",
+    "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header && npm run prebuild:scroll-strategies",
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node release.mjs"
   },
@@ -39,6 +40,7 @@
     "@ionic/angular": "^8.0.0",
     "@rdlabo/ionic-angular-photo-editor": "file:dist/photo-editor",
     "@rdlabo/ionic-angular-scroll-header": "file:dist/scroll-header",
+    "@rdlabo/ngx-cdk-scroll-strategies": "file:dist/scroll-strategies",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0",
     "zone.js": "~0.14.2"
