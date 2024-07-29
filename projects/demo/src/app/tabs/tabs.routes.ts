@@ -3,7 +3,7 @@ import { TabsPage } from './tabs.page';
 import { DemoPhotoEditorPage } from '../photo-editor/demo-photo-editor-page.component';
 import { ScrollHeaderPage } from '../scroll-header/scroll-header.page';
 import { VirtualScrollHeaderPage } from '../virtual-scroll-header/virtual-scroll-header.page';
-import { ScrollStrategiesPage } from '../scroll-strategies/scroll-strategies.page';
+import { ScrollStrategiesPage } from '../scroll-strategies/pages/scroll-strategies/scroll-strategies.page';
 
 export const routes: Routes = [
   {
@@ -24,7 +24,7 @@ export const routes: Routes = [
       },
       {
         path: 'scroll-strategies',
-        component: ScrollStrategiesPage,
+        loadChildren: () => import('../scroll-strategies/scroll-strategies.routes').then((m) => m.routes),
       },
       {
         path: '',

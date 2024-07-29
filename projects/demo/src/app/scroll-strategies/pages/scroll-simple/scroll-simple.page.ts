@@ -1,21 +1,19 @@
-import { Component, computed, effect, OnInit, signal } from '@angular/core';
+import { Component, computed, OnInit, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonTitle, IonToolbar } from '@ionic/angular/standalone';
+import { IonBackButton, IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonTitle, IonToolbar } from '@ionic/angular/standalone';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-
-import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
-// import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '../../../../scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy';
-import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
+import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from 'scroll-strategies';
+import { FixVirtualScrollElementDirective } from 'scroll-header';
 
 type Item = itemDynamicSize & {
   trackId: number;
 };
 
 @Component({
-  selector: 'app-scroll-strategies',
-  templateUrl: './scroll-strategies.page.html',
-  styleUrls: ['./scroll-strategies.page.scss'],
+  selector: 'app-scroll-simple',
+  templateUrl: './scroll-simple.page.html',
+  styleUrls: ['./scroll-simple.page.scss'],
   standalone: true,
   imports: [
     IonContent,
@@ -31,9 +29,10 @@ type Item = itemDynamicSize & {
     IonButton,
     IonButtons,
     IonIcon,
+    IonBackButton,
   ],
 })
-export class ScrollStrategiesPage implements OnInit {
+export class ScrollSimplePage implements OnInit {
   readonly min = 20;
   readonly max = 80;
 
