@@ -65,6 +65,7 @@ export class ScrollSimplePage implements OnInit {
   async loadInfinite(event: InfiniteScrollCustomEvent) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     this.items.update((items) => {
+      // You must create new array.
       return [...items, ...this.#createItems(500)];
     });
     await event.target.complete();
