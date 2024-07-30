@@ -164,11 +164,11 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewWillLeave {
         name: Array.from({ length: 100 })
           .map(() => Math.random().toString(36))
           .join()
-          .slice(-nameLength),
+          .slice(-1 * nameLength),
         description: Array.from({ length: 100 })
           .map(() => Math.random().toString(36))
           .join()
-          .slice(-descriptionLength),
+          .slice(-1 * descriptionLength),
         photo: `https://picsum.photos/200?random=${index}`,
       };
     });
