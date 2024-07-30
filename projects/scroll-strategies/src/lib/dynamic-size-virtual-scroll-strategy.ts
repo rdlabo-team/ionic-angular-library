@@ -36,6 +36,9 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
   private _isReverse: boolean;
   measureScrollOffset: number = 0;
 
+  /** This is added for change dataLength **/
+  private _latestDataLength: number = 0;
+
   /**
    * @param itemSize The size of the items in the virtually scrolling list.
    * @param minBufferPx The minimum amount of buffer (in pixels) before needing to render more
@@ -196,7 +199,7 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
       if (endBuffer < this._minBufferPx && newRange.end != dataLength) {
         // const expandEnd = Math.ceil((this._maxBufferPx - endBuffer) / this._itemDynamicSize);
         const expandEnd =
-          endBuffer === 0 && newRange.start < newRange.end && dataLength > newRange.end
+          endBuffer === 0 && newRange.start < newRange.end && dataLength > newRange.end && dataLength === this._latestDataLength
             ? // When endBuffer is 0, but not the last item:
               dataLength - newRange.end
             : Math.ceil(calcIndex(this._itemDynamicSize, this._maxBufferPx - endBuffer, newRange.end));
@@ -249,6 +252,7 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
       this._viewport.setRenderedContentOffset(offset);
     }
     this.measureScrollOffset = scrollOffset;
+    this._latestDataLength = dataLength;
     this._scrolledIndexChange.next(firstVisibleIndex);
   }
 }
