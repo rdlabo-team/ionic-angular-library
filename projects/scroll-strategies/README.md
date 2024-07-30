@@ -77,8 +77,10 @@ If reverse scroll, add `isReverse` directive to `cdk-virtual-scroll-viewport` ta
 
 ```html
 <cdk-virtual-scroll-viewport [itemDynamicSizes]="dynamicSize()" [isReverse]="true" minBufferPx="900" maxBufferPx="1350">
-  <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
-    itemSize: {{ item.itemSize }}
+  <div class="reverse-items">
+    <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
+      itemSize: {{ item.itemSize }}
+    </div>
   </div>
 </cdk-virtual-scroll-viewport>
 ```
