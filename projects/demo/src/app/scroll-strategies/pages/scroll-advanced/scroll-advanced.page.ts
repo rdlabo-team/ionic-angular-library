@@ -99,7 +99,7 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewWillLeave {
      * In this case, sometimes Virtual Scroll is white screen.
      * Scroll amount restoration prevents this.
      */
-    this.#scroll.onInit(this.virtualScroll(), this.#latestScrollOffset);
+    this.#scroll.onInit(this.virtualScroll()!, this.#latestScrollOffset);
 
     this.#enterSubscription$.push(
       this.virtualScroll()!.scrolledIndexChange.subscribe(() => {
@@ -118,7 +118,7 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewWillLeave {
     /**
      * Save scroll amount for next view enter.
      */
-    this.#latestScrollOffset = this.#scroll.onDestroy(this.virtualScroll());
+    this.#latestScrollOffset = this.#scroll.onDestroy(this.virtualScroll()!);
     this.#enterSubscription$.forEach((subscription) => subscription.unsubscribe());
   }
 
