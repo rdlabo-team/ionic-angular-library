@@ -47,10 +47,6 @@ type Item = itemDynamicSize & {
   ],
 })
 export class ScrollSimplePage implements OnInit {
-  readonly min = 20;
-  readonly max = 80;
-
-  // Use signals for using computed.
   readonly items = signal<Item[]>([]);
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.items().map((item) => ({ trackId: item.trackId, itemSize: item.itemSize }));
@@ -75,7 +71,7 @@ export class ScrollSimplePage implements OnInit {
     return Array.from({ length }).map((_, index) => {
       return {
         trackId: index,
-        itemSize: Math.floor(Math.random() * (this.max - this.min) + this.min),
+        itemSize: Math.floor(Math.random() * (80 - 20) + 20),
       };
     });
   }

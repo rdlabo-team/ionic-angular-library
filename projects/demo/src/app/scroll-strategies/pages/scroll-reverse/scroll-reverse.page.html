@@ -11,5 +11,24 @@
     </ion-buttons>
   </ion-toolbar>
 </ion-header>
-
-<ion-content> </ion-content>
+<ion-content>
+  <cdk-virtual-scroll-viewport
+    rdlaboFixVirtualScrollElement
+    [itemDynamicSizes]="dynamicSize()"
+    [isReverse]="true"
+    [class.is-reverse]="true"
+    minBufferPx="900"
+    maxBufferPx="1350"
+  >
+    @if (this.isLoading) {
+      <div class="ion-text-center ion-padding">
+        <ion-spinner></ion-spinner>
+      </div>
+    }
+    <div class="reverse-items">
+      <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
+        itemSize: {{ item.itemSize }}
+      </div>
+    </div>
+  </cdk-virtual-scroll-viewport>
+</ion-content>
