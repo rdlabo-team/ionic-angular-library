@@ -8,7 +8,7 @@
 /* eslint-disable @angular-eslint/directive-class-suffix */
 
 import { coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
-import { Directive, forwardRef, Input, OnChanges } from '@angular/core';
+import { Directive, ElementRef, forwardRef, inject, Input, OnChanges } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import { distinctUntilChanged } from 'rxjs/operators';
 import { CdkVirtualScrollViewport, VIRTUAL_SCROLL_STRATEGY, VirtualScrollStrategy } from '@angular/cdk/scrolling';
@@ -371,7 +371,12 @@ export class CdkDynamicSizeVirtualScroll implements OnChanges {
   /** The scroll strategy used by this directive. */
   _scrollStrategy = new DynamicSizeVirtualScrollStrategy(this.itemDynamicSizes, this.minBufferPx, this.maxBufferPx, this.isReverse);
 
+  private el = inject(ElementRef);
+
   ngOnChanges() {
+    if (this.isReverse) {
+      this.el.nativeElement.classList.add('reverse-scroll');
+    }
     this._scrollStrategy.updateItemAndBufferSize(this.itemDynamicSizes, this.minBufferPx, this.maxBufferPx, this.isReverse);
   }
 

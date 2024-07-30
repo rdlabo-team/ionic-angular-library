@@ -16,7 +16,6 @@
     rdlaboFixVirtualScrollElement
     [itemDynamicSizes]="dynamicSize()"
     [isReverse]="true"
-    [class.is-reverse]="true"
     minBufferPx="900"
     maxBufferPx="1350"
   >
@@ -26,8 +25,8 @@
       </div>
     }
     <div class="reverse-items">
-      <div *cdkVirtualFor="let item of items(); trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
-        itemSize: {{ item.itemSize }}
+      <div *cdkVirtualFor="let item of items(); let i = index; trackBy: trackByFn" class="dynamic-item" [style.height.px]="item.itemSize">
+        itemSize: {{ item.itemSize }} / index: {{ i }}
       </div>
     </div>
   </cdk-virtual-scroll-viewport>

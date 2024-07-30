@@ -35,21 +35,12 @@ cdk-virtual-scroll-viewport {
     width: 100%;
   }
 
-  &.is-reverse {
+  &.reverse-scroll {
     display: flex;
     flex-direction: column-reverse;
 
     .cdk-virtual-scroll-content-wrapper {
       top: auto;
-      bottom: 0;
-    }
-
-    div.reverse-items {
-      height: 100%;
-      display: flex;
-      flex-direction: column-reverse;
-
-      position: relative;
       bottom: 0;
     }
   }
