@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-scroll-header",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "peerDependencies": {
     "@angular/cdk": "^18.0.0",
     "@angular/common": "^18.0.0",
