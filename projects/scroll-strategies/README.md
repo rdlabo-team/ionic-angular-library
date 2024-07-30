@@ -25,8 +25,10 @@ npm install @rdlabo/ngx-cdk-scroll-strategies
 
 ### Simple Usage
 
+> This is a simple example of how to use it.
+
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/simple
-- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-strategies
+- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-simple
 
 ```ts
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
@@ -57,11 +59,19 @@ Other than this, it works the same way as `@angular/cdk/scrolling`.
 
 ### Advanced Usage
 
+> This is a practical demo. Make scroll items separate components and get a height for each component.
+> It is difficult without basic knowledge of Angular.
+
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/advanced
 - Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-advanced
 
 
 ### Reverse Usage
+
+> This is a demo for reverse scrolling like WeChat.
+
+__In Reverse Scroll, CdkVirtualScrollViewport's measureScrollOffset does not work. Please use the scrollOffset of this directive.__
+https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts#L383-L386
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/reverse
 - Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-reverse
@@ -108,6 +118,16 @@ div.reverse-items {
   bottom: 0;
 }
 ```
+
+### Optional
+
+This package contains a Helper Service that simplifies development with Virtual Scroll.
+
+```ts
+import { DynamicSizeVirtualScrollService } from '@rdlabo/ngx-cdk-scroll-strategies';
+```
+
+Detail is here: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll.service.ts
 
 ## FQA
 ### Why don't use `autosize` directive?

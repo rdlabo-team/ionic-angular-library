@@ -51,8 +51,8 @@ import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
 
 ### Scroll of CdkVirtualScroll (Angular Material)
 
-Demo: https://rdlabo-ionic-angular-library.netlify.app/main/virtual-scroll-header
-Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/virtual-scroll-header/virtual-scroll-header.page.html
+- Demo: https://rdlabo-ionic-angular-library.netlify.app/main/virtual-scroll-header
+- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/virtual-scroll-header/virtual-scroll-header.page.html
 
 ```ts
 import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
