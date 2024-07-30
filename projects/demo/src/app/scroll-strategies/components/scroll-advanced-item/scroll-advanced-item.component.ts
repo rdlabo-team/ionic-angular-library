@@ -2,7 +2,6 @@ import { Component, effect, ElementRef, inject, input, OnInit, output } from '@a
 import { ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { IonAvatar, IonButton, IonButtons, IonIcon, IonImg, IonItem, IonLabel } from '@ionic/angular/standalone';
 import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
-import { closeOutline } from 'ionicons/icons';
 
 @Component({
   selector: 'app-scroll-advanced-item',

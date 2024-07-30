@@ -1,5 +1,4 @@
-import { inject, Injectable, signal } from '@angular/core';
-import { DOCUMENT } from '@angular/common';
+import { Injectable, signal } from '@angular/core';
 import { DynamicSizeCache, ScrollAdvancedItem } from './scroll-strategies.type';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { itemDynamicSize } from 'scroll-strategies';

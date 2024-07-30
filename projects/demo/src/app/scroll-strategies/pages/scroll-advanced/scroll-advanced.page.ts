@@ -22,11 +22,10 @@ import {
   IonTitle,
   IonToolbar,
   ViewDidEnter,
-  ViewDidLeave,
   ViewWillLeave,
 } from '@ionic/angular/standalone';
 import { InfiniteScrollCustomEvent, RefresherCustomEvent } from '@ionic/angular';
-import { DynamicSizeCache, ScrollAdvancedItem } from '../../scroll-strategies.type';
+import { ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { CdkDynamicSizeVirtualScroll, DynamicSizeVirtualScrollService, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
 // import {

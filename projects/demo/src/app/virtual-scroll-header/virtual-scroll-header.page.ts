@@ -1,4 +1,4 @@
-import { Component, effect, inject, OnInit, viewChild } from '@angular/core';
+import { Component, inject, OnInit, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -17,7 +17,7 @@ import {
 } from '@ionic/angular/standalone';
 import { CdkFixedSizeVirtualScroll, CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import iconsData from 'ionicons/dist/ionicons.json';
-import { VirtualScrollHeaderDirective, FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
+import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
 
 @Component({
   selector: 'app-virtual-scroll-header',

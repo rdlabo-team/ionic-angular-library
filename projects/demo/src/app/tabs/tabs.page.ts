@@ -1,6 +1,5 @@
 import { Component, EnvironmentInjector, inject } from '@angular/core';
 import { IonIcon, IonLabel, IonTabBar, IonTabButton, IonTabs } from '@ionic/angular/standalone';
-import { ellipse, square, triangle } from 'ionicons/icons';
 
 @Component({
   selector: 'app-tabs',

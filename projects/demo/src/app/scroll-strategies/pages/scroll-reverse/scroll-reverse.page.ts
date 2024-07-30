@@ -19,7 +19,6 @@ import {
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from 'scroll-strategies';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { FixVirtualScrollElementDirective } from 'scroll-header';
-import { InfiniteScrollCustomEvent } from '@ionic/angular';
 import { Subscription } from 'rxjs';
 
 type Item = itemDynamicSize & {
