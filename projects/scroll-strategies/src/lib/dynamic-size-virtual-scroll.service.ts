@@ -10,16 +10,28 @@ export class DynamicSizeVirtualScrollService {
 
   constructor() {}
 
+  /*
+   * iOS smooth scroll can scroll after transition end.
+   * In this case, sometimes Virtual Scroll is white screen.
+   * Scroll amount restoration prevents this.
+   */
   onInit(virtualScroll: CdkVirtualScrollViewport, latestScrollOffset: number) {
     if (latestScrollOffset > 0) {
       virtualScroll.scrollToOffset(latestScrollOffset);
     }
   }
 
+  /**
+   * Save scroll amount for next view enter.
+   */
   onDestroy(virtualScroll: CdkVirtualScrollViewport): number {
     return virtualScroll.measureScrollOffset('top');
   }
 
+  /**
+   * Change itemDynamicSize[] to style.height[].
+   * require itemDynamicSize has 'source' and 'itemSize'.
+   */
   getBindDynamicItemHeight($calcDynamicItemSize: Signal<itemDynamicSize[]>): Signal<string[]> {
     return computed<string[]>(() => {
       return $calcDynamicItemSize().map((item) => {
@@ -28,21 +40,37 @@ export class DynamicSizeVirtualScrollService {
     });
   }
 
-  async scrollToTopSmooth(virtualScroll: CdkVirtualScrollViewport): Promise<void> {
-    await this.scrollToPoint(virtualScroll, 0, 0, 400);
-  }
-
+  /**
+   * If change the array of hidden areas during scrolling,
+   * a layout shift will occur. (If not reverse, refers to the array located above the display area.)
+   * This function confirms that it is OK to change the array.
+   */
   isEnableMerge(virtualScroll: CdkVirtualScrollViewport): boolean {
     return virtualScroll.getRenderedRange().start === 0 && virtualScroll.measureScrollOffset('top') < this.mergeScrollY;
   }
 
+  /**
+   * When an array is destructively replaced,
+   * the height of the viewport may remain the same as the sum of the previous array.
+   * This force it to be initialized.
+   */
   refreshViewport(virtualScroll: CdkVirtualScrollViewport): void {
     virtualScroll.scrollToOffset(0);
     virtualScroll.setRenderedContentOffset(0);
     virtualScroll.setRenderedRange({ start: 0, end: 0 });
   }
 
-  // https://github.com/ionic-team/ionic-framework/blob/main/core/src/components/content/content.tsx#L357C3-L404C4
+  /**
+   * This is for smooth scrolling to the top.
+   */
+  async scrollToTopSmooth(virtualScroll: CdkVirtualScrollViewport): Promise<void> {
+    await this.scrollToPoint(virtualScroll, 0, 0, 400);
+  }
+
+  /**
+   * This is for smooth scrolling to a specific point.
+   * https://github.com/ionic-team/ionic-framework/blob/main/core/src/components/content/content.tsx#L357C3-L404C4
+   */
   async scrollToPoint(
     el: CdkVirtualScrollViewport,
     x: number | undefined | null,

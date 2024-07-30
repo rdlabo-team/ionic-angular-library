@@ -6,3 +6,10 @@ div.reverse-items {
   position: relative;
   bottom: 0;
 }
+
+.dynamic-item {
+  border-bottom: 1px solid #f0f0f0;
+  padding-left: 16px;
+  display: flex;
+  align-items: center;
+}

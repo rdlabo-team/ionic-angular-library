@@ -71,6 +71,9 @@ export class ScrollReversePage implements OnInit, ViewDidEnter, ViewDidLeave {
   ionViewDidEnter() {
     this.#enterSubscription$.push(
       this.virtualScroll()!.scrolledIndexChange.subscribe(async (index) => {
+        /**
+         * For infinite scroll. If renderRange.end is the last index of the rendered items, then add new items.
+         */
         if (this.isReady && !this.isLoading && this.virtualScroll()!.getRenderedRange().end === this.virtualScroll()!.getDataLength()) {
           this.isLoading = true;
           await new Promise((resolve) => setTimeout(resolve, 500));
