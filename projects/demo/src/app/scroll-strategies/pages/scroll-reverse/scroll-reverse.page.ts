@@ -16,9 +16,9 @@ import {
   ViewDidEnter,
   ViewDidLeave,
 } from '@ionic/angular/standalone';
-import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from 'scroll-strategies';
+import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { FixVirtualScrollElementDirective } from 'scroll-header';
+import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
 import { Subscription } from 'rxjs';
 
 type Item = itemDynamicSize & {
