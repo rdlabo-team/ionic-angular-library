@@ -7,6 +7,8 @@ import {
   IonButton,
   IonButtons,
   IonContent,
+  IonFab,
+  IonFabButton,
   IonHeader,
   IonIcon,
   IonImg,
@@ -15,12 +17,15 @@ import {
   IonItem,
   IonLabel,
   IonList,
+  IonRefresher,
+  IonRefresherContent,
   IonTitle,
   IonToolbar,
   ViewDidEnter,
   ViewDidLeave,
+  ViewWillLeave,
 } from '@ionic/angular/standalone';
-import { InfiniteScrollCustomEvent } from '@ionic/angular';
+import { InfiniteScrollCustomEvent, RefresherCustomEvent } from '@ionic/angular';
 import { DynamicSizeCache, ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { CdkDynamicSizeVirtualScroll, DynamicSizeVirtualScrollService, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
@@ -62,15 +67,21 @@ import { Subscription } from 'rxjs';
     IonImg,
     IonLabel,
     ScrollAdvancedItemComponent,
+    IonFab,
+    IonFabButton,
+    IonRefresher,
+    IonRefresherContent,
   ],
 })
-export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
+export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewWillLeave {
   readonly virtualScroll = viewChild(CdkVirtualScrollViewport);
   readonly #enterSubscription$: Subscription[] = [];
 
+  /** This is included @rdlabo/ngx-cdk-scroll-strategies **/
   readonly #scroll = inject(DynamicSizeVirtualScrollService);
   readonly #calcService = inject(ScrollAdvancedCalcService);
 
+  #latestScrollOffset = 0;
   readonly items = signal<ScrollAdvancedItem[]>([]);
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.#calcService.changeItemsToDynamicItemSize(this.items(), this.#calcService.cacheCalcDynamic(), this.virtualScroll());
@@ -83,8 +94,18 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
   }
 
   ionViewDidEnter() {
+    /*
+     * iOS smooth scroll can scroll after transition end.
+     * In this case, sometimes Virtual Scroll is white screen.
+     * Scroll amount restoration prevents this.
+     */
+    this.#scroll.onInit(this.virtualScroll(), this.#latestScrollOffset);
+
     this.#enterSubscription$.push(
       this.virtualScroll()!.scrolledIndexChange.subscribe(() => {
+        /**
+         * If scroll index is changed and number of calc items, update cacheCalcDynamic for notify to computed.
+         */
         if (this.#calcService.beforeCacheCalcDynamicSize() !== this.#calcService.cacheCalcDynamic().length) {
           this.#calcService.cacheCalcDynamic.update((cache) => [...cache]);
           this.#calcService.beforeCacheCalcDynamicSize.set(this.#calcService.cacheCalcDynamic().length);
@@ -93,7 +114,11 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
     );
   }
 
-  ionViewDidLeave() {
+  ionViewWillLeave() {
+    /**
+     * Save scroll amount for next view enter.
+     */
+    this.#latestScrollOffset = this.#scroll.onDestroy(this.virtualScroll());
     this.#enterSubscription$.forEach((subscription) => subscription.unsubscribe());
   }
 
@@ -103,10 +128,23 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
     });
   }
 
+  async toTop() {
+    await this.#scroll.scrollToTopSmooth(this.virtualScroll()!);
+  }
+
+  async refreshAllItems(event: RefresherCustomEvent) {
+    this.items.set(this.#createItems(100));
+    await event.target.complete();
+
+    /**
+     * Refresh viewport after destroy items.
+     */
+    this.#scroll.refreshViewport(this.virtualScroll()!);
+  }
+
   async loadInfinite(event: InfiniteScrollCustomEvent) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     this.items.update((items) => {
-      // You must create new array.
       return [...items, ...this.#createItems(100)];
     });
     await event.target.complete();

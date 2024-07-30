@@ -18,7 +18,6 @@ import {
   ModalController,
 } from '@ionic/angular/standalone';
 import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileService, PhotoViewerPage } from 'photo-editor';
-import { addIcons } from 'ionicons';
 import { planetOutline } from 'ionicons/icons';
 
 @Component({
@@ -55,9 +54,6 @@ export class DemoPhotoEditorPage implements OnInit {
       album: 'Album',
       cancel: 'Cancel',
     };
-    addIcons({
-      planetOutline,
-    });
   }
 
   async ngOnInit() {}

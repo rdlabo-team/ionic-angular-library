@@ -13,6 +13,10 @@
 </ion-header>
 
 <ion-content [scrollY]="false">
+  <ion-refresher slot="fixed" (ionRefresh)="refreshAllItems($any($event))">
+    <ion-refresher-content></ion-refresher-content>
+  </ion-refresher>
+
   <cdk-virtual-scroll-viewport
     class="ion-content-scroll-host"
     rdlaboFixVirtualScrollElement
@@ -29,4 +33,9 @@
       <ion-infinite-scroll-content></ion-infinite-scroll-content>
     </ion-infinite-scroll>
   </cdk-virtual-scroll-viewport>
+  <ion-fab slot="fixed" vertical="bottom" horizontal="end">
+    <ion-fab-button (click)="toTop()">
+      <ion-icon name="arrow-up-outline"></ion-icon>
+    </ion-fab-button>
+  </ion-fab>
 </ion-content>

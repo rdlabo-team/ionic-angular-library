@@ -2,7 +2,6 @@ import { Component, effect, ElementRef, inject, input, OnInit, output } from '@a
 import { ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { IonAvatar, IonButton, IonButtons, IonIcon, IonImg, IonItem, IonLabel } from '@ionic/angular/standalone';
 import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
-import { addIcons } from 'ionicons';
 import { closeOutline } from 'ionicons/icons';
 
 @Component({
@@ -13,13 +12,12 @@ import { closeOutline } from 'ionicons/icons';
   imports: [IonItem, IonAvatar, IonImg, IonLabel, IonButtons, IonButton, IonIcon],
 })
 export class ScrollAdvancedItemComponent implements OnInit {
-  item = input<ScrollAdvancedItem>();
+  item = input.required<ScrollAdvancedItem>();
   delete = output<string>();
   #el = inject(ElementRef);
   #calcService = inject(ScrollAdvancedCalcService);
 
   constructor() {
-    addIcons({ closeOutline });
     effect(() =>
       (async (item: ScrollAdvancedItem | undefined) => {
         if (item === undefined) {
