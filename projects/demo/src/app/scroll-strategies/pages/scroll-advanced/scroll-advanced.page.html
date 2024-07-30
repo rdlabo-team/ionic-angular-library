@@ -22,7 +22,7 @@
   >
     <ion-list>
       <ng-container *cdkVirtualFor="let item of items(); let i = index; trackBy: trackByFn">
-        <app-scroll-advanced-item [item]="item" (delete)="deleteItem($event)" class="dynamic-item"></app-scroll-advanced-item>
+        <app-scroll-advanced-item [item]="item" (delete)="deleteItem($event)"></app-scroll-advanced-item>
       </ng-container>
     </ion-list>
     <ion-infinite-scroll (ionInfinite)="loadInfinite($any($event))">
