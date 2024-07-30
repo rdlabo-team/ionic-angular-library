@@ -70,9 +70,6 @@ Other than this, it works the same way as `@angular/cdk/scrolling`.
 
 > This is a demo for reverse scrolling like WeChat.
 
-__In Reverse Scroll, CdkVirtualScrollViewport's measureScrollOffset does not work. Please use the scrollOffset of this directive.__
-https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts#L383-L386
-
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/reverse
 - Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-reverse
 
@@ -118,6 +115,9 @@ div.reverse-items {
   bottom: 0;
 }
 ```
+
+__In Reverse Scroll, CdkVirtualScrollViewport's measureScrollOffset does not work. Please use the scrollOffset of this directive.__
+https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts#L383-L386
 
 ### Optional
 
