@@ -19,13 +19,17 @@ import {
   IonToolbar,
   ViewDidEnter,
   ViewDidLeave,
-  ViewWillEnter,
 } from '@ionic/angular/standalone';
-import { CdkDynamicSizeVirtualScroll, DynamicSizeVirtualScrollService, itemDynamicSize } from 'scroll-strategies';
 import { InfiniteScrollCustomEvent } from '@ionic/angular';
 import { DynamicSizeCache, ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { FixVirtualScrollElementDirective } from 'scroll-header';
+import { CdkDynamicSizeVirtualScroll, DynamicSizeVirtualScrollService, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
+// import {
+//   CdkDynamicSizeVirtualScroll,
+//   DynamicSizeVirtualScrollService,
+//   itemDynamicSize
+// } from '../../../../../../scroll-strategies/src/public-api';
+import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
 import { ScrollAdvancedItemComponent } from '../../components/scroll-advanced-item/scroll-advanced-item.component';
 import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
 import { Subscription } from 'rxjs';
@@ -68,11 +72,9 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
   readonly #calcService = inject(ScrollAdvancedCalcService);
 
   readonly items = signal<ScrollAdvancedItem[]>([]);
-  readonly page = signal<number>(0);
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.#calcService.changeItemsToDynamicItemSize(this.items(), this.#calcService.cacheCalcDynamic(), this.virtualScroll());
   });
-  readonly bindDynamicItemHeight = this.#scroll.getBindDynamicItemHeight(this.dynamicSize);
 
   constructor() {}
 
@@ -95,6 +97,12 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
     this.#enterSubscription$.forEach((subscription) => subscription.unsubscribe());
   }
 
+  deleteItem(trackId: string) {
+    this.items.update((items) => {
+      return items.filter((item) => item.trackId !== trackId);
+    });
+  }
+
   async loadInfinite(event: InfiniteScrollCustomEvent) {
     await new Promise((resolve) => setTimeout(resolve, 500));
     this.items.update((items) => {
@@ -104,6 +112,10 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
     await event.target.complete();
   }
 
+  /**
+   * Create items for demo. This is not a part of the library.
+   */
+  readonly page = signal<number>(0);
   #createItems(length: number): ScrollAdvancedItem[] {
     this.page.update((page) => page + 1);
     return Array.from({ length }).map((_, index) => {
@@ -123,6 +135,5 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewDidLeave {
       };
     });
   }
-
   trackByFn = (_: number, item: ScrollAdvancedItem) => item.trackId;
 }

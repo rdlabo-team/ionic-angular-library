@@ -1,21 +1,25 @@
-import { Component, effect, ElementRef, inject, input, OnInit } from '@angular/core';
+import { Component, effect, ElementRef, inject, input, OnInit, output } from '@angular/core';
 import { ScrollAdvancedItem } from '../../scroll-strategies.type';
-import { IonAvatar, IonImg, IonItem, IonLabel } from '@ionic/angular/standalone';
+import { IonAvatar, IonButton, IonButtons, IonIcon, IonImg, IonItem, IonLabel } from '@ionic/angular/standalone';
 import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
+import { addIcons } from 'ionicons';
+import { closeOutline } from 'ionicons/icons';
 
 @Component({
   selector: 'app-scroll-advanced-item',
   templateUrl: './scroll-advanced-item.component.html',
   styleUrls: ['./scroll-advanced-item.component.scss'],
   standalone: true,
-  imports: [IonItem, IonAvatar, IonImg, IonLabel],
+  imports: [IonItem, IonAvatar, IonImg, IonLabel, IonButtons, IonButton, IonIcon],
 })
 export class ScrollAdvancedItemComponent implements OnInit {
   item = input<ScrollAdvancedItem>();
+  delete = output<string>();
   #el = inject(ElementRef);
   #calcService = inject(ScrollAdvancedCalcService);
 
   constructor() {
+    addIcons({ closeOutline });
     effect(() =>
       (async (item: ScrollAdvancedItem | undefined) => {
         if (item === undefined) {
@@ -38,4 +42,8 @@ export class ScrollAdvancedItemComponent implements OnInit {
   }
 
   ngOnInit() {}
+
+  deleteItem(trackId: string) {
+    this.delete.emit(trackId);
+  }
 }

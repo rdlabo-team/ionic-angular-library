@@ -21,9 +21,9 @@
     maxBufferPx="1350"
   >
     <ion-list>
-      <div *cdkVirtualFor="let item of items(); let i = index; trackBy: trackByFn">
-        <app-scroll-advanced-item [item]="item" [style.height]="bindDynamicItemHeight()[i]" class="dynamic-item"></app-scroll-advanced-item>
-      </div>
+      <ng-container *cdkVirtualFor="let item of items(); let i = index; trackBy: trackByFn">
+        <app-scroll-advanced-item [item]="item" (delete)="deleteItem($event)" class="dynamic-item"></app-scroll-advanced-item>
+      </ng-container>
     </ion-list>
     <ion-infinite-scroll (ionInfinite)="loadInfinite($any($event))">
       <ion-infinite-scroll-content></ion-infinite-scroll-content>

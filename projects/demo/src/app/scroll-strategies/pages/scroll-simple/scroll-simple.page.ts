@@ -14,8 +14,8 @@ import {
   IonToolbar,
 } from '@ionic/angular/standalone';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from 'scroll-strategies';
-import { FixVirtualScrollElementDirective } from 'scroll-header';
+import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
+import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';
 import { InfiniteScrollCustomEvent } from '@ionic/angular';
 
 type Item = itemDynamicSize & {

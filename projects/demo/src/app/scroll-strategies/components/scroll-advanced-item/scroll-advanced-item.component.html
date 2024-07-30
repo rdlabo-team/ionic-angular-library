@@ -1,9 +1,12 @@
 <ion-item>
   <ion-avatar slot="start">
-    <ion-img [src]="item()?.photo"></ion-img>
+    <ion-img [src]="item()!.photo"></ion-img>
   </ion-avatar>
   <ion-label class="ion-text-wrap">
-    <h2>{{ item()?.name }}</h2>
-    <p>{{ item()?.description }}</p>
+    <h2>{{ item()!.name }}</h2>
+    <p>{{ item()!.description }}</p>
   </ion-label>
+  <ion-buttons slot="end">
+    <ion-button (click)="deleteItem(item()!.trackId)"><ion-icon name="close-outline" slot="icon-only"></ion-icon></ion-button>
+  </ion-buttons>
 </ion-item>
