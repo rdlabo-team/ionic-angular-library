@@ -71,7 +71,7 @@ export class ScrollSimplePage implements OnInit {
     await event.target.complete();
   }
 
-  #createItems(length: number) {
+  #createItems(length: number): Item[] {
     return Array.from({ length }).map((_, index) => {
       return {
         trackId: index,
