@@ -5,7 +5,6 @@ import * as allIcons from 'ionicons/icons';
 
 @Component({
   selector: 'app-root',
-  standalone: true,
   imports: [IonRouterOutlet, IonApp],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',

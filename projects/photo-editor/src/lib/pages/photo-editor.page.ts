@@ -15,7 +15,6 @@ import { dictionaryForEditor } from '../dictionaries';
   selector: 'app-editor-image',
   templateUrl: './photo-editor.page.html',
   styleUrls: ['./core.scss', './photo-editor.page.scss'],
-  standalone: true,
   imports: [CommonModule, FormsModule, NgOptimizedImage, ...ionComponents],
   providers: [HelperService],
 })

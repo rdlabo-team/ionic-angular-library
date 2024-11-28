@@ -20,7 +20,6 @@ import { RouterLink } from '@angular/router';
   selector: 'app-scroll-strategies',
   templateUrl: './scroll-strategies.page.html',
   styleUrls: ['./scroll-strategies.page.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,

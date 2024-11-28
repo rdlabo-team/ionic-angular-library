@@ -42,7 +42,6 @@ import { Subscription } from 'rxjs';
   selector: 'app-scroll-advanced',
   templateUrl: './scroll-advanced.page.html',
   styleUrls: ['./scroll-advanced.page.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,

@@ -22,7 +22,6 @@ import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
   selector: 'app-scroll-header',
   templateUrl: './scroll-header.page.html',
   styleUrls: ['./scroll-header.page.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,

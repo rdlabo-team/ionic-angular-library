@@ -23,7 +23,6 @@ import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileSer
   selector: 'app-photo-editor',
   templateUrl: './demo-photo-editor-page.component.html',
   styleUrls: ['./demo-photo-editor-page.component.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,

@@ -23,7 +23,6 @@ import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '
   selector: 'app-virtual-scroll-header',
   templateUrl: './virtual-scroll-header.page.html',
   styleUrls: ['./virtual-scroll-header.page.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,

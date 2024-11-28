@@ -7,7 +7,6 @@ import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
   selector: 'app-scroll-advanced-item',
   templateUrl: './scroll-advanced-item.component.html',
   styleUrls: ['./scroll-advanced-item.component.scss'],
-  standalone: true,
   imports: [IonItem, IonAvatar, IonImg, IonLabel, IonButtons, IonButton, IonIcon],
 })
 export class ScrollAdvancedItemComponent implements OnInit {

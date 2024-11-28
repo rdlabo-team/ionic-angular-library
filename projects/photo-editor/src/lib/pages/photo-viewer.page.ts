@@ -14,7 +14,6 @@ import { dictionaryForViewer } from '../dictionaries';
   selector: 'app-photo-image',
   templateUrl: './photo-viewer.page.html',
   styleUrls: ['./core.scss', './photo-viewer.page.scss'],
-  standalone: true,
   imports: [NgFor, NgIf, ...ionComponents],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
   providers: [HelperService],

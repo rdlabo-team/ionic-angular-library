@@ -26,7 +26,6 @@ type Item = itemDynamicSize & {
   selector: 'app-scroll-simple',
   templateUrl: './scroll-simple.page.html',
   styleUrls: ['./scroll-simple.page.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,

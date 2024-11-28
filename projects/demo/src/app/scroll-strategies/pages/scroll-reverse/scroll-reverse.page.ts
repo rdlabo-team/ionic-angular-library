@@ -29,7 +29,6 @@ type Item = itemDynamicSize & {
   selector: 'app-scroll-reverse',
   templateUrl: './scroll-reverse.page.html',
   styleUrls: ['./scroll-reverse.page.scss'],
-  standalone: true,
   imports: [
     IonContent,
     IonHeader,
