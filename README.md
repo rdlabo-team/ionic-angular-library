@@ -2,6 +2,14 @@ These libraries is a collection of components and services that are useful for d
 
 [Demo site is here.](https://rdlabo-ionic-angular-library.netlify.app/)
 
+## Support Version
+
+| Angular | @rdlabo/ionic-angular-** |
+|---------|--------------------------|
+| v19     | v19.x                    |
+| v18     | v2.x                     |
+
+
 ## packages
 
 | package name                        | description                                                                                | path                                                                                                       |
