@@ -44,8 +44,6 @@ type Item = itemDynamicSize & {
     CdkVirtualForOf,
     CdkVirtualScrollViewport,
     FixVirtualScrollElementDirective,
-    IonInfiniteScroll,
-    IonInfiniteScrollContent,
     IonSpinner,
   ],
 })

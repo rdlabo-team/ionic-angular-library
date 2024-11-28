@@ -37,7 +37,6 @@ import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
     ScrollHeaderDirective,
     IonButton,
     IonButtons,
-    IonNote,
   ],
 })
 export class ScrollHeaderPage implements OnInit {

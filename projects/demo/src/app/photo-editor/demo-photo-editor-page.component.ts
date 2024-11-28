@@ -38,7 +38,6 @@ import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileSer
     IonLabel,
     IonList,
     IonListHeader,
-    IonNote,
   ],
 })
 export class DemoPhotoEditorPage implements OnInit {

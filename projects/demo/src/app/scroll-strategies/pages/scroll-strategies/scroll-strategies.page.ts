@@ -27,8 +27,6 @@ import { RouterLink } from '@angular/router';
     IonToolbar,
     CommonModule,
     FormsModule,
-    CdkVirtualScrollViewport,
-    CdkVirtualForOf,
     IonButton,
     IonButtons,
     IonIcon,
