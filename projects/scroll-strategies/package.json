@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ngx-cdk-scroll-strategies",
-  "version": "19.0.0",
+  "version": "19.0.1",
   "peerDependencies": {
     "@angular/cdk": "^19.0.0",
     "@angular/common": "^19.0.0",
