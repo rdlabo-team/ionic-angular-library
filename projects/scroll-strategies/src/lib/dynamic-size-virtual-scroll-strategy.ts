@@ -299,7 +299,7 @@ export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number,
       diffIndex = getOver / item[index].itemSize;
       return Math.max(0, index - 1 + diffIndex - startIndex);
     } else if (index === item.length - 1) {
-      return index - startIndex;
+      return index - startIndex + 1;
     }
     return acc;
   }, -1);
