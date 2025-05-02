@@ -67,11 +67,10 @@ ion-content > cdk-virtual-scroll-viewport {
 
     &:not(.scroll-header-sticky).scroll-header-no-border {
       ion-header {
+        box-shadow: none;
         & > ion-toolbar {
           --border-color: transparent;
         }
-
-        box-shadow: none;
       }
     }
 
