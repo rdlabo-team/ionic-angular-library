@@ -6,7 +6,6 @@ import { waitFindDom } from './helper';
 
 @Directive({
   selector: 'ion-content[rdlaboVirtualScrollHeader]',
-  standalone: true,
 })
 export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
   readonly #elementRef = inject(ElementRef<IonContent>);

@@ -309,7 +309,6 @@ export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number,
 /** A virtual scroll strategy that supports fixed-size items. */
 @Directive({
   selector: 'cdk-virtual-scroll-viewport[itemDynamicSizes]',
-  standalone: true,
   providers: [
     {
       provide: VIRTUAL_SCROLL_STRATEGY,

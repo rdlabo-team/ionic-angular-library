@@ -3,7 +3,6 @@ import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 
 @Directive({
   selector: 'cdk-virtual-scroll-viewport[rdlaboFixVirtualScrollElement]',
-  standalone: true,
 })
 export class FixVirtualScrollElementDirective implements OnInit {
   readonly #elementRef = inject(ElementRef<CdkVirtualScrollViewport>);
