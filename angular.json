@@ -77,6 +77,16 @@
             ],
             "scripts": []
           }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "projects/demo/**/*.ts",
+              "projects/demo/**/*.html"
+            ],
+            "eslintConfig": "projects/demo/eslint.config.js"
+          }
         }
       }
     },
@@ -106,6 +116,16 @@
           "options": {
             "tsConfig": "projects/photo-editor/tsconfig.spec.json",
             "polyfills": []
+          }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "projects/photo-editor/**/*.ts",
+              "projects/photo-editor/**/*.html"
+            ],
+            "eslintConfig": "projects/photo-editor/eslint.config.js"
           }
         }
       }
@@ -137,6 +157,16 @@
             "tsConfig": "projects/scroll-header/tsconfig.spec.json",
             "polyfills": []
           }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "projects/scroll-header/**/*.ts",
+              "projects/scroll-header/**/*.html"
+            ],
+            "eslintConfig": "projects/scroll-header/eslint.config.js"
+          }
         }
       }
     },
@@ -167,12 +197,24 @@
             "tsConfig": "projects/scroll-strategies/tsconfig.spec.json",
             "polyfills": []
           }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": [
+              "projects/scroll-strategies/**/*.ts",
+              "projects/scroll-strategies/**/*.html"
+            ],
+            "eslintConfig": "projects/scroll-strategies/eslint.config.js"
+          }
         }
       }
     }
   },
   "cli": {
-    "schematicCollections": ["@ionic/angular-toolkit"],
+    "schematicCollections": [
+      "@ionic/angular-toolkit"
+    ],
     "analytics": "d798c364-4b03-4fed-88a1-24f2a20d600d"
   },
   "schematics": {

@@ -24,7 +24,8 @@
     "prebuild:scroll-strategies": "ng build scroll-strategies --configuration=production",
     "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header && npm run prebuild:scroll-strategies",
     "prestart": "npm run prebuild",
-    "release": "np --no-tests --no-publish && node release.mjs"
+    "release": "np --no-tests --no-publish && node release.mjs",
+    "lint": "ng lint"
   },
   "private": false,
   "dependencies": {
@@ -54,7 +55,9 @@
     "@capacitor/cli": ">=6.0.0 <8.0.0",
     "@ionic/angular-toolkit": "^12.2.0",
     "@types/jasmine": "~5.1.0",
+    "angular-eslint": "20.0.0-alpha.1",
     "child_process": "^1.0.2",
+    "eslint": "^9.27.0",
     "husky": "^8.0.3",
     "jasmine-core": "~5.1.0",
     "karma": "~6.4.0",
@@ -68,6 +71,7 @@
     "path": "^0.12.7",
     "prettier": "^3.1.1",
     "typescript": "~5.8.3",
+    "typescript-eslint": "8.33.0",
     "write-pkg": "^7.0.0"
   },
   "peerDependencies": {
