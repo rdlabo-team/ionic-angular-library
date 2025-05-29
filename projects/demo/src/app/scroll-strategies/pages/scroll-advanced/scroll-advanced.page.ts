@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnInit, signal, viewChild } from '@angular/core';
+import { Component, computed, inject, OnInit, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -62,6 +62,7 @@ import { Subscription } from 'rxjs';
     IonRefresher,
     IonRefresherContent,
   ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewWillLeave {
   readonly virtualScroll = viewChild(CdkVirtualScrollViewport);

@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectionStrategy, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -38,10 +38,11 @@ import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileSer
     IonList,
     IonListHeader,
   ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class DemoPhotoEditorPage implements OnInit {
-  private photoFileService = inject(PhotoFileService);
-  private modalCtrl = inject(ModalController);
+  private readonly photoFileService = inject(PhotoFileService);
+  private readonly modalCtrl = inject(ModalController);
 
   constructor() {
     this.photoFileService.photoMaxSize = 1000;

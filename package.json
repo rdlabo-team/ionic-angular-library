@@ -45,8 +45,7 @@
     "@rdlabo/ionic-angular-scroll-header": "file:dist/scroll-header",
     "@rdlabo/ngx-cdk-scroll-strategies": "file:dist/scroll-strategies",
     "rxjs": "~7.8.0",
-    "tslib": "^2.3.0",
-    "zone.js": "~0.15.0"
+    "tslib": "^2.3.0"
   },
   "devDependencies": {
     "@angular/build": "^20.0.0",

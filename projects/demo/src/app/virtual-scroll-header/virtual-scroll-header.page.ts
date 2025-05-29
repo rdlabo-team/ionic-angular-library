@@ -45,9 +45,9 @@ import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '
   ],
 })
 export class VirtualScrollHeaderPage implements OnInit {
-  sourceIonIcons = iconsData.icons.map((icon) => icon.name);
-  platform = inject(Platform);
-  private cdkScrollElement = viewChild(CdkVirtualScrollViewport);
+  readonly platform = inject(Platform);
+
+  readonly sourceIonIcons = iconsData.icons.map((icon) => icon.name);
 
   constructor() {}
 

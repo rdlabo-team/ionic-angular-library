@@ -1,4 +1,4 @@
-import { Component, computed, OnInit, signal, viewChild } from '@angular/core';
+import { Component, computed, OnInit, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -44,14 +44,13 @@ type Item = itemDynamicSize & {
     FixVirtualScrollElementDirective,
     IonSpinner,
   ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ScrollReversePage implements OnInit, ViewDidEnter, ViewDidLeave {
   readonly virtualScroll = viewChild(CdkVirtualScrollViewport);
-
-  #enterSubscription$: Subscription[] = [];
-
-  isReady = false;
-  isLoading = false;
+  readonly #enterSubscription$: Subscription[] = [];
+  readonly isReady = signal(false);
+  readonly isLoading = signal(false);
   readonly items = signal<Item[]>([]);
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.items().map((item) => ({ trackId: item.trackId, itemSize: item.itemSize }));
@@ -69,18 +68,18 @@ export class ScrollReversePage implements OnInit, ViewDidEnter, ViewDidLeave {
         /**
          * For infinite scroll. If renderRange.end is the last index of the rendered items, then add new items.
          */
-        if (this.isReady && !this.isLoading && this.virtualScroll()!.getRenderedRange().end === this.virtualScroll()!.getDataLength()) {
-          this.isLoading = true;
+        if (this.isReady() && !this.isLoading() && this.virtualScroll()!.getRenderedRange().end === this.virtualScroll()!.getDataLength()) {
+          this.isLoading.set(true);
           await new Promise((resolve) => setTimeout(resolve, 500));
           this.items.update((items) => {
             // You must create new array.
             return [...items, ...this.#createItems(100)];
           });
-          this.isLoading = false;
+          this.isLoading.set(false);
         }
       }),
     );
-    this.isReady = true;
+    this.isReady.set(true);
   }
 
   async ionViewDidLeave() {
