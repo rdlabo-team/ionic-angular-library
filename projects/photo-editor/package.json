@@ -2,8 +2,8 @@
   "name": "@rdlabo/ionic-angular-photo-editor",
   "version": "19.0.3",
   "peerDependencies": {
-    "@angular/common": "^19.0.0",
-    "@angular/core": "^19.0.0",
+    "@angular/common": "^20.0.0",
+    "@angular/core": "^20.0.0",
     "@capacitor/camera": ">=6.0.0 <8.0.0",
     "@capacitor/core": ">=6.0.0 <8.0.0",
     "@ionic/angular": "^8.0.0",
