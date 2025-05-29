@@ -10,7 +10,7 @@ import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
   imports: [IonItem, IonAvatar, IonImg, IonLabel, IonButtons, IonButton, IonIcon],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ScrollAdvancedItemComponents {
+export class ScrollAdvancedItemComponent {
   readonly #el = inject(ElementRef);
   readonly #calcService = inject(ScrollAdvancedCalcService);
 
