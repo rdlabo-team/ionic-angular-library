@@ -327,18 +327,18 @@ export class CdkDynamicSizeVirtualScroll {
    * If the amount of buffer dips below this number, more items will be rendered. Defaults to 100px.
    */
   readonly minBufferPx = input<number, NumberInput>(100, {
-    transform: (v: NumberInput) => coerceNumberProperty(v),
+    transform: coerceNumberProperty,
   });
 
   /**
    * The number of pixels worth of buffer to render for when rendering new items. Defaults to 200px.
    */
   readonly maxBufferPx = input<number, NumberInput>(200, {
-    transform: (v: NumberInput) => coerceNumberProperty(v),
+    transform: coerceNumberProperty,
   });
 
   readonly isReverse = input<boolean, BooleanInput>(false, {
-    transform: (v: BooleanInput) => coerceBooleanProperty(v),
+    transform: coerceBooleanProperty,
   });
 
   /** The scroll strategy used by this directive. */
