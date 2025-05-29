@@ -1,4 +1,4 @@
-import { Component, ElementRef, inject, Input, OnDestroy, OnInit, signal, ViewChild } from '@angular/core';
+import { Component, ElementRef, inject, Input, OnDestroy, OnInit, signal, input, viewChild, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { IonContent, ModalController, RangeCustomEvent, ViewDidEnter, ViewDidLeave } from '@ionic/angular/standalone';
@@ -22,17 +22,15 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   protected dictionary: IDictionaryForEditor = dictionaryForEditor();
   protected filterPreset = filterPreset(this.dictionary);
 
-  @Input() requireSquare: boolean = false;
-  @Input() value!: string;
+  readonly requireSquare = input<boolean>(false);
+  readonly value = input.required<string>();
   @Input() set labels(d: IDictionaryForEditor) {
     this.dictionary = Object.assign(this.dictionary, d);
     this.filterPreset = filterPreset(this.dictionary);
   }
 
-  @ViewChild('imageEditor', { static: true }) editorRef!: ElementRef;
-  @ViewChild(IonContent) ionContent!: {
-    el: IonContent & HTMLElement;
-  };
+  readonly editorRef = viewChild.required<ElementRef>('imageEditor');
+  readonly ionContent = viewChild.required(IonContent, { read: ElementRef });
 
   $filters = signal<IFilter[]>([]);
   $footerMenu = signal<'filter' | 'menu' | 'crop' | 'brightness'>('menu');
@@ -56,8 +54,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   private canvasContainerObserver: MutationObserver = new MutationObserver((mutationsList: MutationRecord[]) => {
     if (mutationsList.find((mutation) => mutation.type === 'attributes' && mutation.attributeName === 'style')) {
       // Cover the image editor with the parent element
-      this.editorRef.nativeElement.style.minWidth = mutationsList[0].target.parentElement!.style.maxWidth;
-      this.editorRef.nativeElement.style.minHeight = mutationsList[0].target.parentElement!.style.maxHeight;
+      const editorRef = this.editorRef();
+      editorRef.nativeElement.style.minWidth = mutationsList[0].target.parentElement!.style.maxWidth;
+      editorRef.nativeElement.style.minHeight = mutationsList[0].target.parentElement!.style.maxHeight;
 
       this.$photoCrop.set({
         width: mutationsList[0].target.parentElement!.querySelector('canvas')!.width,
@@ -67,6 +66,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   });
 
   constructor() {
+    effect(() => {
+      console.log(this.value());
+    });
     this.service.initializeEditorIcons();
   }
 
@@ -78,7 +80,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
         }
         if (value === 'crop') {
           this.editorInstance.startDrawingMode('CROPPER');
-          this.changeCrop(this.requireSquare ? '1' : 'cover');
+          this.changeCrop(this.requireSquare() ? '1' : 'cover');
         }
       }),
     );
@@ -89,20 +91,20 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   }
 
   async ionViewDidEnter() {
-    this.editorInstance = new ImageEditor(this.editorRef.nativeElement, {
-      cssMaxWidth: this.ionContent.el.clientWidth - 32,
-      cssMaxHeight: this.ionContent.el.clientHeight - 32,
+    this.editorInstance = new ImageEditor(this.editorRef().nativeElement, {
+      cssMaxWidth: this.ionContent().nativeElement.clientWidth - 32,
+      cssMaxHeight: this.ionContent().nativeElement.clientHeight - 32,
     });
-    this.service.waitToFindDom(this.editorRef.nativeElement, '.tui-image-editor-canvas-container').then(() => {
-      this.canvasContainerObserver.observe(this.editorRef.nativeElement.querySelector('.tui-image-editor-canvas-container'), {
+    this.service.waitToFindDom(this.editorRef().nativeElement, '.tui-image-editor-canvas-container').then(() => {
+      this.canvasContainerObserver.observe(this.editorRef().nativeElement.querySelector('.tui-image-editor-canvas-container'), {
         attributes: true,
         childList: false,
         subtree: true,
       });
     });
-    const blob = await fetch(this.value).then((res) => res.blob());
+    const blob = await fetch(this.value()).then((res) => res.blob());
     await this.editorInstance.loadImageFromFile(new File([blob], 'data.png', { type: blob.type }));
-    this.$footerMenu.set(this.requireSquare ? 'crop' : 'menu');
+    this.$footerMenu.set(this.requireSquare() ? 'crop' : 'menu');
   }
 
   ionViewDidLeave() {
@@ -147,7 +149,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
     if (this.editorInstance.hasFilter('brightness')) {
       await this.editorInstance.removeFilter('brightness');
     }
-    this.editorInstance.applyFilter('brightness', {
+    await this.editorInstance.applyFilter('brightness', {
       brightness: Number(event.detail.value) / 255,
     });
   }

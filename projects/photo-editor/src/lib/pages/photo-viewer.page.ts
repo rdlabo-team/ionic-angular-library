@@ -1,4 +1,4 @@
-import { Component, CUSTOM_ELEMENTS_SCHEMA, ElementRef, inject, Input, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { Component, CUSTOM_ELEMENTS_SCHEMA, ElementRef, inject, Input, OnDestroy, OnInit, input, viewChild } from '@angular/core';
 import { IonicSlides, ModalController } from '@ionic/angular/standalone';
 import { Navigation, Zoom } from 'swiper/modules';
 import { fromEvent, Subscription, throttleTime, withLatestFrom, zipWith } from 'rxjs';
@@ -20,16 +20,16 @@ import { dictionaryForViewer } from '../dictionaries';
 export class PhotoViewerPage implements OnInit, OnDestroy {
   protected dictionary: IDictionaryForViewer = dictionaryForViewer();
 
-  @Input() imageUrls: string[] = [];
-  @Input() index: number = 0;
-  @Input() isCircle = false;
-  @Input() enableDelete = false;
-  @Input() enableFooterSafeArea = false;
+  readonly imageUrls = input<string[]>([]);
+  readonly index = input<number>(0);
+  readonly isCircle = input(false);
+  readonly enableDelete = input(false);
+  readonly enableFooterSafeArea = input(false);
   @Input() set labels(d: IDictionaryForViewer) {
     this.dictionary = Object.assign(this.dictionary, d);
   }
 
-  @ViewChild('swiper') swiper!: ElementRef<SwiperContainer>;
+  readonly swiper = viewChild.required<ElementRef<SwiperContainer>>('swiper');
 
   watchSwipe$!: Subscription;
   readonly modalCtrl = inject(ModalController);
@@ -43,9 +43,11 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
 
   async ngOnInit() {
     this.service.waitToFindDom(this.el.nativeElement, 'swiper-container').then(() => {
-      Object.assign(this.swiper.nativeElement, {
+      const index = this.index();
+      const swiper = this.swiper();
+      Object.assign(swiper.nativeElement, {
         modules: [Navigation, Zoom, IonicSlides],
-        initialSlide: this.index,
+        initialSlide: index,
         slidesPerView: 1,
         pagination: {
           enabled: true,
@@ -53,11 +55,11 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
         },
         zoom: true,
       });
-      this.swiper.nativeElement.initialize();
-      this.swiper.nativeElement.swiper.zoom.enable();
+      swiper.nativeElement.initialize();
+      swiper.nativeElement.swiper.zoom.enable();
 
-      this.swiper.nativeElement.swiper.activeIndex = this.index;
-      this.swiper.nativeElement.swiper.update();
+      swiper.nativeElement.swiper.activeIndex = index;
+      swiper.nativeElement.swiper.update();
     });
 
     this.watchSwipe$ = fromEvent<TouchEvent>(this.el.nativeElement, 'touchstart')
@@ -79,7 +81,7 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
         const xDiff = touchstartClientX - touchmoveClientX;
         const yDiff = touchstartClientY - touchmoveClientY;
 
-        const slides = (this.swiper as any).nativeElement.querySelectorAll('swiper-slide') as HTMLElement[];
+        const slides = (this.swiper() as any).nativeElement.querySelectorAll('swiper-slide') as HTMLElement[];
         const isZoomed = Array.from(slides).find((slide: HTMLElement) => {
           return ['swiper-slide-zoomed', 'swiper-slide-active'].every((c) => slide.classList.contains(c));
         });
@@ -102,8 +104,8 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
   remove() {
     this.modalCtrl.dismiss({
       delete: {
-        index: this.swiper.nativeElement.swiper.activeIndex,
-        value: this.imageUrls[this.swiper.nativeElement.swiper.activeIndex],
+        index: this.swiper().nativeElement.swiper.activeIndex,
+        value: this.imageUrls()[this.swiper().nativeElement.swiper.activeIndex],
       },
     } as IPhotoViewerDismiss);
   }
