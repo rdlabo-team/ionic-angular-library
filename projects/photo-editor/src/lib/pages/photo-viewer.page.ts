@@ -21,6 +21,7 @@ import { HelperService } from '../service/helper.service';
 import { IDictionaryForViewer, IPhotoViewerDismiss } from '../types';
 import { register } from 'swiper/element/bundle';
 import { dictionaryForViewer } from '../dictionaries';
+import { BooleanInput, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
 
 @Component({
   selector: 'app-photo-image',
@@ -33,10 +34,18 @@ import { dictionaryForViewer } from '../dictionaries';
 })
 export class PhotoViewerPage implements OnInit, OnDestroy {
   readonly imageUrls = input.required<string[]>();
-  readonly index = input<number>(0);
-  readonly isCircle = input(false);
-  readonly enableDelete = input(false);
-  readonly enableFooterSafeArea = input(false);
+  readonly index = input<number, NumberInput>(0, {
+    transform: coerceNumberProperty,
+  });
+  readonly isCircle = input<boolean, BooleanInput>(false, {
+    transform: coerceBooleanProperty,
+  });
+  readonly enableDelete = input<boolean, BooleanInput>(false, {
+    transform: coerceBooleanProperty,
+  });
+  readonly enableFooterSafeArea = input<boolean, BooleanInput>(false, {
+    transform: coerceBooleanProperty,
+  });
   readonly labels = input<Partial<IDictionaryForViewer>>();
   readonly setLabels = effect(() => {
     if (this.labels()) {

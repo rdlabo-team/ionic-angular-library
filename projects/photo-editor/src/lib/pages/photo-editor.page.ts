@@ -1,3 +1,4 @@
+import { coerceNumberProperty, coerceBooleanProperty, BooleanInput, NumberInput } from '@angular/cdk/coercion';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -10,6 +11,8 @@ import {
   OnInit,
   signal,
   viewChild,
+  numberAttribute,
+  booleanAttribute,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -37,7 +40,9 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
 
   protected readonly dictionary = signal<IDictionaryForEditor>(dictionaryForEditor());
 
-  readonly requireSquare = input<boolean>(false);
+  readonly requireSquare = input<boolean, BooleanInput>(false, {
+    transform: coerceBooleanProperty,
+  });
   readonly labels = input<Partial<IDictionaryForEditor> | undefined>(undefined);
   readonly setLabels = effect(() => {
     if (this.labels()) {
