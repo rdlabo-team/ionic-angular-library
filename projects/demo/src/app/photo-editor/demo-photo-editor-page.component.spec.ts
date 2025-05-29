@@ -1,11 +1,15 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { DemoPhotoEditorPage } from './demo-photo-editor-page.component';
+import { testConfig } from '../../test.config';
 
 describe('PhotoEditorPage', () => {
   let component: DemoPhotoEditorPage;
   let fixture: ComponentFixture<DemoPhotoEditorPage>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      providers: testConfig.providers,
+    }).compileComponents();
     fixture = TestBed.createComponent(DemoPhotoEditorPage);
     component = fixture.componentInstance;
     fixture.detectChanges();

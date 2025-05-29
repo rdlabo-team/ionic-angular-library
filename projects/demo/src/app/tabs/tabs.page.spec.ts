@@ -2,6 +2,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 
 import { TabsPage } from './tabs.page';
+import { testConfig } from '../../test.config';
 
 describe('TabsPage', () => {
   let component: TabsPage;
@@ -10,7 +11,7 @@ describe('TabsPage', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [TabsPage],
-      providers: [provideRouter([])],
+      providers: testConfig.providers,
     }).compileComponents();
   });
 

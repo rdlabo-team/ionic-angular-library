@@ -2,21 +2,30 @@ import { ComponentFixture, TestBed, waitForAsync } from '@angular/core/testing';
 import { IonicModule } from '@ionic/angular';
 
 import { ScrollAdvancedItemComponent } from './scroll-advanced-item.component';
+import { testConfig } from '../../../../test.config';
+import { ComponentRef } from '@angular/core';
 
 describe('ScrollAdvancedItemComponent', () => {
   let component: ScrollAdvancedItemComponent;
   let fixture: ComponentFixture<ScrollAdvancedItemComponent>;
+  let componentRef: ComponentRef<ScrollAdvancedItemComponent>;
 
-  beforeEach(waitForAsync(() => {
-    TestBed.configureTestingModule({
-      declarations: [ScrollAdvancedItemComponent],
-      imports: [IonicModule.forRoot()],
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      providers: testConfig.providers,
     }).compileComponents();
-
     fixture = TestBed.createComponent(ScrollAdvancedItemComponent);
     component = fixture.componentInstance;
+    componentRef = fixture.componentRef;
+    componentRef.setInput('item', {
+      trackId: 'track-01',
+      name: null,
+      description: null,
+      photo: null,
+    });
+
     fixture.detectChanges();
-  }));
+  });
 
   it('should create', () => {
     expect(component).toBeTruthy();
