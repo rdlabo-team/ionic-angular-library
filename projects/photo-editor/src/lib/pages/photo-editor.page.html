@@ -4,13 +4,8 @@
       ><ion-button (click)="modalCtrl.dismiss()"><ion-icon name="close-outline" slot="icon-only"></ion-icon></ion-button
     ></ion-buttons>
     <ion-buttons slot="end">
-      <ion-button
-        color="photo-editor-primary"
-        fill="outline"
-        [disabled]="!['menu', 'filter'].includes($footerMenu())"
-        (click)="imageSave()"
-      >
-        {{ dictionary.save }}
+      <ion-button color="photo-editor-primary" fill="outline" [disabled]="!['menu', 'filter'].includes(footerMenu())" (click)="imageSave()">
+        {{ dictionary().save }}
       </ion-button>
     </ion-buttons>
   </ion-toolbar>
@@ -21,26 +16,26 @@
 </ion-content>
 <ion-footer>
   <ion-toolbar>
-    @if (this.$footerMenu() === 'menu') {
+    @if (this.footerMenu() === 'menu') {
       <aside class="ion-justify-content-center">
-        <button (click)="$footerMenu.set('crop')">
-          <ion-text>{{ dictionary.crop }}</ion-text>
+        <button (click)="footerMenu.set('crop')">
+          <ion-text>{{ dictionary().crop }}</ion-text>
           <ion-icon name="crop-outline" size="large"></ion-icon>
         </button>
-        <button (click)="$footerMenu.set('filter')">
-          <ion-text>{{ dictionary.filter }}</ion-text>
+        <button (click)="footerMenu.set('filter')">
+          <ion-text>{{ dictionary().filter }}</ion-text>
           <ion-icon name="color-filter-outline" size="large"></ion-icon>
         </button>
-        <button (click)="$footerMenu.set('brightness')">
-          <ion-text>{{ dictionary.brightness }}</ion-text>
+        <button (click)="footerMenu.set('brightness')">
+          <ion-text>{{ dictionary().brightness }}</ion-text>
           <ion-icon name="sunny-outline" size="large"></ion-icon>
         </button>
       </aside>
     }
 
-    @if (this.$footerMenu() === 'filter') {
+    @if (this.footerMenu() === 'filter') {
       <aside>
-        @for (item of $filters(); track item) {
+        @for (item of filters(); track item) {
           <button (click)="filterImage(item)">
             <ion-text>{{ item.name }}</ion-text>
             <span class="image-filter-box" [style.background-image]="'url(' + item.data + ')'"></span>
@@ -49,46 +44,46 @@
       </aside>
     }
 
-    @if (this.$footerMenu() === 'crop' && !requireSquare()) {
+    @if (this.footerMenu() === 'crop' && !requireSquare()) {
       <ion-buttons class="ion-justify-content-center submenu-icon-buttons">
-        <ion-button (click)="changeCrop('cover')" [color]="$currentCrop() === 'cover' ? 'success' : undefined">
+        <ion-button (click)="changeCrop('cover')" [color]="currentCrop() === 'cover' ? 'success' : undefined">
           <ion-icon name="expand-outline" slot="icon-only"></ion-icon>
         </ion-button>
-        <ion-button (click)="changeCrop('16/9')" [color]="$currentCrop() === '16/9' ? 'success' : undefined">
+        <ion-button (click)="changeCrop('16/9')" [color]="currentCrop() === '16/9' ? 'success' : undefined">
           <ion-icon name="tablet-landscape-outline" slot="icon-only" style="transform: scale(1, 0.8)"></ion-icon>
         </ion-button>
-        <ion-button (click)="changeCrop('1')" [color]="$currentCrop() === '1' ? 'success' : undefined">
+        <ion-button (click)="changeCrop('1')" [color]="currentCrop() === '1' ? 'success' : undefined">
           <ion-icon name="square-outline" slot="icon-only"></ion-icon>
         </ion-button>
-        <ion-button (click)="changeCrop('auto')" [color]="$currentCrop() === 'auto' ? 'success' : undefined">
+        <ion-button (click)="changeCrop('auto')" [color]="currentCrop() === 'auto' ? 'success' : undefined">
           <ion-icon name="crop-outline" slot="icon-only"></ion-icon>
         </ion-button>
         <ion-button (click)="rotate()"><ion-icon name="refresh-outline" slot="icon-only"></ion-icon></ion-button>
       </ion-buttons>
     }
 
-    @if (['brightness'].includes(this.$footerMenu())) {
+    @if (['brightness'].includes(this.footerMenu())) {
       <div class="ion-padding ion-margin">
         <ion-range [pin]="true" [min]="-100" [max]="100" (ionChange)="changeRange($any($event))"></ion-range>
       </div>
     }
   </ion-toolbar>
-  @if (this.$footerMenu() !== 'menu') {
+  @if (this.footerMenu() !== 'menu') {
     <ion-toolbar mode="md">
-      @if (this.$footerMenu() === 'filter') {
+      @if (this.footerMenu() === 'filter') {
         <ion-buttons class="ion-justify-content-center" style="margin: 0 8px">
-          <ion-button fill="outline" shape="round" (click)="this.$footerMenu.set('menu')">戻る</ion-button>
+          <ion-button fill="outline" shape="round" (click)="this.footerMenu.set('menu')">戻る</ion-button>
         </ion-buttons>
       } @else {
         <ion-buttons slot="start" style="min-width: 60px">
-          @if (!requireSquare() || $isCropped()) {
+          @if (!requireSquare() || isCropped()) {
             <ion-button (click)="closeCrop('cancel')"><ion-icon name="close-outline" slot="icon-only"></ion-icon></ion-button>
           }</ion-buttons
         ><ion-text class="footer-title">
-          @if ($footerMenu() === 'crop') {
-            {{ dictionary.crop }}
-          } @else if ($footerMenu() === 'brightness') {
-            {{ dictionary.brightness }}
+          @if (footerMenu() === 'crop') {
+            {{ dictionary().crop }}
+          } @else if (footerMenu() === 'brightness') {
+            {{ dictionary().brightness }}
           }</ion-text
         ><ion-buttons slot="end"
           ><ion-button (click)="closeCrop('apply')"

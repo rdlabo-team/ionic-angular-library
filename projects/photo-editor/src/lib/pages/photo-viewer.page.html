@@ -7,7 +7,7 @@
     </ion-buttons>
     @if (enableDelete()) {
       <ion-buttons slot="end">
-        <ion-button color="photo-editor-danger" fill="outline" (click)="remove()">{{ dictionary.delete }}</ion-button>
+        <ion-button color="photo-editor-danger" fill="outline" (click)="remove()">{{ dictionary().delete }}</ion-button>
       </ion-buttons>
     }
   </ion-toolbar>

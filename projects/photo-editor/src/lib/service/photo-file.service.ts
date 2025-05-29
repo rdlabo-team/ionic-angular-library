@@ -13,7 +13,7 @@ export class PhotoFileService {
   private readonly $photoMaxSize = signal<number>(1000);
   private readonly actionSheetCtrl = inject(ActionSheetController);
   private readonly platform = inject(Platform);
-  private dictionary: IDictionaryForService = dictionaryForService();
+  private readonly dictionary = signal<IDictionaryForService>(dictionaryForService());
 
   constructor() {}
 
@@ -22,7 +22,7 @@ export class PhotoFileService {
   }
 
   set labels(d: IDictionaryForService) {
-    this.dictionary = Object.assign(this.dictionary, d);
+    this.dictionary.update((value) => ({ ...value, ...d }));
   }
 
   async loadPhoto(limit: number): Promise<string[]> {
@@ -36,19 +36,19 @@ export class PhotoFileService {
     const actionSheet = await this.actionSheetCtrl.create({
       buttons: [
         {
-          text: this.dictionary.camera,
+          text: this.dictionary().camera,
           handler: () => {
             actionSheet.dismiss('camera');
           },
         },
         {
-          text: this.dictionary.album,
+          text: this.dictionary().album,
           handler: () => {
             actionSheet.dismiss('album');
           },
         },
         {
-          text: this.dictionary.cancel,
+          text: this.dictionary().cancel,
           role: 'cancel',
         },
       ],
