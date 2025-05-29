@@ -6,7 +6,7 @@ import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
   standalone: true,
 })
 export class FixVirtualScrollElementDirective implements OnInit {
-  #elementRef = inject(ElementRef<CdkVirtualScrollViewport>);
+  readonly #elementRef = inject(ElementRef<CdkVirtualScrollViewport>);
   constructor() {}
 
   ngOnInit() {

@@ -1,5 +1,5 @@
-import { contentChild, Directive, ElementRef, inject, OnDestroy, OnInit } from '@angular/core';
-import { IonContent } from '@ionic/angular/standalone';
+import { contentChild, Directive, ElementRef, inject, OnDestroy, OnInit, signal } from '@angular/core';
+import { IonContent, IonHeader } from '@ionic/angular/standalone';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { fromEvent, Subscription } from 'rxjs';
 import { waitFindDom } from './helper';
@@ -9,16 +9,17 @@ import { waitFindDom } from './helper';
   standalone: true,
 })
 export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
-  #elementRef = inject(ElementRef<IonContent>);
-  virtualScroll = contentChild(CdkVirtualScrollViewport);
+  readonly #elementRef = inject(ElementRef<IonContent>);
 
-  #minScrollAmount = 16;
-  #nativeHeader: HTMLElement | undefined;
-  #scrollHeader: HTMLElement | undefined;
-  #scrollRefresher: HTMLElement | undefined;
-  #scrollHeaderSize: number | undefined;
-  #beforeScrollTop: number = 0;
-  #scrollSubscription: Subscription | undefined;
+  readonly virtualScroll = contentChild(CdkVirtualScrollViewport);
+  readonly scrollHeader = contentChild(IonHeader, { read: ElementRef });
+
+  readonly #minScrollAmount = 16;
+  readonly #nativeHeader = signal<HTMLElement | undefined>(undefined);
+  readonly #scrollRefresher = signal<HTMLElement | undefined>(undefined);
+  readonly #scrollHeaderSize = signal<number>(0);
+  readonly #beforeScrollTop = signal<number>(0);
+  readonly #scrollSubscription = new Subscription();
 
   constructor() {}
 
@@ -28,27 +29,28 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
       waitFindDom(this.#elementRef.nativeElement, 'cdk-virtual-scroll-viewport'),
     ]);
 
-    this.#scrollHeader = this.#elementRef.nativeElement.querySelector('ion-header');
     this.#elementRef.nativeElement.classList.add('scroll-header-animated');
 
     if (
       this.#elementRef.nativeElement.previousElementSibling &&
       this.#elementRef.nativeElement.previousElementSibling.classList.contains('native-header')
     ) {
-      this.#nativeHeader = this.#elementRef.nativeElement.previousElementSibling;
+      this.#nativeHeader.set(this.#elementRef.nativeElement.previousElementSibling);
     }
 
-    this.#scrollSubscription = fromEvent(this.virtualScroll()!.elementRef.nativeElement, 'scroll').subscribe(() => {
-      this.onWindowScroll(this.virtualScroll()!.measureScrollOffset('top'));
-    });
+    this.#scrollSubscription.add(
+      fromEvent(this.virtualScroll()!.elementRef.nativeElement, 'scroll').subscribe(() => {
+        this.onWindowScroll(this.virtualScroll()!.measureScrollOffset('top'));
+      }),
+    );
   }
 
   ngOnDestroy() {
-    this.#scrollSubscription?.unsubscribe();
+    this.#scrollSubscription.unsubscribe();
   }
 
   onWindowScroll(scrollOffset: number) {
-    if (this.#scrollHeader === undefined || this.virtualScroll() === undefined) {
+    if (this.scrollHeader() === undefined || this.virtualScroll() === undefined) {
       return;
     }
 
@@ -58,15 +60,18 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
       return;
     }
 
-    if (!this.#scrollHeaderSize) {
+    if (!this.#scrollHeaderSize()) {
       // 表示サイズを挿入
-      this.#scrollHeaderSize = this.#scrollHeader.clientHeight;
-      this.virtualScroll()!.elementRef.nativeElement.style.marginTop = this.#scrollHeader.clientHeight * -1 + 'px';
-      this.virtualScroll()!.elementRef.nativeElement.style.paddingTop = this.#scrollHeader.clientHeight + 'px';
+      this.#scrollHeaderSize.set(this.scrollHeader()!.nativeElement.clientHeight);
+      this.virtualScroll()!.elementRef.nativeElement.style.marginTop = this.scrollHeader()!.nativeElement.clientHeight * -1 + 'px';
+      this.virtualScroll()!.elementRef.nativeElement.style.paddingTop = this.scrollHeader()!.nativeElement.clientHeight + 'px';
 
-      this.#scrollRefresher = this.#elementRef.nativeElement.querySelector('ion-refresher');
-      if (this.#scrollRefresher) {
-        this.#scrollRefresher.style.marginTop = this.#scrollHeader.clientHeight + 'px';
+      this.#scrollRefresher.set(this.#elementRef.nativeElement.querySelector('ion-refresher'));
+      if (this.#scrollRefresher()) {
+        this.#scrollRefresher.update((v) => {
+          v!.style.marginTop = this.scrollHeader()!.nativeElement.clientHeight + 'px';
+          return v;
+        });
       }
     }
 
@@ -75,7 +80,7 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
       this.#elementRef.nativeElement.classList.remove('scroll-header-sticky');
     }
 
-    const scrollAmount = scrollOffset - this.#beforeScrollTop;
+    const scrollAmount = scrollOffset - this.#beforeScrollTop();
     if (Math.abs(scrollAmount) < this.#minScrollAmount) {
       return;
     }
@@ -83,29 +88,38 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
     if (scrollAmount < 0) {
       // 上へスクロール
       this.#elementRef.nativeElement.classList.remove('scroll-header-hidden');
-      if (this.#nativeHeader) {
-        this.#nativeHeader.classList.remove('scroll-header-hidden');
+      if (this.#nativeHeader()) {
+        this.#nativeHeader.update((v) => {
+          v!.classList.remove('scroll-header-hidden');
+          return v;
+        });
       }
-      if (scrollOffset > this.#scrollHeaderSize / 1.5) {
+      if (scrollOffset > this.#scrollHeaderSize() / 1.5) {
         this.#elementRef.nativeElement.classList.add('scroll-header-sticky');
       }
     } else {
       // 下にスクロール
-      if (scrollOffset <= this.#scrollHeaderSize / 1.5) {
+      if (scrollOffset <= this.#scrollHeaderSize() / 1.5) {
         this.#elementRef.nativeElement.classList.remove('scroll-header-hidden');
         this.#elementRef.nativeElement.classList.remove('scroll-header-sticky');
-        if (this.#nativeHeader) {
-          this.#nativeHeader.classList.remove('scroll-header-hidden');
+        if (this.#nativeHeader()) {
+          this.#nativeHeader.update((v) => {
+            v!.classList.remove('scroll-header-hidden');
+            return v;
+          });
         }
       } else {
         this.#elementRef.nativeElement.classList.add('scroll-header-hidden');
         this.#elementRef.nativeElement.classList.add('scroll-header-sticky');
-        if (this.#nativeHeader) {
-          this.#nativeHeader.classList.add('scroll-header-hidden');
+        if (this.#nativeHeader()) {
+          this.#nativeHeader.update((v) => {
+            v!.classList.add('scroll-header-hidden');
+            return v;
+          });
         }
       }
     }
 
-    this.#beforeScrollTop = scrollOffset;
+    this.#beforeScrollTop.set(scrollOffset);
   }
 }
