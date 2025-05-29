@@ -15,8 +15,6 @@ export class PhotoFileService {
   private readonly platform = inject(Platform);
   private readonly dictionary = signal<IDictionaryForService>(dictionaryForService());
 
-  constructor() {}
-
   set photoMaxSize(value: number) {
     this.$photoMaxSize.set(value);
   }
@@ -106,7 +104,7 @@ export class PhotoFileService {
     }
 
     return new Promise((resolve, reject) => {
-      const cancelMethod = (e: Event) => {
+      const cancelMethod = () => {
         inputFile!.removeEventListener('cancel', cancelMethod, false);
         inputFile!.removeEventListener('change', changeMethod, false);
 

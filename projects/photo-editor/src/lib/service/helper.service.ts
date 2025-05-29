@@ -16,8 +16,6 @@ import {
 
 @Injectable()
 export class HelperService {
-  constructor() {}
-
   initializeViewerIcons(): void {
     addIcons({
       closeOutline,

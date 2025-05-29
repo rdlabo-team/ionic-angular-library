@@ -1,12 +1,11 @@
 export abstract class BaseMock {
   protected spyObj: any;
 
-  // eslint-disable-next-line
   constructor(baseName: string, methodNames: any[]) {
     this.spyObj = jasmine.createSpyObj(baseName, methodNames);
 
     methodNames.forEach((methodName) => {
-      // @ts-ignore
+      // @ts-expect-error This is use for abstract
       this[methodName] = this.spyObj[methodName];
     });
   }

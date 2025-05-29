@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnInit, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, OnInit, signal, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -77,8 +77,6 @@ export class ScrollAdvancedPage implements OnInit, ViewDidEnter, ViewWillLeave {
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.#calcService.changeItemsToDynamicItemSize(this.items(), this.#calcService.cacheCalcDynamic(), this.virtualScroll());
   });
-
-  constructor() {}
 
   ngOnInit() {
     this.items.set(this.#createItems(100));

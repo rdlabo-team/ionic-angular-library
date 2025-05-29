@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectionStrategy, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -40,7 +40,7 @@ import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileSer
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class DemoPhotoEditorPage implements OnInit {
+export class DemoPhotoEditorPage {
   private readonly photoFileService = inject(PhotoFileService);
   private readonly modalCtrl = inject(ModalController);
 
@@ -53,8 +53,6 @@ export class DemoPhotoEditorPage implements OnInit {
     };
   }
 
-  async ngOnInit() {}
-
   async selectPhoto(type: 'editor' | 'viewer') {
     if (type === 'editor') {
       const data = await this.photoFileService.loadPhoto(1);
@@ -65,7 +63,7 @@ export class DemoPhotoEditorPage implements OnInit {
     }
   }
 
-  async launchEditor(photoData: string = 'https://picsum.photos/200/300') {
+  async launchEditor(photoData = 'https://picsum.photos/200/300') {
     const modal = await this.modalCtrl.create({
       component: PhotoEditorPage,
       componentProps: {

@@ -38,9 +38,6 @@ import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
     IonButtons,
   ],
 })
-export class ScrollHeaderPage implements OnInit {
+export class ScrollHeaderPage {
   readonly sourceIonIcons = iconsData.icons.map((icon) => icon.name).slice(0, 50);
-  constructor() {}
-
-  ngOnInit() {}
 }

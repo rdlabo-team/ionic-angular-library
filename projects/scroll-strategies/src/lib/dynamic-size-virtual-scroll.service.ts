@@ -8,8 +8,6 @@ import { itemDynamicSize } from './dynamic-size-virtual-scroll-strategy';
 export class DynamicSizeVirtualScrollService {
   readonly mergeScrollY = 160;
 
-  constructor() {}
-
   /*
    * iOS smooth scroll can scroll after transition end.
    * In this case, sometimes Virtual Scroll is white screen.

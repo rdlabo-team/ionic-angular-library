@@ -15,8 +15,6 @@ export class ScrollHeaderDirective implements OnInit {
 
   readonly #minScrollAmount = 16;
 
-  constructor() {}
-
   async ngOnInit() {
     await waitFindDom(this.#elementRef.nativeElement, 'ion-header');
     this.#elementRef.nativeElement.scrollEvents = true;

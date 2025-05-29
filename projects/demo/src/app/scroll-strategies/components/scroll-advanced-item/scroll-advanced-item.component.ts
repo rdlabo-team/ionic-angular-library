@@ -1,4 +1,4 @@
-import { Component, effect, ElementRef, inject, input, OnInit, output, ChangeDetectionStrategy } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, input, OnInit, output } from '@angular/core';
 import { ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { IonAvatar, IonButton, IonButtons, IonIcon, IonImg, IonItem, IonLabel } from '@ionic/angular/standalone';
 import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
@@ -10,7 +10,7 @@ import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
   imports: [IonItem, IonAvatar, IonImg, IonLabel, IonButtons, IonButton, IonIcon],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class ScrollAdvancedItemComponent implements OnInit {
+export class ScrollAdvancedItemComponents {
   readonly #el = inject(ElementRef);
   readonly #calcService = inject(ScrollAdvancedCalcService);
 
@@ -38,8 +38,6 @@ export class ScrollAdvancedItemComponent implements OnInit {
       })(this.item()),
     );
   }
-
-  ngOnInit() {}
 
   deleteItem(trackId: string) {
     this.delete.emit(trackId);

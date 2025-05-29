@@ -1,8 +1,11 @@
-export type ScrollAdvancedItem = {
+export interface ScrollAdvancedItem {
   trackId: string;
   name: string;
   description: string;
   photo: string;
-};
+}
 
-export type DynamicSizeCache = { trackId: number | string; itemSize: number };
+export interface DynamicSizeCache {
+  trackId: number | string;
+  itemSize: number;
+}

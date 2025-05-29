@@ -20,8 +20,6 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
   readonly #beforeScrollTop = signal<number>(0);
   readonly #scrollSubscription = new Subscription();
 
-  constructor() {}
-
   async ngOnInit() {
     await Promise.all([
       waitFindDom(this.#elementRef.nativeElement, 'ion-header'),

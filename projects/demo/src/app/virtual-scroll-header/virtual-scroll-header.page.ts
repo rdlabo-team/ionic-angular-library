@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, viewChild } from '@angular/core';
+import { Component, inject, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -44,14 +44,10 @@ import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '
     FixVirtualScrollElementDirective,
   ],
 })
-export class VirtualScrollHeaderPage implements OnInit {
+export class VirtualScrollHeaderPage {
   readonly platform = inject(Platform);
 
   readonly sourceIonIcons = iconsData.icons.map((icon) => icon.name);
-
-  constructor() {}
-
-  ngOnInit() {}
 
   trackByFn = (_: number, item: string) => item;
 }

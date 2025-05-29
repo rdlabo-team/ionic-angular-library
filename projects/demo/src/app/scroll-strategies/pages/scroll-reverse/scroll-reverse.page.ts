@@ -1,4 +1,4 @@
-import { Component, computed, OnInit, signal, viewChild, ChangeDetectionStrategy } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, OnInit, signal, viewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -55,8 +55,6 @@ export class ScrollReversePage implements OnInit, ViewDidEnter, ViewDidLeave {
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.items().map((item) => ({ trackId: item.trackId, itemSize: item.itemSize }));
   });
-
-  constructor() {}
 
   ngOnInit() {
     this.items.set(this.#createItems(100));

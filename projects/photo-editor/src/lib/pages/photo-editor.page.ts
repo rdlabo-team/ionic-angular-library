@@ -1,4 +1,4 @@
-import { coerceNumberProperty, coerceBooleanProperty, BooleanInput, NumberInput } from '@angular/cdk/coercion';
+import { BooleanInput, coerceBooleanProperty } from '@angular/cdk/coercion';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -11,8 +11,6 @@ import {
   OnInit,
   signal,
   viewChild,
-  numberAttribute,
-  booleanAttribute,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';

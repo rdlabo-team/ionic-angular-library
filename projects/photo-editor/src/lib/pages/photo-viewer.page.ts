@@ -1,16 +1,15 @@
 import {
+  ChangeDetectionStrategy,
   Component,
   CUSTOM_ELEMENTS_SCHEMA,
+  effect,
   ElementRef,
   inject,
-  Input,
+  input,
   OnDestroy,
   OnInit,
-  input,
-  viewChild,
   signal,
-  effect,
-  ChangeDetectionStrategy,
+  viewChild,
 } from '@angular/core';
 import { IonicSlides, ModalController } from '@ionic/angular/standalone';
 import { Navigation, Zoom } from 'swiper/modules';

@@ -3,12 +3,8 @@
  * https://github.com/angular/components/blob/main/src/cdk/scrolling/fixed-size-virtual-scroll.ts
  */
 
-/* eslint-disable @rdlabo/rules/deny-soft-private-modifier  */
-/* eslint-disable @angular-eslint/directive-selector */
-/* eslint-disable @angular-eslint/directive-class-suffix */
-
-import { coerceNumberProperty, coerceBooleanProperty, BooleanInput, NumberInput } from '@angular/cdk/coercion';
-import { Directive, effect, ElementRef, forwardRef, inject, input, Input, OnChanges } from '@angular/core';
+import { BooleanInput, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
+import { Directive, effect, ElementRef, forwardRef, inject, input } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import { distinctUntilChanged } from 'rxjs/operators';
 import { CdkVirtualScrollViewport, VIRTUAL_SCROLL_STRATEGY, VirtualScrollStrategy } from '@angular/cdk/scrolling';
@@ -34,10 +30,10 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
 
   /** This is added for reverse virtual scroll **/
   private _isReverse: boolean;
-  measureScrollOffset: number = 0;
+  measureScrollOffset = 0;
 
   /** This is added for change dataLength **/
-  private _latestDataLength: number = 0;
+  private _latestDataLength = 0;
 
   /**
    * @param itemSize The size of the items in the virtually scrolling list.
