@@ -8,6 +8,9 @@
   "bugs": {
     "url": "git@github.com:rdlabo-team/ionic-angular-library.git/issues"
   },
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "ng": "ng",
     "start": "ng serve",
