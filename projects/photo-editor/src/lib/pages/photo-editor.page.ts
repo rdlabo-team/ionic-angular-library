@@ -1,4 +1,16 @@
-import { Component, ElementRef, inject, OnDestroy, OnInit, signal, input, viewChild, effect, computed } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  ElementRef,
+  inject,
+  input,
+  OnDestroy,
+  OnInit,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { IonContent, ModalController, RangeCustomEvent, ViewDidEnter, ViewDidLeave } from '@ionic/angular/standalone';
@@ -17,6 +29,7 @@ import { dictionaryForEditor } from '../dictionaries';
   styleUrls: ['./core.scss', './photo-editor.page.scss'],
   imports: [CommonModule, FormsModule, ...ionComponents],
   providers: [HelperService],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave {
   readonly modalCtrl = inject(ModalController);

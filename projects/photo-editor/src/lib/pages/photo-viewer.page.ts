@@ -10,6 +10,7 @@ import {
   viewChild,
   signal,
   effect,
+  ChangeDetectionStrategy,
 } from '@angular/core';
 import { IonicSlides, ModalController } from '@ionic/angular/standalone';
 import { Navigation, Zoom } from 'swiper/modules';
@@ -28,6 +29,7 @@ import { dictionaryForViewer } from '../dictionaries';
   imports: [...ionComponents],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
   providers: [HelperService],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PhotoViewerPage implements OnInit, OnDestroy {
   readonly imageUrls = input.required<string[]>();
