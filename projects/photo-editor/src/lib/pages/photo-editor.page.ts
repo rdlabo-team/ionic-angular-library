@@ -1,5 +1,5 @@
 import { Component, ElementRef, inject, Input, OnDestroy, OnInit, signal, ViewChild } from '@angular/core';
-import { CommonModule, NgOptimizedImage } from '@angular/common';
+import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { IonContent, ModalController, RangeCustomEvent, ViewDidEnter, ViewDidLeave } from '@ionic/angular/standalone';
 import ImageEditor from 'tui-image-editor';
@@ -15,7 +15,7 @@ import { dictionaryForEditor } from '../dictionaries';
   selector: 'app-editor-image',
   templateUrl: './photo-editor.page.html',
   styleUrls: ['./core.scss', './photo-editor.page.scss'],
-  imports: [CommonModule, FormsModule, NgOptimizedImage, ...ionComponents],
+  imports: [CommonModule, FormsModule, ...ionComponents],
   providers: [HelperService],
 })
 export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave {

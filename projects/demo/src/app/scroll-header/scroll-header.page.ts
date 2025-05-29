@@ -11,7 +11,6 @@ import {
   IonLabel,
   IonList,
   IonListHeader,
-  IonNote,
   IonTitle,
   IonToolbar,
 } from '@ionic/angular/standalone';

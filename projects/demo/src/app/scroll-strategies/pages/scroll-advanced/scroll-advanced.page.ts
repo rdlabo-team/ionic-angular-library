@@ -2,7 +2,6 @@ import { Component, computed, inject, OnInit, signal, viewChild } from '@angular
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
-  IonAvatar,
   IonBackButton,
   IonButton,
   IonButtons,
@@ -11,11 +10,8 @@ import {
   IonFabButton,
   IonHeader,
   IonIcon,
-  IonImg,
   IonInfiniteScroll,
   IonInfiniteScrollContent,
-  IonItem,
-  IonLabel,
   IonList,
   IonRefresher,
   IonRefresherContent,

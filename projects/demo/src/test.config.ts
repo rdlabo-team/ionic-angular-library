@@ -1,6 +1,6 @@
 import { ApplicationConfig, importProvidersFrom } from '@angular/core';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
-import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { ReactiveFormsModule } from '@angular/forms';
 import { IonNav, IonRouterOutlet, ModalController, NavController, NavParams, PopoverController } from '@ionic/angular/standalone';
 
 import { IonRouterOutletMock } from '../mocks/angular/ion-router-outlet';

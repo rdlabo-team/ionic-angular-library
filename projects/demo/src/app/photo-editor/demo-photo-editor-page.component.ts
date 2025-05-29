@@ -12,7 +12,6 @@ import {
   IonLabel,
   IonList,
   IonListHeader,
-  IonNote,
   IonTitle,
   IonToolbar,
   ModalController,

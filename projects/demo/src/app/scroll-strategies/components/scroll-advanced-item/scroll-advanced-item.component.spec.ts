@@ -1,5 +1,4 @@
-import { ComponentFixture, TestBed, waitForAsync } from '@angular/core/testing';
-import { IonicModule } from '@ionic/angular';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { ScrollAdvancedItemComponent } from './scroll-advanced-item.component';
 import { testConfig } from '../../../../test.config';

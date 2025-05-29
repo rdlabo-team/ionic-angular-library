@@ -2,7 +2,6 @@ import { Component, CUSTOM_ELEMENTS_SCHEMA, ElementRef, inject, Input, OnDestroy
 import { IonicSlides, ModalController } from '@ionic/angular/standalone';
 import { Navigation, Zoom } from 'swiper/modules';
 import { fromEvent, Subscription, throttleTime, withLatestFrom, zipWith } from 'rxjs';
-import { NgFor, NgIf } from '@angular/common';
 import { SwiperContainer } from 'swiper/element';
 import { ionComponents } from '../ion-components';
 import { HelperService } from '../service/helper.service';
@@ -14,7 +13,7 @@ import { dictionaryForViewer } from '../dictionaries';
   selector: 'app-photo-image',
   templateUrl: './photo-viewer.page.html',
   styleUrls: ['./core.scss', './photo-viewer.page.scss'],
-  imports: [NgFor, NgIf, ...ionComponents],
+  imports: [...ionComponents],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
   providers: [HelperService],
 })
