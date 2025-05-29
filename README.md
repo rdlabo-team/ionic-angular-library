@@ -6,6 +6,7 @@ These libraries is a collection of components and services that are useful for d
 
 | Angular | @rdlabo/ionic-angular-** |
 |---------|--------------------------|
+| v20     | v20.x                    |
 | v19     | v19.x                    |
 | v18     | v2.x                     |
 

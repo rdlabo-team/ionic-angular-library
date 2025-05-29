@@ -1,6 +1,6 @@
 # @rdlabo/ngx-cdk-scroll-strategies
 
-This is strategies of dynamic item size for `@angular/cdk/scrolling`. This allows you set specify each item size in the array to be used for Virtual Scroll.
+This is strategies of dynamic item size for `@angular/cdk/scrolling`. This allows you set specify each item size in the array to be used for Virtual Scroll. Although the repository name includes “Ionic” this strategy only works with Angular.
 
 This is a simple coding concept:
 
