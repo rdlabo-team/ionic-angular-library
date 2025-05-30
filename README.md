@@ -4,11 +4,11 @@ These libraries is a collection of components and services that are useful for d
 
 ## Support Version
 
-| Angular | @rdlabo/ionic-angular-** |
-|---------|--------------------------|
-| v20     | v20.x                    |
-| v19     | v19.x                    |
-| v18     | v2.x                     |
+| Angular | Package version |
+|---------|-----------------|
+| v20     | 20.x.x          |
+| v19     | 19.x.x          |
+| v18     | 2.x.x           |
 
 
 ## packages
