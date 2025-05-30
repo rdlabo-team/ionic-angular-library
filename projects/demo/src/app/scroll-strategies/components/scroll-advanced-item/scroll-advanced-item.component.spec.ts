@@ -1,7 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import { ScrollAdvancedItemComponent } from './scroll-advanced-item.component';
-import { testConfig } from '../../../../test.config';
+import { testConfig } from '../../../../../../util/test.config';
 import { ComponentRef } from '@angular/core';
 
 describe('ScrollAdvancedItemComponent', () => {

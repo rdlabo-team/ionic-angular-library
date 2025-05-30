@@ -10,8 +10,6 @@ export class ScrollAdvancedCalcService {
   readonly cacheCalcDynamic = signal<DynamicSizeCache[]>([]);
   readonly beforeCacheCalcDynamicSize = signal<number>(0);
 
-  constructor() {}
-
   changeItemsToDynamicItemSize(
     items: ScrollAdvancedItem[],
     dynamicSizeCache: DynamicSizeCache[],

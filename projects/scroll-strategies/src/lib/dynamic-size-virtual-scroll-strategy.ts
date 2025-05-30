@@ -3,12 +3,8 @@
  * https://github.com/angular/components/blob/main/src/cdk/scrolling/fixed-size-virtual-scroll.ts
  */
 
-/* eslint-disable @rdlabo/rules/deny-soft-private-modifier  */
-/* eslint-disable @angular-eslint/directive-selector */
-/* eslint-disable @angular-eslint/directive-class-suffix */
-
-import { coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
-import { Directive, ElementRef, forwardRef, inject, Input, OnChanges } from '@angular/core';
+import { BooleanInput, coerceArray, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
+import { Directive, effect, ElementRef, forwardRef, inject, input } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import { distinctUntilChanged } from 'rxjs/operators';
 import { CdkVirtualScrollViewport, VIRTUAL_SCROLL_STRATEGY, VirtualScrollStrategy } from '@angular/cdk/scrolling';
@@ -34,10 +30,10 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
 
   /** This is added for reverse virtual scroll **/
   private _isReverse: boolean;
-  measureScrollOffset: number = 0;
+  measureScrollOffset = 0;
 
   /** This is added for change dataLength **/
-  private _latestDataLength: number = 0;
+  private _latestDataLength = 0;
 
   /**
    * @param itemSize The size of the items in the virtually scrolling list.
@@ -76,7 +72,6 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
    * @param isReverse
    */
   updateItemAndBufferSize(itemDynamicSize: itemDynamicSize[], minBufferPx: number, maxBufferPx: number, isReverse: boolean) {
-    // if (maxBufferPx < minBufferPx && (typeof ngDevMode === 'undefined' || ngDevMode)) {
     if (maxBufferPx < minBufferPx) {
       throw Error('CDK virtual scroll: maxBufferPx must be greater than or equal to minBufferPx');
     }
@@ -309,7 +304,6 @@ export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number,
 /** A virtual scroll strategy that supports fixed-size items. */
 @Directive({
   selector: 'cdk-virtual-scroll-viewport[itemDynamicSizes]',
-  standalone: true,
   providers: [
     {
       provide: VIRTUAL_SCROLL_STRATEGY,
@@ -318,62 +312,51 @@ export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number,
     },
   ],
 })
-export class CdkDynamicSizeVirtualScroll implements OnChanges {
-  /** The size of the items in the list (in pixels). */
-  @Input()
-  get itemDynamicSizes(): itemDynamicSize[] {
-    return this._itemDynamicSizes;
-  }
-  set itemDynamicSizes(value: itemDynamicSize[]) {
-    // coerceNumberProperty
-    this._itemDynamicSizes = value;
-  }
-  _itemDynamicSizes: itemDynamicSize[] = [];
+export class CdkDynamicSizeVirtualScroll {
+  private readonly el = inject(ElementRef);
+
+  readonly itemDynamicSizes = input<itemDynamicSize[], itemDynamicSize[]>([], {
+    transform: coerceArray,
+  });
 
   /**
    * The minimum amount of buffer rendered beyond the viewport (in pixels).
    * If the amount of buffer dips below this number, more items will be rendered. Defaults to 100px.
    */
-  @Input()
-  get minBufferPx(): number {
-    return this._minBufferPx;
-  }
-  set minBufferPx(value: NumberInput) {
-    this._minBufferPx = coerceNumberProperty(value);
-  }
-  _minBufferPx = 100;
+  readonly minBufferPx = input<number, NumberInput>(100, {
+    transform: coerceNumberProperty,
+  });
 
   /**
    * The number of pixels worth of buffer to render for when rendering new items. Defaults to 200px.
    */
-  @Input()
-  get maxBufferPx(): number {
-    return this._maxBufferPx;
-  }
-  set maxBufferPx(value: NumberInput) {
-    this._maxBufferPx = coerceNumberProperty(value);
-  }
-  _maxBufferPx = 200;
+  readonly maxBufferPx = input<number, NumberInput>(200, {
+    transform: coerceNumberProperty,
+  });
 
-  @Input()
-  get isReverse(): boolean {
-    return this._isReverse;
-  }
-  set isReverse(value: boolean) {
-    this._isReverse = value;
-  }
-  _isReverse = false;
+  readonly isReverse = input<boolean, BooleanInput>(false, {
+    transform: coerceBooleanProperty,
+  });
 
   /** The scroll strategy used by this directive. */
-  _scrollStrategy = new DynamicSizeVirtualScrollStrategy(this.itemDynamicSizes, this.minBufferPx, this.maxBufferPx, this.isReverse);
+  readonly _scrollStrategy = new DynamicSizeVirtualScrollStrategy(
+    this.itemDynamicSizes(),
+    this.minBufferPx(),
+    this.maxBufferPx(),
+    this.isReverse(),
+  );
 
-  private el = inject(ElementRef);
-
-  ngOnChanges() {
-    if (this.isReverse) {
-      this.el.nativeElement.classList.add('reverse-scroll');
-    }
-    this._scrollStrategy.updateItemAndBufferSize(this.itemDynamicSizes, this.minBufferPx, this.maxBufferPx, this.isReverse);
+  constructor() {
+    effect(() => {
+      if (this.isReverse()) {
+        this.el.nativeElement.classList.add('reverse-scroll');
+      } else {
+        this.el.nativeElement.classList.remove('reverse-scroll');
+      }
+    });
+    effect(() =>
+      this._scrollStrategy.updateItemAndBufferSize(this.itemDynamicSizes(), this.minBufferPx(), this.maxBufferPx(), this.isReverse()),
+    );
   }
 
   /** For isReverse scroll. Because virtualScroll.measureScrollOffset is not work. **/

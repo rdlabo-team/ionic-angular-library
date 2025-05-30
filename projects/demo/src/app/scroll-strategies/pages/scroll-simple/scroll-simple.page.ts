@@ -1,4 +1,4 @@
-import { Component, computed, OnInit, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, OnInit, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -44,14 +44,13 @@ type Item = itemDynamicSize & {
     IonInfiniteScroll,
     IonInfiniteScrollContent,
   ],
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ScrollSimplePage implements OnInit {
   readonly items = signal<Item[]>([]);
   readonly dynamicSize = computed<itemDynamicSize[]>(() => {
     return this.items().map((item) => ({ trackId: item.trackId, itemSize: item.itemSize }));
   });
-
-  constructor() {}
 
   ngOnInit() {
     this.items.set(this.#createItems(200));

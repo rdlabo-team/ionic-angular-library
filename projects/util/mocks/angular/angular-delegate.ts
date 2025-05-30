@@ -1,4 +1,4 @@
-import { EnvironmentInjector, Injector } from '@angular/core';
+import { ApplicationRef, NgZone, Injector, EnvironmentInjector, ComponentRef } from '@angular/core';
 import { FrameworkDelegate } from '@ionic/core/components';
 
 export class MockAngularDelegate {

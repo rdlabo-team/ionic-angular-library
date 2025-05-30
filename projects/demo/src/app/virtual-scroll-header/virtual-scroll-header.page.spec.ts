@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { VirtualScrollHeaderPage } from './virtual-scroll-header.page';
-import { testConfig } from '../../test.config';
+import { testConfig } from '../../../../util/test.config';
 
 describe('VirtualScrollHeaderPage', () => {
   let component: VirtualScrollHeaderPage;

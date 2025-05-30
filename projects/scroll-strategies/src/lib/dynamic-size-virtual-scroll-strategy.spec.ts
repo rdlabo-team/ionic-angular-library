@@ -28,7 +28,7 @@ describe('DynamicSizeVirtualScrollStrategy', () => {
   });
 
   it('calcReverseIndex', () => {
-    expect(calcIndex(dynamicSizes, 10, 2, true)).toEqual(1);
+    expect(calcIndex(dynamicSizes, 10, 2, true)).toEqual(2);
     expect(calcIndex(dynamicSizes, 200, 30, true)).toEqual(6.818181818181813);
   });
 
@@ -380,6 +380,6 @@ describe('DynamicSizeVirtualScrollStrategy', () => {
         source: 'cache',
       },
     ];
-    expect(calcIndex(dynamic, 1610, 50.95357142856153)).toEqual(17.04642857143847);
+    expect(calcIndex(dynamic, 1610, 50.95357142856153)).toEqual(18.04642857143847);
   });
 });

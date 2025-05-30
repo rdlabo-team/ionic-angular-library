@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ScrollStrategiesPage } from './scroll-strategies.page';
-import { testConfig } from '../../../../test.config';
+import { testConfig } from '../../../../../../util/test.config';
 
 describe('ScrollStrategiesPage', () => {
   let component: ScrollStrategiesPage;

@@ -5,9 +5,9 @@
         <ion-icon name="close-outline" slot="icon-only"></ion-icon>
       </ion-button>
     </ion-buttons>
-    @if (enableDelete) {
+    @if (enableDelete()) {
       <ion-buttons slot="end">
-        <ion-button color="photo-editor-danger" fill="outline" (click)="remove()">{{ dictionary.delete }}</ion-button>
+        <ion-button color="photo-editor-danger" fill="outline" (click)="remove()">{{ dictionary().delete }}</ion-button>
       </ion-buttons>
     }
   </ion-toolbar>
@@ -15,15 +15,15 @@
 
 <ion-content [fullscreen]="true">
   <swiper-container #swiper>
-    @for (url of imageUrls; track url) {
+    @for (url of imageUrls(); track url) {
       <swiper-slide>
-        <div class="swiper-zoom-container"><img [src]="url" alt="" [class.circle]="isCircle" /></div>
+        <div class="swiper-zoom-container"><img [src]="url" alt="" [class.circle]="isCircle()" /></div>
       </swiper-slide>
     }
   </swiper-container>
 </ion-content>
 
-@if (enableFooterSafeArea) {
+@if (enableFooterSafeArea()) {
   <!-- use for safe area-->
   <ion-footer>
     <ion-toolbar style="--border-width: 0; --min-height: 0"></ion-toolbar>

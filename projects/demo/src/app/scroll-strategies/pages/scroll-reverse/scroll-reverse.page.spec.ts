@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ScrollReversePage } from './scroll-reverse.page';
-import { testConfig } from '../../../../test.config';
+import { testConfig } from '../../../../../../util/test.config';
 
 describe('ScrollReversePage', () => {
   let component: ScrollReversePage;

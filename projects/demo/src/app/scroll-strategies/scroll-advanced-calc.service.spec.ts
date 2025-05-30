@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 
 import { ScrollAdvancedCalcService } from './scroll-advanced-calc.service';
-import { testConfig } from '../../test.config';
+import { testConfig } from '../../../../util/test.config';
 
 describe('ScrollAdvancedCalcService', () => {
   let service: ScrollAdvancedCalcService;
