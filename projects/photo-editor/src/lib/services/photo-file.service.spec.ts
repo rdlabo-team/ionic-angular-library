@@ -1,13 +1,17 @@
-import { TestBed, waitForAsync } from '@angular/core/testing';
+import { TestBed } from '@angular/core/testing';
 
 import { PhotoFileService } from './photo-file.service';
+import { testConfig } from '../../../../util/test.config';
 
 describe('PhotoService', () => {
   let service: PhotoFileService;
 
-  beforeEach(waitForAsync(() => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [...testConfig.providers],
+    });
     service = TestBed.inject(PhotoFileService);
-  }));
+  });
 
   it('should be created', () => {
     expect(service).toBeTruthy();

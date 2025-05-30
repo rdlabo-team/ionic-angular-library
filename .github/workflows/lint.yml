@@ -6,7 +6,7 @@ on:
   pull_request:
     types: [opened]
 jobs:
-  lintApp:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,3 +22,21 @@ jobs:
       - run: npm install
       - run: npm run lint
       - run: npm run build
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        project: [ demo, photo-editor, scroll-header, scroll-strategies]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      - run: npm install
+      - run: npm run test -- ${{ matrix.project }}

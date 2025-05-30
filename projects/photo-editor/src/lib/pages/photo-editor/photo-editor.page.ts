@@ -16,25 +16,23 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { IonContent, ModalController, RangeCustomEvent, ViewDidEnter, ViewDidLeave } from '@ionic/angular/standalone';
 import ImageEditor from 'tui-image-editor';
-import { filterPreset } from '../filter-preset';
+import { filterPreset } from '../../filter-preset';
 import { Subscription } from 'rxjs';
 import { toObservable } from '@angular/core/rxjs-interop';
-import { IDictionaryForEditor, IFilter, IPhotoEditorDismiss, ISize } from '../types';
-import { HelperService } from '../service/helper.service';
-import { ionComponents } from '../ion-components';
-import { dictionaryForEditor } from '../dictionaries';
+import { IDictionaryForEditor, IFilter, IPhotoEditorDismiss, ISize } from '../../types';
+import { ionComponents } from '../../ion-components';
+import { dictionaryForEditor } from '../../dictionaries';
+import { initializeEditorIcons, waitToFindDom } from '../util';
 
 @Component({
   selector: 'app-editor-image',
   templateUrl: './photo-editor.page.html',
-  styleUrls: ['./core.scss', './photo-editor.page.scss'],
+  styleUrls: ['../core.scss', './photo-editor.page.scss'],
   imports: [CommonModule, FormsModule, ...ionComponents],
-  providers: [HelperService],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDidLeave {
   readonly modalCtrl = inject(ModalController);
-  private readonly service = inject(HelperService);
 
   protected readonly dictionary = signal<IDictionaryForEditor>(dictionaryForEditor());
 
@@ -85,7 +83,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
   });
 
   constructor() {
-    this.service.initializeEditorIcons();
+    initializeEditorIcons();
   }
 
   ngOnInit() {
@@ -111,7 +109,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
       cssMaxWidth: this.ionContent().nativeElement.clientWidth - 32,
       cssMaxHeight: this.ionContent().nativeElement.clientHeight - 32,
     });
-    this.service.waitToFindDom(this.editorRef().nativeElement, '.tui-image-editor-canvas-container').then(() => {
+    waitToFindDom(this.editorRef().nativeElement, '.tui-image-editor-canvas-container').then(() => {
       this.canvasContainerObserver.observe(this.editorRef().nativeElement.querySelector('.tui-image-editor-canvas-container'), {
         attributes: true,
         childList: false,

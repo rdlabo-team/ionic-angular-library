@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ScrollAdvancedPage } from './scroll-advanced.page';
-import { testConfig } from '../../../../test.config';
+import { testConfig } from '../../../../../../util/test.config';
 
 describe('ScrollAdvancedPage', () => {
   let component: ScrollAdvancedPage;

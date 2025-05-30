@@ -3,7 +3,7 @@
  * https://github.com/angular/components/blob/main/src/cdk/scrolling/fixed-size-virtual-scroll.ts
  */
 
-import { BooleanInput, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
+import { BooleanInput, coerceArray, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
 import { Directive, effect, ElementRef, forwardRef, inject, input } from '@angular/core';
 import { Observable, Subject } from 'rxjs';
 import { distinctUntilChanged } from 'rxjs/operators';
@@ -72,7 +72,6 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
    * @param isReverse
    */
   updateItemAndBufferSize(itemDynamicSize: itemDynamicSize[], minBufferPx: number, maxBufferPx: number, isReverse: boolean) {
-    // if (maxBufferPx < minBufferPx && (typeof ngDevMode === 'undefined' || ngDevMode)) {
     if (maxBufferPx < minBufferPx) {
       throw Error('CDK virtual scroll: maxBufferPx must be greater than or equal to minBufferPx');
     }
@@ -316,7 +315,9 @@ export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number,
 export class CdkDynamicSizeVirtualScroll {
   private readonly el = inject(ElementRef);
 
-  readonly itemDynamicSizes = input.required<itemDynamicSize[]>();
+  readonly itemDynamicSizes = input<itemDynamicSize[], itemDynamicSize[]>([], {
+    transform: coerceArray,
+  });
 
   /**
    * The minimum amount of buffer rendered beyond the viewport (in pixels).

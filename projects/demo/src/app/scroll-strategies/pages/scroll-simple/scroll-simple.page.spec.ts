@@ -1,6 +1,6 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ScrollSimplePage } from './scroll-simple.page';
-import { testConfig } from '../../../../test.config';
+import { testConfig } from '../../../../../../util/test.config';
 
 describe('ScrollSimplePage', () => {
   let component: ScrollSimplePage;

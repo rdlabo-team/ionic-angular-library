@@ -15,20 +15,19 @@ import { IonicSlides, ModalController } from '@ionic/angular/standalone';
 import { Navigation, Zoom } from 'swiper/modules';
 import { fromEvent, Subscription, throttleTime, withLatestFrom, zipWith } from 'rxjs';
 import { SwiperContainer } from 'swiper/element';
-import { ionComponents } from '../ion-components';
-import { HelperService } from '../service/helper.service';
-import { IDictionaryForViewer, IPhotoViewerDismiss } from '../types';
+import { ionComponents } from '../../ion-components';
+import { IDictionaryForViewer, IPhotoViewerDismiss } from '../../types';
 import { register } from 'swiper/element/bundle';
-import { dictionaryForViewer } from '../dictionaries';
+import { dictionaryForViewer } from '../../dictionaries';
 import { BooleanInput, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
+import { initializeViewerIcons, waitToFindDom } from '../util';
 
 @Component({
   selector: 'app-photo-image',
   templateUrl: './photo-viewer.page.html',
-  styleUrls: ['./core.scss', './photo-viewer.page.scss'],
+  styleUrls: ['../core.scss', './photo-viewer.page.scss'],
   imports: [...ionComponents],
   schemas: [CUSTOM_ELEMENTS_SCHEMA],
-  providers: [HelperService],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PhotoViewerPage implements OnInit, OnDestroy {
@@ -58,15 +57,14 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
   readonly watchSwipe$ = new Subscription();
   readonly modalCtrl = inject(ModalController);
   private readonly el = inject(ElementRef);
-  private readonly service = inject(HelperService);
 
   constructor() {
     register();
-    this.service.initializeViewerIcons();
+    initializeViewerIcons();
   }
 
   async ngOnInit() {
-    this.service.waitToFindDom(this.el.nativeElement, 'swiper-container').then(() => {
+    waitToFindDom(this.el.nativeElement, 'swiper-container').then(() => {
       const index = this.index();
       const swiper = this.swiper();
       Object.assign(swiper.nativeElement, {

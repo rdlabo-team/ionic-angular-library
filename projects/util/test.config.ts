@@ -1,19 +1,19 @@
-import { ApplicationConfig, importProvidersFrom } from '@angular/core';
-import { provideHttpClientTesting } from '@angular/common/http/testing';
-import { ReactiveFormsModule } from '@angular/forms';
-import { IonNav, IonRouterOutlet, ModalController, NavController, NavParams, PopoverController } from '@ionic/angular/standalone';
+/* eslint @rdlabo/rules/deny-import-from-ionic-module: off */
 
-import { IonRouterOutletMock } from '../mocks/angular/ion-router-outlet';
-import { ModalControllerMock } from '../mocks/angular/modal-controller';
-import { NavControllerMock } from '../mocks/angular/nav-controller';
-import { PopoverControllerMock } from '../mocks/angular/popover-controller';
+import { ApplicationConfig, importProvidersFrom, provideZonelessChangeDetection } from '@angular/core';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { FormsModule, ReactiveFormsModule } from '@angular/forms';
+import { IonNav, IonRouterOutlet, ModalController, NavController, NavParams, PopoverController } from '@ionic/angular/standalone';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
-import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { routes } from './app/app.routes';
-import { AngularDelegate } from '@ionic/angular';
+import { IonRouterOutletMock } from './mocks/angular/ion-router-outlet';
+import { ModalControllerMock } from './mocks/angular/modal-controller';
+import { NavControllerMock } from './mocks/angular/nav-controller';
+import { PopoverControllerMock } from './mocks/angular/popover-controller';
+import { MockAngularDelegate } from './mocks/angular/angular-delegate';
 
-import { MockAngularDelegate } from '../mocks/angular/angular-delegate';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { AngularDelegate } from '@ionic/angular';
 
 /**
  * Standalone configuration for Angular tests
@@ -23,8 +23,9 @@ import { MockAngularDelegate } from '../mocks/angular/angular-delegate';
  */
 export const testConfig: ApplicationConfig = {
   providers: [
-    provideRouter(routes, withComponentInputBinding()),
-    importProvidersFrom(ReactiveFormsModule),
+    provideZonelessChangeDetection(),
+    provideRouter([], withComponentInputBinding()),
+    importProvidersFrom(FormsModule, ReactiveFormsModule),
     NavParams,
     IonNav,
     {

@@ -67,6 +67,7 @@
           "options": {
             "polyfills": [],
             "tsConfig": "projects/demo/tsconfig.spec.json",
+            "karmaConfig": "karma.conf.js",
             "inlineStyleLanguage": "scss",
             "assets": [
               "projects/demo/src/favicon.ico",
@@ -115,6 +116,7 @@
           "builder": "@angular/build:karma",
           "options": {
             "tsConfig": "projects/photo-editor/tsconfig.spec.json",
+            "karmaConfig": "karma.conf.js",
             "polyfills": []
           }
         },
@@ -155,6 +157,7 @@
           "builder": "@angular/build:karma",
           "options": {
             "tsConfig": "projects/scroll-header/tsconfig.spec.json",
+            "karmaConfig": "karma.conf.js",
             "polyfills": []
           }
         },
@@ -195,6 +198,7 @@
           "builder": "@angular/build:karma",
           "options": {
             "tsConfig": "projects/scroll-strategies/tsconfig.spec.json",
+            "karmaConfig": "karma.conf.js",
             "polyfills": []
           }
         },
