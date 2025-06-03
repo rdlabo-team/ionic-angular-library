@@ -17,6 +17,7 @@
     "build": "ng build demo",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
+    "test:headless": "CHROME_BIN=/usr/bin/google-chrome ng test --watch=false",
     "cap": "npm run build -- --configuration production && npx cap copy",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
     "prebuild:photo-editor": "ng build photo-editor --configuration=production",
