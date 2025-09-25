@@ -16,6 +16,9 @@
     "moduleResolution": "bundler",
     "importHelpers": true,
     "paths": {
+      "ionic-theme-ios26": [
+        "./dist/ionic-theme-ios26"
+      ],
       "scroll-strategies": [
         "./dist/scroll-strategies"
       ],

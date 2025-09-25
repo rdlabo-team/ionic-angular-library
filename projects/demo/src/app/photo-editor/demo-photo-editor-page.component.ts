@@ -9,6 +9,7 @@ import {
   IonHeader,
   IonIcon,
   IonItem,
+  IonItemGroup,
   IonLabel,
   IonList,
   IonListHeader,
@@ -37,6 +38,7 @@ import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileSer
     IonLabel,
     IonList,
     IonListHeader,
+    IonItemGroup,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })

@@ -18,6 +18,7 @@
 
 @import '@ionic/angular/css/ionic-swiper.css';
 @import '@rdlabo/ionic-angular-scroll-header/css/scroll-header.directive.css';
+@import '@rdlabo/ionic-theme-ios26/css/ionic-theme-ios26.css';
 
 :root {
   --ion-photo-editor-background: #2a2a2a;
@@ -25,6 +26,8 @@
 
   --ion-photo-editor-color: #f0f0f0;
   --ion-photo-editor-color-tint: #dbdbdb;
+
+  --max-safe-area: calc(max(10px, var(--ion-safe-area-bottom, 0px)) + var(--admob-safe-area, 0px));
 }
 
 cdk-virtual-scroll-viewport {

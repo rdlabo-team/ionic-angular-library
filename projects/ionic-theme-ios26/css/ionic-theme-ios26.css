@@ -1,0 +1,422 @@
+@charset "UTF-8";
+:root {
+  --system-dark-rgb: 0, 0, 0;
+  --system-light-rgb: 255, 255, 255;
+  --system-tab-active-rgb: 16, 16, 16;
+  --system-shadow-rgb: 224, 224, 224;
+  --system-background-rgb: 255, 255, 255;
+  --system-edge-rgb: 255, 255, 255;
+}
+
+.ion-palette-dark {
+  --system-dark-rgb: 255, 255, 255;
+  --system-light-rgb: 58, 58, 58;
+  --system-tab-active-rgb: 255, 255, 255;
+  --system-shadow-rgb: translarent;
+  --system-background-rgb: 0, 0, 0;
+  --system-edge-rgb: 80, 80, 80;
+}
+
+.ios ion-popover {
+  --backdrop-opacity: 0.04;
+}
+.ios ion-popover:not(.popover-exclude-content)::part(content) {
+  background: rgba(var(--system-light-rgb), 0.6);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  border-radius: 24px;
+  padding: 0;
+}
+.ios ion-popover ion-list {
+  background: transparent;
+}
+.ios ion-popover ion-list ion-item {
+  --background: transparent;
+}
+
+.ios .toolbar-searchbar::part(container) {
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+.ios ion-modal ion-searchbar:not(.area-searchbar) .searchbar-input-container {
+  margin: 0 6px;
+}
+.ios ion-searchbar:not(.area-searchbar) {
+  min-height: 60px;
+  padding: 0;
+}
+.ios ion-searchbar:not(.area-searchbar) ion-icon.searchbar-search-icon {
+  inset-inline-start: 12px;
+}
+.ios ion-searchbar:not(.area-searchbar) .searchbar-input-container {
+  margin: 0 8px 0 16px;
+  align-self: center;
+  justify-self: center;
+}
+.ios ion-searchbar:not(.area-searchbar) .searchbar-input-container input.searchbar-input {
+  min-height: 44px;
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  backdrop-filter: none;
+  border-radius: 20px;
+  padding-inline-start: 2.4rem !important;
+}
+.ios ion-searchbar:not(.area-searchbar) .searchbar-input-container .searchbar-clear-button {
+  padding-inline-end: 2rem !important;
+}
+
+.ios app-talk-room .talk-system-message {
+  transform: translateY(-80px);
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar {
+  --border-width: 0;
+  --background: transparent;
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.toolbar-blockquote {
+  position: absolute;
+  top: -56px;
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.toolbar-blockquote ion-item {
+  padding: 8px 12px;
+  --inner-padding-end: 4px;
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.toolbar-blockquote ion-item ion-avatar {
+  transform: translateX(-10px);
+  margin-right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.toolbar-blockquote ion-item ion-avatar ion-icon {
+  font-size: 1.6rem;
+  color: var(--ion-color-medium-tint);
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.toolbar-blockquote ion-item::part(native) {
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  border-radius: 20px;
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.send-message ion-textarea.input-field {
+  transition: width 0.5s ease;
+  --padding-start: 16px;
+  --padding-end: 16px;
+}
+.ios app-talk-room ion-footer#talk-footer ion-toolbar.send-message ion-textarea.input-field label.textarea-wrapper {
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  margin: 8px 8px;
+  border-radius: 32px;
+}
+
+.ios ion-fab.inner-tab-bar {
+  right: calc(16px + var(--ion-safe-area-right, 0px));
+  bottom: var(--max-safe-area);
+}
+.ios ion-fab.inner-tab-bar ion-fab-button {
+  --background-activated: rgba(var(--system-light-rgb), 0.3);
+}
+.ios ion-fab.inner-tab-bar ion-fab-button::part(native) {
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  color: rgb(var(--system-dark-rgb));
+}
+.ios ion-tab-bar {
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  z-index: 2;
+  border-radius: 40px;
+  width: calc(100% - 56px - 16px - 16px - 4px - 16px);
+  max-width: 400px;
+  padding: 2px 2px;
+  bottom: var(--max-safe-area);
+  left: calc(16px + var(--ion-safe-area-left, 0px));
+  position: absolute;
+  margin: auto;
+  transition: transform 100ms ease-out;
+  will-change: transform;
+}
+.ios ion-tab-bar:active {
+  transform: scale(1.02);
+}
+.ios ion-tab-bar ion-tab-button {
+  background: rgba(var(--system-light-rgb), 0);
+  height: auto;
+}
+.ios ion-tab-bar ion-tab-button > ion-icon {
+  font-size: 30px;
+}
+.ios ion-tab-bar ion-tab-button::part(native) {
+  overflow: visible;
+}
+.ios ion-tab-bar ion-tab-button.tab-selected::part(native) {
+  backdrop-filter: blur(7px);
+  background: rgba(var(--system-tab-active-rgb), 0.1);
+  transition: background 0.2s ease;
+  border-radius: 32px;
+}
+.ios ion-tab-bar ion-tab-button.tab-selected.ion-activated::part(native) {
+  background: rgba(var(--system-shadow-rgb), 0.02);
+}
+
+.ios {
+  /**
+   * パフォーマンス対策。必ず背景が単色である限りは不要
+   */
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting)::part(native),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button::part(native) {
+  backdrop-filter: none !important;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button,
+.ios ion-buttons.liquid-glass-buttons ion-button {
+  max-height: inherit;
+  margin: 8px;
+  font-size: 1.05rem !important;
+  transition: transform 100ms ease-out;
+  will-change: transform;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting)::part(native),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button::part(native),
+.ios ion-buttons.liquid-glass-buttons ion-button::part(native) {
+  background: rgba(var(--system-light-rgb), 0.7);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  border-radius: 25px;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).ion-activated,
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.ion-activated,
+.ios ion-buttons.liquid-glass-buttons ion-button.ion-activated {
+  transform: scale(1.2);
+  box-shadow: none;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting)[color=primary][fill=outline],
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button[color=primary][fill=outline],
+.ios ion-buttons.liquid-glass-buttons ion-button[color=primary][fill=outline] {
+  color: rgba(var(--ion-color-primary-rgb), 1);
+  transition: transform 100ms ease-out, color 50ms ease;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting)[color=primary][fill=outline].ion-activated::part(native),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button[color=primary][fill=outline].ion-activated::part(native),
+.ios ion-buttons.liquid-glass-buttons ion-button[color=primary][fill=outline].ion-activated::part(native) {
+  color: rgba(var(--ion-color-primary-rgb), 0.2);
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting)[color=primary][fill=outline].ion-activated::part(native)::after,
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button[color=primary][fill=outline].ion-activated::part(native)::after,
+.ios ion-buttons.liquid-glass-buttons ion-button[color=primary][fill=outline].ion-activated::part(native)::after {
+  transform: scale(1.2);
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  box-shadow: none;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).button-has-icon-only::part(native), .ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).back-button-has-icon-only::part(native),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.button-has-icon-only::part(native),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.back-button-has-icon-only::part(native),
+.ios ion-buttons.liquid-glass-buttons ion-button.button-has-icon-only::part(native),
+.ios ion-buttons.liquid-glass-buttons ion-button.back-button-has-icon-only::part(native) {
+  border-radius: 50%;
+  width: 44px;
+  height: 44px;
+  padding: 2px;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).button-has-icon-only ion-icon, .ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).back-button-has-icon-only ion-icon,
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.button-has-icon-only ion-icon,
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.back-button-has-icon-only ion-icon,
+.ios ion-buttons.liquid-glass-buttons ion-button.button-has-icon-only ion-icon,
+.ios ion-buttons.liquid-glass-buttons ion-button.back-button-has-icon-only ion-icon {
+  font-size: 1.4rem !important;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).button-has-icon-only ion-icon[name=close-outline], .ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting).back-button-has-icon-only ion-icon[name=close-outline],
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.button-has-icon-only ion-icon[name=close-outline],
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button.back-button-has-icon-only ion-icon[name=close-outline],
+.ios ion-buttons.liquid-glass-buttons ion-button.button-has-icon-only ion-icon[name=close-outline],
+.ios ion-buttons.liquid-glass-buttons ion-button.back-button-has-icon-only ion-icon[name=close-outline] {
+  font-size: 2rem !important;
+}
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting):not(.button-has-icon-only):not(.back-button-has-icon-only)::part(native),
+.ios .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button:not(.button-has-icon-only):not(.back-button-has-icon-only)::part(native),
+.ios ion-buttons.liquid-glass-buttons ion-button:not(.button-has-icon-only):not(.back-button-has-icon-only)::part(native) {
+  padding: 0 16px;
+  min-height: 44px;
+}
+
+.ios ion-toolbar:not(.minimum-segment-toolbar) ion-segment {
+  width: calc(100% - 16px);
+  border-radius: 16px;
+}
+.ios ion-toolbar:not(.minimum-segment-toolbar) ion-segment ion-segment-button::part(indicator-background) {
+  border-radius: 16px;
+}
+
+.ion-palette-dark.ios .ion-page ion-header > ion-toolbar > ion-buttons *:not(.link-setting),
+.ion-palette-dark.ios .ion-page ion-footer > ion-toolbar > ion-buttons *:not(.link-setting) {
+  opacity: 1;
+}
+.ion-palette-dark.ios .ion-page ion-header > ion-toolbar > ion-buttons *:not(.link-setting)::part(native),
+.ion-palette-dark.ios .ion-page ion-footer > ion-toolbar > ion-buttons *:not(.link-setting)::part(native) {
+  opacity: 1;
+}
+.ion-palette-dark.ios .ion-page ion-header > ion-toolbar > ion-buttons *.ion-activated::part(native),
+.ion-palette-dark.ios .ion-page ion-footer > ion-toolbar > ion-buttons *.ion-activated::part(native) {
+  background: rgba(var(--system-tab-active-rgb), 0.25);
+  backdrop-filter: saturate(180%) blur(7px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-tab-active-rgb), 0.2);
+  border: 0.5px solid rgba(var(--system-tab-active-rgb), 0.7);
+  transition: box-shadow 0.1s ease;
+}
+.ion-palette-dark.ios .ion-page ion-header > ion-toolbar > ion-buttons *.ion-activated ion-icon,
+.ion-palette-dark.ios .ion-page ion-footer > ion-toolbar > ion-buttons *.ion-activated ion-icon {
+  color: rgb(255, 255, 255) !important;
+}
+.ion-palette-dark.ios .ion-page ion-header > ion-toolbar > ion-buttons *[color=primary][fill=outline]::part(native),
+.ion-palette-dark.ios .ion-page ion-footer > ion-toolbar > ion-buttons *[color=primary][fill=outline]::part(native) {
+  color: var(--ion-color-primary-contrast) !important;
+}
+
+.ios ion-toast {
+  --border-radius: 24px;
+}
+.ios ion-card {
+  border-radius: 24px;
+}
+.ios ion-action-sheet {
+  --button-color: var(--ion-color-medium);
+}
+.ios .thread-fab ion-fab-button {
+  --background-activated: rgba(var(--system-light-rgb), 0.3);
+}
+.ios .thread-fab ion-fab-button::part(native) {
+  background: rgba(var(--system-light-rgb), 0.4);
+  backdrop-filter: saturate(240%) blur(6px);
+  box-shadow: inset 0 0 8px 0 rgba(var(--system-shadow-rgb), 0.2), 0 0 12px 0 rgba(var(--system-shadow-rgb), 0.8);
+  border-top: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-right: 0.5px solid rgba(var(--system-edge-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--system-edge-rgb), 1);
+  border-left: 0.5px solid rgba(var(--system-edge-rgb), 0.6);
+  transition: box-shadow 0.1s ease;
+  color: rgb(var(--system-dark-rgb));
+}
+.ios .thread-fab ion-fab-button ion-icon {
+  color: var(--ion-color-medium-shade);
+}
+.ios ion-item.suggest-seeking {
+  --padding-start: 16px !important;
+}
+.ios .can-go-back ion-header ion-toolbar:not(.md):first-child,
+.ios .enable-back-button ion-header ion-toolbar:not(.md):first-child {
+  --border-width: 0;
+}
+.ios ion-header.header-translucent .header-background,
+.ios ion-header.header-translucent .footer-background,
+.ios ion-footer.footer-translucent .header-background,
+.ios ion-footer.footer-translucent .footer-background {
+  backdrop-filter: none;
+}
+.ios ion-header.header-translucent ion-toolbar,
+.ios ion-footer.footer-translucent ion-toolbar {
+  --border-width: 0;
+  --background: transparent;
+}
+.ios ion-header ion-toolbar:first-child {
+  padding-right: calc(var(--ion-safe-area-right) + 4px);
+  padding-left: calc(var(--ion-safe-area-left) + 4px);
+}
+.ios ion-content:not(:has(cdk-virtual-scroll-viewport)) {
+  --padding-bottom: calc(56px + var(--max-safe-area));
+}
+.ios .ion-page :not(:has(ion-footer)) cdk-virtual-scroll-viewport {
+  margin-bottom: calc((56px + var(--max-safe-area)) * -1);
+  padding-bottom: calc(56px + var(--max-safe-area));
+}
+.ios .ion-page ion-content > ion-header > ion-toolbar:first-child {
+  --min-height: 66px;
+}
+.ios .ion-page.enable-back-button ion-content > ion-header > ion-toolbar:first-child, .ios .ion-page.ion-page.can-go-back ion-content > ion-header > ion-toolbar:first-child {
+  --min-height: auto;
+}
+.ios .ion-page ion-header > ion-toolbar.ion-color-primary > ion-buttons *::part(native) {
+  box-shadow: none !important;
+  border-radius: 25px;
+  background: var(--ion-color-primary) !important;
+  border-color: var(--ion-color-primary-contrast) !important;
+  border-width: 1px !important;
+}
+.ios .ion-page ion-header > ion-toolbar.ion-color-primary > ion-buttons *.ion-activated {
+  opacity: 0.4;
+}
+.ios .ion-page ion-header > ion-toolbar.ion-color-primary > ion-buttons *.ion-activated ion-icon {
+  border-color: var(--ion-color-primary-contrast) !important;
+}
+.ios .ion-page ion-header > ion-toolbar.ion-color-primary > ion-buttons *.ion-activated::part(native)::after {
+  background: transparent !important;
+}
+.ios app-photo-image.ion-page ion-header > ion-toolbar > ion-buttons *::part(native),
+.ios app-editor-image.ion-page ion-header > ion-toolbar > ion-buttons *::part(native) {
+  box-shadow: none !important;
+  border-radius: 25px;
+  background: transparent !important;
+  border-width: 1px !important;
+}
+.ios .ion-page ion-content:not(.background-transparent)::after,
+.ios ion-footer.footer-translucent::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  width: 100%;
+  height: calc(56px + var(--max-safe-area));
+  box-shadow: inset 0 0 0 0 rgba(var(--system-background-rgb), 0), inset 0 calc(-56px - var(--max-safe-area)) 40px -40px rgba(var(--system-background-rgb), 0.8);
+  pointer-events: none;
+  z-index: 1;
+}
+.ios app-editor-image.ion-page ion-content::after,
+.ios app-photo-image.ion-page ion-content::after {
+  box-shadow: none !important;
+}
+
+/*# sourceMappingURL=ionic-theme-ios26.css.map */

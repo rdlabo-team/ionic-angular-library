@@ -1,0 +1,10 @@
+{
+  "name": "ionic-theme-ios26",
+  "version": "0.0.1",
+  "exports": {
+    "./css/*": {
+      "style": "./css/*"
+    }
+  },
+  "sideEffects": false
+}
