@@ -68,6 +68,7 @@
             "polyfills": [],
             "tsConfig": "projects/demo/tsconfig.spec.json",
             "karmaConfig": "karma.conf.js",
+            "browsers": "ChromeHeadlessNoSandbox",
             "inlineStyleLanguage": "scss",
             "assets": [
               "projects/demo/src/favicon.ico",
@@ -117,6 +118,7 @@
           "options": {
             "tsConfig": "projects/photo-editor/tsconfig.spec.json",
             "karmaConfig": "karma.conf.js",
+            "browsers": "ChromeHeadlessNoSandbox",
             "polyfills": []
           }
         },
@@ -158,6 +160,7 @@
           "options": {
             "tsConfig": "projects/scroll-header/tsconfig.spec.json",
             "karmaConfig": "karma.conf.js",
+            "browsers": "ChromeHeadlessNoSandbox",
             "polyfills": []
           }
         },
@@ -199,6 +202,7 @@
           "options": {
             "tsConfig": "projects/scroll-strategies/tsconfig.spec.json",
             "karmaConfig": "karma.conf.js",
+            "browsers": "ChromeHeadlessNoSandbox",
             "polyfills": []
           }
         },

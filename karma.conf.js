@@ -34,7 +34,7 @@ module.exports = function (config) {
     colors: true,
     logLevel: config.LOG_INFO,
     autoWatch: true,
-    browsers: ['Chrome', 'ChromeHeadless', 'ChromeHeadlessCI', 'ChromeDebugging'],
+    browsers: ['Chrome', 'ChromeHeadless', 'ChromeHeadlessCI', 'ChromeDebugging', 'ChromeHeadlessNoSandbox'],
     customLaunchers: {
       ChromeHeadlessCI: {
         base: 'ChromeHeadless',
@@ -43,6 +43,21 @@ module.exports = function (config) {
       ChromeDebugging: {
         base: 'Chrome',
         flags: ['--remote-debugging-port=29229'],
+      },
+      ChromeHeadlessNoSandbox: {
+        base: 'ChromeHeadless',
+        flags: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-gpu',
+          '--disable-dev-shm-usage',
+          '--disable-web-security',
+          '--headless',
+          '--disable-extensions',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding'
+        ],
       },
     },
     singleRun: false,
