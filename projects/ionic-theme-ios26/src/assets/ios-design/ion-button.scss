@@ -1,22 +1,12 @@
 @use '../ios-variables';
 
 .ios {
-  /**
-   * パフォーマンス対策。必ず背景が単色である限りは不要
-   */
-  .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting),
-  .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button {
-    &::part(native) {
-      backdrop-filter: none !important;
-    }
-  }
-
   .ion-page ion-header > ion-toolbar > ion-buttons ion-button:not(.link-setting),
   .ion-page ion-header > ion-toolbar > ion-buttons ion-back-button,
   ion-buttons.liquid-glass-buttons ion-button {
     max-height: inherit;
     &::part(native) {
-      @include ios-variables.glass-background(0.7);
+      @include ios-variables.glass-background();
       border-radius: 25px;
     }
     margin: 8px;
