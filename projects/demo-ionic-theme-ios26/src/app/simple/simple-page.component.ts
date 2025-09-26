@@ -223,5 +223,4 @@ export class SimplePageComponent {
       end: 'WIP',
     },
   ];
-  constructor() {}
 }
