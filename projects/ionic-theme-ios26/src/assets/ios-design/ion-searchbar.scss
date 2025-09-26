@@ -1,4 +1,4 @@
-@use 'ios-variables';
+@use '../ios-variables';
 
 .ios {
   .toolbar-searchbar::part(container) {
@@ -10,6 +10,10 @@
     ion-searchbar:not(.area-searchbar) {
       .searchbar-input-container {
         margin: 0 6px;
+        input.searchbar-input {
+          // Modal表示でのアイコン非表示の不具合の対応
+          backdrop-filter: none;
+        }
       }
     }
   }
@@ -29,8 +33,6 @@
       input.searchbar-input {
         min-height: 44px;
         @include ios-variables.glass-background;
-        // Modal表示でのアイコン非表示の不具合の対応
-        backdrop-filter: none;
         border-radius: 20px;
         padding-inline-start: 2.4rem !important;
       }
