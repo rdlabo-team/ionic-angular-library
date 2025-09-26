@@ -1,8 +1,7 @@
-import { ChangeDetectionStrategy, Component, inject, OnInit } from '@angular/core';
+import { ChangeDetectionStrategy, Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
-  IonApp,
   IonButton,
   IonButtons,
   IonContent,
@@ -16,7 +15,6 @@ import {
   IonText,
   IonTitle,
   IonToolbar,
-  ModalController,
 } from '@ionic/angular/standalone';
 
 @Component({
@@ -30,7 +28,6 @@ import {
     IonToolbar,
     CommonModule,
     FormsModule,
-    IonApp,
     IonButton,
     IonButtons,
     IonIcon,

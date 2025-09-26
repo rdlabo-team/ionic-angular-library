@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -15,7 +15,6 @@ import {
   IonItemGroup,
   IonLabel,
   IonList,
-  IonListHeader,
   IonNote,
   IonSearchbar,
   IonTitle,
@@ -23,9 +22,7 @@ import {
   IonToolbar,
   Platform,
 } from '@ionic/angular/standalone';
-import { CdkFixedSizeVirtualScroll, CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import iconsData from 'ionicons/dist/ionicons.json';
-import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
 
 @Component({
   selector: 'app-virtual-scroll-header',
@@ -38,18 +35,12 @@ import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '
     IonToolbar,
     CommonModule,
     FormsModule,
-    CdkFixedSizeVirtualScroll,
-    CdkVirtualScrollViewport,
     IonIcon,
     IonItem,
     IonLabel,
     IonList,
-    IonListHeader,
-    CdkVirtualForOf,
-    VirtualScrollHeaderDirective,
     IonButton,
     IonButtons,
-    FixVirtualScrollElementDirective,
     IonFooter,
     IonSearchbar,
     IonBackButton,
