@@ -25,7 +25,7 @@ import {
 import iconsData from 'ionicons/dist/ionicons.json';
 
 @Component({
-  selector: 'app-virtual-scroll-header',
+  selector: 'app-settings-page',
   templateUrl: './settings-page.component.html',
   styleUrls: ['./settings-page.component.scss'],
   imports: [
@@ -53,8 +53,4 @@ import iconsData from 'ionicons/dist/ionicons.json';
 })
 export class SettingsPage {
   readonly platform = inject(Platform);
-
-  readonly sourceIonIcons = iconsData.icons.map((icon) => icon.name);
-
-  trackByFn = (_: number, item: string) => item;
 }

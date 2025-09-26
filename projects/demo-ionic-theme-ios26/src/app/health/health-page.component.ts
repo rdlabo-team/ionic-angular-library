@@ -5,7 +5,7 @@ import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonTitle, IonToo
 import iconsData from 'ionicons/dist/ionicons.json';
 
 @Component({
-  selector: 'app-virtual-scroll-header',
+  selector: 'app-health-page',
   templateUrl: './health-page.component.html',
   styleUrls: ['./health-page.component.scss'],
   imports: [IonContent, IonHeader, IonTitle, IonToolbar, CommonModule, FormsModule, IonIcon, IonButton, IonButtons],

@@ -18,7 +18,7 @@ import {
 } from '@ionic/angular/standalone';
 
 @Component({
-  selector: 'app-photo-editor',
+  selector: 'simple-page',
   templateUrl: './simple-page.component.html',
   styleUrls: ['./simple-page.component.scss'],
   imports: [

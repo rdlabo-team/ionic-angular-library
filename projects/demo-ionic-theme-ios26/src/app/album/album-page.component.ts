@@ -5,7 +5,7 @@ import { IonButton, IonButtons, IonContent, IonHeader, IonIcon, IonTitle, IonToo
 import iconsData from 'ionicons/dist/ionicons.json';
 
 @Component({
-  selector: 'app-scroll-header',
+  selector: 'app-album-page',
   templateUrl: './album-page.component.html',
   styleUrls: ['./album-page.component.scss'],
   imports: [IonContent, IonHeader, IonTitle, IonToolbar, CommonModule, FormsModule, IonIcon, IonButton, IonButtons],
