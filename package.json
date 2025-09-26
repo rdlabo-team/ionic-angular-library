@@ -24,7 +24,7 @@
     "prebuild:photo-editor": "ng build photo-editor --configuration=production",
     "prebuild:scroll-header": "sass projects/scroll-header/src/assets/scroll-header.directive.scss projects/scroll-header/css/scroll-header.directive.css && ng build scroll-header --configuration=production",
     "prebuild:scroll-strategies": "ng build scroll-strategies --configuration=production",
-    "prebuild:ionic-theme-ios26": "sass projects/ionic-theme-ios26/src/assets/ios-design.scss projects/ionic-theme-ios26/css/ionic-theme-ios26.css && ng build ionic-theme-ios26 --configuration=production",
+    "prebuild:ionic-theme-ios26": "sass projects/ionic-theme-ios26/src/assets/ios-design.scss projects/ionic-theme-ios26/css/ionic-theme-ios26.css && sass projects/ionic-theme-ios26/src/assets/ion-list-inset.scss projects/ionic-theme-ios26/css/ion-list-inset.css && ng build ionic-theme-ios26 --configuration=production",
     "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header && npm run prebuild:scroll-strategies && npm run prebuild:ionic-theme-ios26",
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish && node release.mjs",

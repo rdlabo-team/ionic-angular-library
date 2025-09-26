@@ -121,10 +121,10 @@ ion-accordion {
           }
         }
         &.ios {
+          --inner-padding-end: 0;
           &::part(native) {
             padding-right: 16px;
           }
-          --inner-padding-end: 0;
         }
         & > ion-input.md[labelplacement='floating'] {
           transition: transform 0.2s ease;

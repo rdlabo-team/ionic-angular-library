@@ -27,6 +27,7 @@ Import the theme in your project's main CSS file (e.g., `src/styles.scss`) and s
 
 ```scss
 @import '@rdlabo/ionic-theme-ios26/css/ionic-theme-ios26.css';
+@import '@rdlabo/ionic-theme-ios26/css/ion-list-inset.css';
 
 /* Required: Safe area configuration */
 :root {
@@ -45,7 +46,8 @@ Add CSS file to `angular.json`:
 ```json
 {
   "styles": [
-    "node_modules/@rdlabo/ionic-theme-ios26/css/ionic-theme-ios26.css"
+    "node_modules/@rdlabo/ionic-theme-ios26/css/ionic-theme-ios26.css",
+    "node_modules/@rdlabo/ionic-theme-ios26/css/ion-list-inset.css"
   ]
 }
 ```
@@ -64,6 +66,7 @@ Import CSS file in `index.js` or `App.js`:
 
 ```javascript
 import '@rdlabo/ionic-theme-ios26/css/ionic-theme-ios26.css';
+import '@rdlabo/ionic-theme-ios26/css/ion-list-inset.css';
 ```
 
 **Required**: Set `--max-safe-area` in main CSS file:
@@ -80,6 +83,7 @@ Import CSS file in `main.js`:
 
 ```javascript
 import '@rdlabo/ionic-theme-ios26/css/ionic-theme-ios26.css';
+import '@rdlabo/ionic-theme-ios26/css/ion-list-inset.css';
 ```
 
 **Required**: Set `--max-safe-area` in main CSS file:
