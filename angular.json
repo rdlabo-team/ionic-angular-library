@@ -92,95 +92,6 @@
         }
       }
     },
-    "demo-ionic-theme-ios26": {
-      "projectType": "application",
-      "schematics": {
-        "@schematics/angular:component": {
-          "style": "scss"
-        }
-      },
-      "root": "projects/demo-ionic-theme-ios26",
-      "sourceRoot": "projects/demo-ionic-theme-ios26/src",
-      "prefix": "app",
-      "architect": {
-        "build": {
-          "builder": "@angular/build:application",
-          "options": {
-            "outputPath": "dist/demo-ionic-theme-ios26",
-            "index": "projects/demo-ionic-theme-ios26/src/index.html",
-            "browser": "projects/demo-ionic-theme-ios26/src/main.ts",
-            "polyfills": [],
-            "tsConfig": "projects/demo-ionic-theme-ios26/tsconfig.app.json",
-            "inlineStyleLanguage": "scss",
-            "assets": [
-              "projects/demo-ionic-theme-ios26/src/favicon.ico",
-              "projects/demo-ionic-theme-ios26/src/assets"
-            ],
-            "styles": [
-              "projects/demo-ionic-theme-ios26/src/styles.scss"
-            ],
-            "scripts": []
-          },
-          "configurations": {
-            "production": {
-              "outputHashing": "all"
-            },
-            "development": {
-              "optimization": false,
-              "extractLicenses": false,
-              "sourceMap": true
-            }
-          },
-          "defaultConfiguration": "production"
-        },
-        "serve": {
-          "builder": "@angular/build:dev-server",
-          "configurations": {
-            "production": {
-              "buildTarget": "demo-ionic-theme-ios26:build:production"
-            },
-            "development": {
-              "buildTarget": "demo-ionic-theme-ios26:build:development"
-            }
-          },
-          "defaultConfiguration": "development"
-        },
-        "extract-i18n": {
-          "builder": "@angular/build:extract-i18n",
-          "options": {
-            "buildTarget": "demo-ionic-theme-ios26:build"
-          }
-        },
-        "test": {
-          "builder": "@angular/build:karma",
-          "options": {
-            "polyfills": [],
-            "tsConfig": "projects/demo-ionic-theme-ios26/tsconfig.spec.json",
-            "karmaConfig": "karma.conf.js",
-            "browsers": "ChromeHeadlessNoSandbox",
-            "inlineStyleLanguage": "scss",
-            "assets": [
-              "projects/demo-ionic-theme-ios26/src/favicon.ico",
-              "projects/demo-ionic-theme-ios26/src/assets"
-            ],
-            "styles": [
-              "projects/demo-ionic-theme-ios26/src/styles.scss"
-            ],
-            "scripts": []
-          }
-        },
-        "lint": {
-          "builder": "@angular-eslint/builder:lint",
-          "options": {
-            "lintFilePatterns": [
-              "projects/demo-ionic-theme-ios26/**/*.ts",
-              "projects/demo-ionic-theme-ios26/**/*.html"
-            ],
-            "eslintConfig": "projects/demo-ionic-theme-ios26/eslint.config.js"
-          }
-        }
-      }
-    },
     "photo-editor": {
       "projectType": "library",
       "root": "projects/photo-editor",
@@ -303,39 +214,6 @@
               "projects/scroll-strategies/**/*.html"
             ],
             "eslintConfig": "projects/scroll-strategies/eslint.config.js"
-          }
-        }
-      }
-    },
-    "ionic-theme-ios26": {
-      "projectType": "library",
-      "root": "projects/ionic-theme-ios26",
-      "sourceRoot": "projects/ionic-theme-ios26/src",
-      "prefix": "lib",
-      "architect": {
-        "build": {
-          "builder": "@angular-devkit/build-angular:ng-packagr",
-          "options": {
-            "project": "projects/ionic-theme-ios26/ng-package.json"
-          },
-          "configurations": {
-            "production": {
-              "tsConfig": "projects/ionic-theme-ios26/tsconfig.lib.prod.json"
-            },
-            "development": {
-              "tsConfig": "projects/ionic-theme-ios26/tsconfig.lib.json"
-            }
-          },
-          "defaultConfiguration": "production"
-        },
-        "test": {
-          "builder": "@angular-devkit/build-angular:karma",
-          "options": {
-            "tsConfig": "projects/ionic-theme-ios26/tsconfig.spec.json",
-            "polyfills": [
-              "zone.js",
-              "zone.js/testing"
-            ]
           }
         }
       }
