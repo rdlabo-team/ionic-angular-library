@@ -2,6 +2,13 @@ These libraries is a collection of components and services that are useful for d
 
 [Demo site is here.](https://rdlabo-ionic-angular-library.netlify.app/)
 
+## 💖 Support This Project
+
+Enjoying this project? Your support helps keep it alive and growing!  
+Sponsoring means you directly contribute to new features, improvements, and maintenance.
+
+[Become a Sponsor →](https://github.com/sponsors/rdlabo)
+
 ## Support Version
 
 | Angular | Package version |
