@@ -60,7 +60,7 @@ ion-content > cdk-virtual-scroll-viewport {
 
       &:not(.scroll-header-hidden) {
         ion-header {
-          transform: translateY(0%);
+          transform: translate3d(0, 0, 0);
         }
       }
     }
@@ -76,7 +76,7 @@ ion-content > cdk-virtual-scroll-viewport {
 
     &.scroll-header-hidden {
       ion-header {
-        transform: translateY(-100%);
+        transform: translate3d(0, -100%, 0);
         opacity: 0.2;
       }
     }

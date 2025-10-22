@@ -49,7 +49,7 @@ ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-heade
 }
 ion-content:not(.scroll-header-fixed).scroll-header-sticky:not(.scroll-header-hidden) ion-header,
 ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky:not(.scroll-header-hidden) ion-header {
-  transform: translateY(0%);
+  transform: translate3d(0, 0, 0);
 }
 ion-content:not(.scroll-header-fixed):not(.scroll-header-sticky).scroll-header-no-border ion-header,
 ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed):not(.scroll-header-sticky).scroll-header-no-border ion-header {
@@ -61,12 +61,12 @@ ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed):not(.scroll-
 }
 ion-content:not(.scroll-header-fixed).scroll-header-hidden ion-header,
 ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-hidden ion-header {
-  transform: translateY(-100%);
+  transform: translate3d(0, -100%, 0);
   opacity: 0.2;
 }
 
 ion-content.scroll-header-hidden ion-button.get-current-timeline {
-  transform: translateY(-150%);
+  transform: translate3d(0, -150%, 0);
 }
 
 /*# sourceMappingURL=scroll-header.directive.css.map */
