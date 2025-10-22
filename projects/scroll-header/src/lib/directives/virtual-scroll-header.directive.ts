@@ -14,6 +14,8 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
   readonly scrollHeader = contentChild(IonHeader, { read: ElementRef });
 
   readonly #minScrollAmount = 16;
+  readonly #scrollThrottle = 16; // 60fps
+  #lastScrollTime = 0;
   readonly #nativeHeader = signal<HTMLElement | undefined>(undefined);
   readonly #scrollRefresher = signal<HTMLElement | undefined>(undefined);
   readonly #scrollHeaderSize = signal<number>(0);
@@ -47,6 +49,13 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
   }
 
   onWindowScroll(scrollOffset: number) {
+    // スロットリングによる最適化
+    const now = performance.now();
+    if (now - this.#lastScrollTime < this.#scrollThrottle) {
+      return;
+    }
+    this.#lastScrollTime = now;
+
     if (this.scrollHeader() === undefined || this.virtualScroll() === undefined) {
       return;
     }

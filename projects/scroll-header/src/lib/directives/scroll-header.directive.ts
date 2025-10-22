@@ -14,6 +14,8 @@ export class ScrollHeaderDirective implements OnInit {
   readonly #beforeScrollTop = signal<number>(0);
 
   readonly #minScrollAmount = 16;
+  readonly #scrollThrottle = 16; // 60fps
+  #lastScrollTime = 0;
 
   async ngOnInit() {
     await waitFindDom(this.#elementRef.nativeElement, 'ion-header');
@@ -28,6 +30,13 @@ export class ScrollHeaderDirective implements OnInit {
 
   @HostListener('ionScroll', ['$event'])
   onWindowScroll($event: CustomEvent<ScrollDetail>) {
+    // スロットリングによる最適化
+    const now = performance.now();
+    if (now - this.#lastScrollTime < this.#scrollThrottle) {
+      return;
+    }
+    this.#lastScrollTime = now;
+
     if (this.scrollHeader() === undefined) {
       return;
     }
@@ -88,7 +97,7 @@ export class ScrollHeaderDirective implements OnInit {
             return v;
           });
         }
-        setTimeout(() => this.#elementRef.nativeElement.classList.add('scroll-header-animated'));
+        requestAnimationFrame(() => this.#elementRef.nativeElement.classList.add('scroll-header-animated'));
       }
     }
 
