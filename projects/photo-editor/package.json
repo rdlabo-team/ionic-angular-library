@@ -1,10 +1,10 @@
 {
   "name": "@rdlabo/ionic-angular-photo-editor",
-  "version": "20.0.0",
+  "version": "20.0.2",
   "peerDependencies": {
+    "@angular/cdk": "^20.0.0",
     "@angular/common": "^20.0.0",
     "@angular/core": "^20.0.0",
-    "@angular/cdk": "^20.0.0",
     "@capacitor/camera": ">=6.0.0 <8.0.0",
     "@capacitor/core": ">=6.0.0 <8.0.0",
     "@ionic/angular": "^8.0.0",
