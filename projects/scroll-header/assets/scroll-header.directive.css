@@ -41,11 +41,11 @@ ion-content:not(.scroll-header-fixed).scroll-header-sticky ion-header,
 ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky ion-header {
   position: sticky;
   top: 0;
-  will-change: transform, opacity;
+  will-change: transform;
 }
 ion-content:not(.scroll-header-fixed).scroll-header-sticky.scroll-header-animated ion-header,
 ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky.scroll-header-animated ion-header {
-  transition: transform 0.4s ease 0s, opacity 0.4s ease 0s;
+  transition: transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 ion-content:not(.scroll-header-fixed).scroll-header-sticky:not(.scroll-header-hidden) ion-header,
 ion-content > cdk-virtual-scroll-viewport:not(.scroll-header-fixed).scroll-header-sticky:not(.scroll-header-hidden) ion-header {
