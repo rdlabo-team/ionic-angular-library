@@ -4,7 +4,7 @@
       ><ion-button (click)="modalCtrl.dismiss()"><ion-icon name="close-outline" slot="icon-only"></ion-icon></ion-button
     ></ion-buttons>
     <ion-buttons slot="end">
-      <ion-button color="photo-editor-primary" fill="outline" [disabled]="!['menu', 'filter'].includes(footerMenu())" (click)="imageSave()">
+      <ion-button color="photo-editor-primary" fill="solid" type="submit" [disabled]="!['menu', 'filter'].includes(footerMenu())" (click)="imageSave()">
         {{ dictionary().save }}
       </ion-button>
     </ion-buttons>
