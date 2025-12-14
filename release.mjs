@@ -10,7 +10,7 @@ workspaces.forEach(async (workspace) => {
   const releasePackagePath = path.resolve('./dist/' + workspace);
   await updatePackage(buildPackagePath + '/package.json', { version: pkg.version });
   exec(
-    `npm run prebuild:${workspace} && cd ${releasePackagePath} && npm publish --access=public`,
+    `npm run prebuild:${workspace} && cd ${releasePackagePath} && npm publish`,
     (err, stdout, stderr) => {
       if (err) {
         console.error(err);
