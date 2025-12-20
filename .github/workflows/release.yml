@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Extract version from tag
+        id: tag_version
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION from tag: $TAG_NAME"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Switch to default branch and align with tag commit
+        run: |
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch origin "$DEFAULT_BRANCH"
+          git checkout "$DEFAULT_BRANCH"
+          git merge --ff-only "$GITHUB_SHA"
+
+      - name: Update project package.json versions
+        run: |
+          VERSION="${{ steps.tag_version.outputs.version }}"
+          echo "Setting project versions to $VERSION"
+          for project in photo-editor scroll-header scroll-strategies; do
+            echo "Updating projects/$project/package.json..."
+            cd "projects/$project"
+            npm version "$VERSION" --no-git-tag-version
+            cd ../..
+          done
+
+      - name: Build all projects
+        run: npm run prebuild
+
+      - name: Commit changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add projects/*/package.json
+          git commit -m "chore: update project versions to ${{ steps.tag_version.outputs.version }}" || exit 0
+          git push origin HEAD
+
+      - name: Publish packages
+        run: |
+          VERSION="${{ steps.tag_version.outputs.version }}"
+          IS_STABLE=$(echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && echo true || echo false)
+          
+          for project in photo-editor scroll-header scroll-strategies; do
+            echo "Publishing $project..."
+            cd "dist/$project"
+            if [ "$IS_STABLE" = "true" ]; then
+              npm publish --provenance --access public
+            else
+              npm publish --provenance --access public --tag next
+            fi
+            cd ../..
+          done
+

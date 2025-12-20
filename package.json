@@ -26,7 +26,7 @@
     "prebuild:scroll-strategies": "ng build scroll-strategies --configuration=production",
     "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header && npm run prebuild:scroll-strategies",
     "prestart": "npm run prebuild",
-    "release": "np --no-tests --no-publish && node release.mjs",
+    "release": "np --no-tests --no-publish",
     "lint": "ng lint"
   },
   "private": false,
