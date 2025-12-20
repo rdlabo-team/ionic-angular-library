@@ -40,6 +40,13 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      - name: Extract library projects
+        id: libraries
+        run: |
+          LIBRARIES=$(node -e "const fs=require('fs'); const angular=JSON.parse(fs.readFileSync('angular.json','utf8')); const libs=Object.keys(angular.projects).filter(p=>angular.projects[p].projectType==='library'); console.log(libs.join(' '));")
+          echo "list=$LIBRARIES" >> $GITHUB_OUTPUT
+          echo "Library projects: $LIBRARIES"
+
       - name: Switch to default branch and align with tag commit
         run: |
           DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
@@ -51,7 +58,7 @@ jobs:
         run: |
           VERSION="${{ steps.tag_version.outputs.version }}"
           echo "Setting project versions to $VERSION"
-          for project in photo-editor scroll-header scroll-strategies; do
+          for project in ${{ steps.libraries.outputs.list }}; do
             echo "Updating projects/$project/package.json..."
             cd "projects/$project"
             npm version "$VERSION" --no-git-tag-version
@@ -74,7 +81,7 @@ jobs:
           VERSION="${{ steps.tag_version.outputs.version }}"
           IS_STABLE=$(echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && echo true || echo false)
           
-          for project in photo-editor scroll-header scroll-strategies; do
+          for project in ${{ steps.libraries.outputs.list }}; do
             echo "Publishing $project..."
             cd "dist/$project"
             if [ "$IS_STABLE" = "true" ]; then
