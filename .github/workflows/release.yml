@@ -73,11 +73,13 @@ jobs:
           git commit -m "chore: update project versions to ${{ steps.tag_version.outputs.version }}" || exit 0
           git push origin HEAD
 
+      - run: npm whoami
+
       - name: Publish packages
         run: |
           VERSION="${{ steps.tag_version.outputs.version }}"
           IS_STABLE=$(echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && echo true || echo false)
-          
+
           for project in ${{ steps.libraries.outputs.list }}; do
             echo "Publishing $project..."
             cd "dist/$project"
