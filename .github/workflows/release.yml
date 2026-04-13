@@ -26,7 +26,9 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Update npm
-        run: npm install -g npm@latest
+        run: |
+          npm -v
+          npm install -g npm@latest
 
       - name: Extract version from tag
         id: tag_version
