@@ -214,8 +214,15 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
     }
 
     if (newRange.start === 0 && newRange.end === 0 && dataLength > 0) {
-      // have items but not rendered, set start index to 0
-      newRange.end = dataLength;
+      // Have items but not rendered yet.
+      // This can happen when itemDynamicSizes is still empty while dataLength is already available.
+      // Use the same policy as the initial render in fixed-size virtual scroll: viewport + maxBuffer.
+      if (this._itemDynamicSize.length === 0) {
+        newRange.end = Math.min(dataLength, 1);
+      } else {
+        const initialEnd = Math.ceil(calcIndex(this._itemDynamicSize, viewportSize + this._maxBufferPx, 0)) + 1;
+        newRange.end = Math.min(dataLength, Math.max(1, initialEnd));
+      }
     }
 
     if (firstVisibleIndex === 0 && newRange.start > firstVisibleIndex) {
