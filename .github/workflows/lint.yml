@@ -40,4 +40,4 @@ jobs:
             ${{ runner.os }}-node-
       - run: npm install
       - run: npm run build
-      - run: npm run test -- ${{ matrix.project }} --no-watch --no-progress --browsers=ChromeHeadlessCI
+      - run: npm run test -- ${{ matrix.project }} --watch=false
