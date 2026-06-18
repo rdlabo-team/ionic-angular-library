@@ -63,21 +63,17 @@
           }
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular/build:unit-test",
           "options": {
-            "polyfills": [],
             "tsConfig": "projects/demo/tsconfig.spec.json",
-            "karmaConfig": "karma.conf.js",
-            "browsers": "ChromeHeadlessNoSandbox",
-            "inlineStyleLanguage": "scss",
-            "assets": [
-              "projects/demo/src/favicon.ico",
-              "projects/demo/src/assets"
-            ],
-            "styles": [
-              "projects/demo/src/styles.scss"
-            ],
-            "scripts": []
+            "buildTarget": "demo:build",
+            "runner": "vitest",
+            "runnerConfig": "vitest.config.ts"
+          },
+          "configurations": {
+            "ci": {
+              "watch": false
+            }
           }
         },
         "lint": {
@@ -114,12 +110,16 @@
           "defaultConfiguration": "production"
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular/build:unit-test",
           "options": {
             "tsConfig": "projects/photo-editor/tsconfig.spec.json",
-            "karmaConfig": "karma.conf.js",
-            "browsers": "ChromeHeadlessNoSandbox",
-            "polyfills": []
+            "runner": "vitest",
+            "runnerConfig": "vitest.config.ts"
+          },
+          "configurations": {
+            "ci": {
+              "watch": false
+            }
           }
         },
         "lint": {
@@ -156,12 +156,16 @@
           "defaultConfiguration": "production"
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular/build:unit-test",
           "options": {
             "tsConfig": "projects/scroll-header/tsconfig.spec.json",
-            "karmaConfig": "karma.conf.js",
-            "browsers": "ChromeHeadlessNoSandbox",
-            "polyfills": []
+            "runner": "vitest",
+            "runnerConfig": "vitest.config.ts"
+          },
+          "configurations": {
+            "ci": {
+              "watch": false
+            }
           }
         },
         "lint": {
@@ -198,12 +202,16 @@
           "defaultConfiguration": "production"
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular/build:unit-test",
           "options": {
             "tsConfig": "projects/scroll-strategies/tsconfig.spec.json",
-            "karmaConfig": "karma.conf.js",
-            "browsers": "ChromeHeadlessNoSandbox",
-            "polyfills": []
+            "runner": "vitest",
+            "runnerConfig": "vitest.config.ts"
+          },
+          "configurations": {
+            "ci": {
+              "watch": false
+            }
           }
         },
         "lint": {

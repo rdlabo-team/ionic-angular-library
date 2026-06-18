@@ -17,7 +17,7 @@
     "build": "ng build demo",
     "build:ios26": "ng build demo-ionic-theme-ios26",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test",
+    "test": "ng test --watch=false",
     "test:headless": "CHROME_BIN=/usr/bin/google-chrome ng test --watch=false",
     "cap": "npm run build -- --configuration production && npx cap copy",
     "fmt": "prettier --parser typescript --write \"./**/*.ts\" &&  prettier --parser angular --write \"./**/*.html\"",
@@ -27,7 +27,8 @@
     "prebuild": "npm run prebuild:photo-editor && npm run prebuild:scroll-header && npm run prebuild:scroll-strategies",
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish",
-    "lint": "ng lint"
+    "lint": "ng lint",
+    "test:watch": "ng test"
   },
   "private": false,
   "dependencies": {
@@ -56,18 +57,10 @@
     "@angular/cli": "^21.0.0",
     "@angular/compiler-cli": "^21.0.0",
     "@capacitor/cli": ">=6.0.0 <9.0.0",
-    "@ionic/angular-toolkit": "^12.2.0",
-    "@types/jasmine": "~5.1.0",
     "angular-eslint": "21.0.1",
     "child_process": "^1.0.2",
     "eslint": "^9.27.0",
     "husky": "^8.0.3",
-    "jasmine-core": "~5.1.0",
-    "karma": "~6.4.0",
-    "karma-chrome-launcher": "~3.2.0",
-    "karma-coverage": "~2.2.0",
-    "karma-jasmine": "~5.1.0",
-    "karma-jasmine-html-reporter": "~2.1.0",
     "lint-staged": "^15.2.0",
     "ng-packagr": "^21.0.0",
     "np": "^9.2.0",
@@ -75,7 +68,9 @@
     "prettier": "^3.1.1",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.0.0",
-    "write-pkg": "^7.0.0"
+    "write-pkg": "^7.0.0",
+    "vitest": "^4.0.0",
+    "jsdom": "^26.0.0"
   },
   "peerDependencies": {
     "@angular/cdk": "^21.0.0"
