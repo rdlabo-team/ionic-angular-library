@@ -1,4 +1,7 @@
 name: Lint
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 on:
   push:
     branches:
@@ -13,13 +16,17 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - uses: actions/cache@v5
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+      - name: Cache Angular
+        uses: actions/cache@v5
         with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          path: .angular/cache
+          key: ${{ runner.os }}-angular-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-node-
-      - run: npm install
+            ${{ runner.os }}-angular-${{ hashFiles('package-lock.json') }}-
+            ${{ runner.os }}-angular-
+      - run: npm ci
       - run: npm run lint
       - run: npm run build
   test:
@@ -32,12 +39,16 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
-      - uses: actions/cache@v5
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+      - name: Cache Angular
+        uses: actions/cache@v5
         with:
-          path: node_modules
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          path: .angular/cache
+          key: ${{ runner.os }}-angular-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-node-
-      - run: npm install
+            ${{ runner.os }}-angular-${{ hashFiles('package-lock.json') }}-
+            ${{ runner.os }}-angular-
+      - run: npm ci
       - run: npm run build
       - run: npm run test -- ${{ matrix.project }} --watch=false
