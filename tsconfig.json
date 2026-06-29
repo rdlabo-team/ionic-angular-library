@@ -16,26 +16,16 @@
     "moduleResolution": "bundler",
     "importHelpers": true,
     "paths": {
-      "ionic-theme-ios26": [
-        "./dist/ionic-theme-ios26"
-      ],
-      "scroll-strategies": [
-        "./dist/scroll-strategies"
-      ],
-      "photo-editor": [
-        "./dist/photo-editor"
-      ],
-      "scroll-header": [
-        "./dist/scroll-header"
-      ]
+      "ionic-theme-ios26": ["./dist/ionic-theme-ios26"],
+      "kit": ["./dist/kit"],
+      "scroll-strategies": ["./dist/scroll-strategies"],
+      "photo-editor": ["./dist/photo-editor"],
+      "scroll-header": ["./dist/scroll-header"]
     },
     "target": "ES2022",
     "module": "ES2022",
     "useDefineForClassFields": false,
-    "lib": [
-      "ES2022",
-      "dom"
-    ],
+    "lib": ["ES2022", "dom"],
     "resolveJsonModule": true,
     "skipLibCheck": true
   },
@@ -44,5 +34,13 @@
     "strictInjectionParameters": true,
     "strictInputAccessModifiers": true,
     "strictTemplates": true
-  }
+  },
+  "references": [
+    {
+      "path": "./projects/kit/tsconfig.lib.json"
+    },
+    {
+      "path": "./projects/kit/tsconfig.spec.json"
+    }
+  ]
 }
