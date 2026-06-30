@@ -228,9 +228,16 @@
           "defaultConfiguration": "production"
         },
         "test": {
-          "builder": "@angular/build:karma",
+          "builder": "@angular/build:unit-test",
           "options": {
-            "tsConfig": "projects/kit/tsconfig.spec.json"
+            "tsConfig": "projects/kit/tsconfig.spec.json",
+            "runner": "vitest",
+            "runnerConfig": "vitest.config.ts"
+          },
+          "configurations": {
+            "ci": {
+              "watch": false
+            }
           }
         }
       }
