@@ -8,7 +8,7 @@ export * from './lib/storage/kit-storage.service';
 // Overlay: wrapper around the Ionic Modal / Toast / Alert controllers.
 export * from './lib/overlay/overlay-config';
 export * from './lib/overlay/kit-overlay.controller';
-export * from './lib/overlay/reload-alert';
+export * from './lib/overlay/kit-reload-alert.controller';
 
 // Directives.
 export * from './lib/directives/autofill.directive';

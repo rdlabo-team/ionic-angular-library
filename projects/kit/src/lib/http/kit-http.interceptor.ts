@@ -99,8 +99,8 @@ export interface KitHttpConfig {
    * UX hook for network-originated errors while the device is connected.
    *
    * @remarks
-   * Optional; defaults to a no-op. The kit ships {@link kitPresentReloadAlert} as the fleet's
-   * canonical implementation of this hook.
+   * Optional; defaults to a no-op. The kit ships {@link KitReloadAlertController} as the fleet's
+   * canonical implementation of this hook (with auto-dismiss on reconnect via `onResponse`).
    *
    * @param status - The HTTP status code, or a string descriptor for non-HTTP failures.
    * @returns Optionally a promise to await before continuing.
@@ -139,13 +139,14 @@ export const KIT_HTTP_CONFIG = new InjectionToken<KitHttpConfig>('@rdlabo/ionic-
  *     provideHttpClient(withInterceptors([kitAuthInterceptor])),
  *     provideKitHttp(() => {
  *       const auth = inject(AuthService);
- *       const overlay = inject(KitOverlayController);
+ *       const reload = inject(KitReloadAlertController);
  *       return {
  *         // Only getAuthHeaders is required; every other hook is optional and defaults to a no-op.
  *         getAuthHeaders: async () => ({ Authorization: `Bearer ${await auth.token()}` }),
  *         onUnauthorized: () => auth.signOut(),
  *         onNetworkError: (status) =>
- *           kitPresentReloadAlert(overlay, { header: 'Network error', message: `Reload? (${status})`, okText: 'Reload' }),
+ *           reload.present({ header: 'Network error', message: `Reload? (${status})`, okText: 'Reload' }),
+ *         onResponse: () => void reload.dismiss(),
  *       };
  *     }),
  *   ],

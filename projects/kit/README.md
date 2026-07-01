@@ -272,26 +272,28 @@ A fleet-canonical HTTP interceptor with:
 ```typescript
 // app.config.ts
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { kitAuthInterceptor, provideKitHttp, kitPresentReloadAlert } from '@rdlabo/ionic-angular-kit';
+import { kitAuthInterceptor, provideKitHttp, KitReloadAlertController } from '@rdlabo/ionic-angular-kit';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideHttpClient(withInterceptors([kitAuthInterceptor])),
     provideKitHttp(() => {
       const auth = inject(AuthService);
-      const overlay = inject(KitOverlayController);
+      const reload = inject(KitReloadAlertController);
       return {
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
         onUnauthorized: (req) => auth.signOut(),
-        // Fleet-canonical "network error → offer reload" (see kitPresentReloadAlert).
+        // Fleet-canonical "network error → offer reload" (see KitReloadAlertController).
         onNetworkError: (status) =>
-          kitPresentReloadAlert(overlay, {
+          reload.present({
             header: 'ネットワークエラー',
             message: `通信できませんでした。リフレッシュしますか？（${status}）`,
             okText: 'リフレッシュ',
           }),
+        // Auto-dismiss the stale alert once connectivity is back.
+        onResponse: () => void reload.dismiss(),
         // buildExtraHeaders / bypass / offlineFallback / onForbidden / onServerError omitted → kit defaults.
       };
     }),
@@ -306,18 +308,28 @@ export const appConfig: ApplicationConfig = {
 4. Non-400/500 status AND device connected → `onNetworkError`
 5. 400 or 500 with `error.message` → `onServerError`
 
-### kitPresentReloadAlert
+### KitReloadAlertController
 
-The fleet's canonical "network error → offer to reload" confirmation, folding together the three concerns every app used to copy-paste: (1) suppress stacking when an `ion-alert` is already shown, (2) `alertConfirm`, (3) `location.reload()` on confirm. All text is passed in, so the kit stays free of hardcoded i18n. Usually wired from `onNetworkError`, but callable anywhere (e.g. an offline fallback).
+The fleet's canonical "network error → offer to reload" alert, as a stateful controller that unifies the good-UX variant that had drifted across apps:
+
+- **De-dup** — never stacks; a second `present()` while one is showing is a no-op.
+- **Backdrop lock** — `backdropDismiss: false`, so a critical error isn't dismissed by an accidental backdrop tap.
+- **Auto-dismiss on reconnect** — `dismiss()` (called from a later successful response) clears a now-stale error alert.
+- **Reload on confirm** — the confirm button calls `location.reload()`; cancel uses the configured `labels.cancel`.
+
+All text is passed in, so the kit stays free of hardcoded i18n. Wire `present` from a network-class error and `dismiss` from a success (interceptor `onResponse`, or a class interceptor's success path).
 
 ```typescript
-import { kitPresentReloadAlert } from '@rdlabo/ionic-angular-kit';
+import { KitReloadAlertController } from '@rdlabo/ionic-angular-kit';
 
-await kitPresentReloadAlert(overlay, {
+const reload = inject(KitReloadAlertController);
+await reload.present({
   header: 'ネットワークエラー',
   message: `通信できませんでした。リフレッシュしますか？（${status}）`,
   okText: 'リフレッシュ',
 });
+// later, on a successful response:
+await reload.dismiss();
 ```
 
 ---
