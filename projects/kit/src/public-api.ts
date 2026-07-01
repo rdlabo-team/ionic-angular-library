@@ -15,7 +15,7 @@ export * from './lib/overlay/kit-auth-failed-alert';
 export * from './lib/directives/autofill.directive';
 
 // Keyboard: native keyboard reposition listeners.
-export * from './lib/keyboard/kit-keyboard.controller';
+export * from './lib/keyboard/kit-keyboard';
 
 // Auth: functional route guards.
 export * from './lib/auth/auth-guards';

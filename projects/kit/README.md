@@ -383,24 +383,23 @@ The directive is a no-op on non-iOS platforms.
 
 ---
 
-### KitKeyboardController
+### kitKeyboardInit
 
-Registers native keyboard show/hide listeners that reposition an element when the soft keyboard appears — useful for a footer input bar that must stay above the keyboard. A no-op on web (`init` returns `[]`); on native it handles the iOS/Android differences. Three adjustment strategies:
+A plain function (no DI — reads the platform from `Capacitor`, so nothing to inject) that registers native keyboard show/hide listeners to reposition an element when the soft keyboard appears — useful for a footer input bar that must stay above the keyboard. A no-op on web (returns `[]`); SSR-safe (the global `document`/`window` are only read inside native callbacks). Three adjustment strategies:
 
 - `transform` — `translateY(-keyboardHeight + safeAreaBottom)` (smooth iOS animation; typical for `ion-footer`)
 - `offset` — sets the `--offset-bottom` custom property
 - `keyboard-offset` — sets the `--padding-bottom` custom property
 
 ```typescript
-import { KitKeyboardController } from '@rdlabo/ionic-angular-kit';
+import { kitKeyboardInit } from '@rdlabo/ionic-angular-kit';
 
 export class ComposePage {
-  readonly #keyboard = inject(KitKeyboardController);
   readonly #footer = viewChild.required<ElementRef>('footer');
   #handles: PluginListenerHandle[] = [];
 
   async ngAfterViewInit() {
-    this.#handles = await this.#keyboard.init(this.#footer(), 'transform');
+    this.#handles = await kitKeyboardInit(this.#footer(), 'transform');
   }
   ngOnDestroy() {
     this.#handles.forEach((h) => h.remove()); // caller owns the handles
