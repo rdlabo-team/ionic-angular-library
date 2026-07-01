@@ -1,6 +1,8 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
+import { Capacitor } from '@capacitor/core';
+import { Haptics } from '@capacitor/haptics';
 
 import { KitOverlayController } from './kit-overlay.controller';
 import { KIT_OVERLAY_CONFIG, provideKitOverlay } from './overlay-config';
@@ -154,6 +156,52 @@ describe('KitOverlayController', () => {
     });
   });
 
+  // ---- alert stacking guard -------------------------------------------------
+  describe('alert stacking guard', () => {
+    // Build an alert overlay whose onWillDismiss stays pending until we resolve it,
+    // so a first alert is still "presenting" when a concurrent call is made.
+    function deferredAlert() {
+      let resolveDismiss!: (v: { role: Role }) => void;
+      const overlay = {
+        present: vi.fn().mockResolvedValue(undefined),
+        onWillDismiss: vi.fn().mockReturnValue(new Promise<{ role: Role }>((r) => (resolveDismiss = r))),
+        onDidDismiss: vi.fn().mockResolvedValue({ role: undefined, data: undefined }),
+      };
+      return { overlay, dismiss: () => resolveDismiss({ role: 'confirm' }) };
+    }
+
+    it('no-ops a concurrent alertClose while one is presenting', async () => {
+      const first = deferredAlert();
+      const { controller, alertCtrl } = setup({ alertOverlay: first.overlay });
+      const p = controller.alertClose({ header: 'H', message: 'M' }); // stays pending
+      await controller.alertClose({ header: 'H2', message: 'M2' }); // guarded → immediate no-op
+      expect(alertCtrl.create).toHaveBeenCalledOnce();
+      first.dismiss();
+      await p;
+    });
+
+    it('returns false for a concurrent alertConfirm while one is presenting', async () => {
+      const first = deferredAlert();
+      const { controller, alertCtrl } = setup({ alertOverlay: first.overlay });
+      const p = controller.alertConfirm({ header: 'H', message: 'M', okText: 'OK' });
+      const blocked = await controller.alertConfirm({ header: 'H2', message: 'M2', okText: 'OK' });
+      expect(blocked).toBe(false);
+      expect(alertCtrl.create).toHaveBeenCalledOnce();
+      first.dismiss();
+      await p;
+    });
+
+    it('allows a new alert after the previous one dismisses', async () => {
+      const first = deferredAlert();
+      const { controller, alertCtrl } = setup({ alertOverlay: first.overlay });
+      const p = controller.alertClose({ header: 'H', message: 'M' });
+      first.dismiss();
+      await p;
+      await controller.alertClose({ header: 'H2', message: 'M2' });
+      expect(alertCtrl.create).toHaveBeenCalledTimes(2);
+    });
+  });
+
   // ---- presentToast ---------------------------------------------------------
   describe('presentToast', () => {
     it('applies kit defaults (position=bottom, duration=2000) and presents the toast', async () => {
@@ -271,6 +319,37 @@ describe('KitOverlayController', () => {
       expect(createArgs.event).toBe(event);
       expect(popoverOverlay.present).toHaveBeenCalledOnce();
       expect(result).toEqual({ picked: 'x' });
+    });
+  });
+
+  // ---- haptic feedback ------------------------------------------------------
+  describe('haptic feedback (native platform)', () => {
+    class FakeComponent {}
+
+    beforeEach(() => {
+      vi.mocked(Capacitor.isNativePlatform).mockReturnValue(true);
+      vi.mocked(Haptics.impact).mockClear();
+    });
+    afterEach(() => {
+      vi.mocked(Capacitor.isNativePlatform).mockReturnValue(false);
+    });
+
+    it('fires haptic impact when presenting a modal', async () => {
+      const { controller } = setup();
+      await controller.presentModal(FakeComponent);
+      expect(Haptics.impact).toHaveBeenCalledOnce();
+    });
+
+    it('fires haptic impact when presenting a popover', async () => {
+      const { controller } = setup();
+      await controller.presentPopover(FakeComponent);
+      expect(Haptics.impact).toHaveBeenCalledOnce();
+    });
+
+    it('fires haptic impact when presenting a toast', async () => {
+      const { controller } = setup();
+      await controller.presentToast({ message: 'Hi' });
+      expect(Haptics.impact).toHaveBeenCalledOnce();
     });
   });
 

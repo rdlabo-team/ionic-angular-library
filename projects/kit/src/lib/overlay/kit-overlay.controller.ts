@@ -98,6 +98,13 @@ export class KitOverlayController {
   readonly #labels = inject(KIT_OVERLAY_CONFIG).labels;
 
   /**
+   * Guards against stacking alerts: while one {@link alertClose} / {@link alertConfirm} is on screen,
+   * a concurrent call resolves immediately (close: no-op, confirm: `false`) instead of presenting a
+   * second alert on top of the first. Shared across both methods so a confirm cannot stack over a close.
+   */
+  #alertPresenting = false;
+
+  /**
    * Present a modal and resolve with the data passed to its dismissal.
    *
    * @typeParam O - type of the data returned when the modal is dismissed
@@ -105,6 +112,9 @@ export class KitOverlayController {
    * @param componentProps - props to pass to the modal component
    * @param options - additional modal options, including {@link KitModalPresentOptions.watchKeyboard}
    * @returns the dismiss data, or `undefined` when the modal is dismissed without data
+   * @remarks
+   * Presenting a modal triggers light native haptic feedback as an intentional kit UX choice,
+   * consistent with {@link presentPopover} and {@link presentToast}.
    * @example
    * ```ts
    * const data = await overlay.presentModal<{ saved: boolean }>(EditPage, { id: 1 }, { watchKeyboard: true });
@@ -115,6 +125,7 @@ export class KitOverlayController {
     componentProps?: ModalOptions['componentProps'],
     options: KitModalPresentOptions = {},
   ): Promise<O | undefined> {
+    void kitImpact();
     const { watchKeyboard, ...modalOptions } = options;
     const modal = await this.#modalCtrl.create({ component, componentProps, ...modalOptions });
     await modal.present();
@@ -132,6 +143,9 @@ export class KitOverlayController {
    * @param componentProps - props to pass to the popover component
    * @param options - additional popover options (for example `event` to anchor it, or `cssClass`)
    * @returns the dismiss data, or `undefined` when the popover is dismissed without data
+   * @remarks
+   * Presenting a popover triggers light native haptic feedback as an intentional kit UX choice,
+   * consistent with {@link presentModal} and {@link presentToast}.
    * @example
    * ```ts
    * const choice = await overlay.presentPopover<MenuChoice>(MenuPopover, { items }, { event });
@@ -142,6 +156,7 @@ export class KitOverlayController {
     componentProps?: PopoverOptions['componentProps'],
     options: Omit<PopoverOptions, 'component' | 'componentProps'> = {},
   ): Promise<O | undefined> {
+    void kitImpact();
     const popover = await this.#popoverCtrl.create({ component, componentProps, ...options });
     await popover.present();
     const { data } = await popover.onDidDismiss<O>();
@@ -197,20 +212,31 @@ export class KitOverlayController {
    *
    * @param options - alert content (header, message, optional sub-header)
    * @returns a Promise that resolves once the alert has been dismissed
+   * @remarks
+   * No-ops when another alert is already presenting (see {@link alertClose} / {@link alertConfirm}
+   * stacking guard).
    * @example
    * ```ts
    * await overlay.alertClose({ header: 'Done', message: 'Your changes were saved.' });
    * ```
    */
   async alertClose(options: KitAlertCloseOptions): Promise<void> {
-    const alert = await this.#alertCtrl.create({
-      header: options.header,
-      subHeader: options.subHeader,
-      message: options.message,
-      buttons: [this.#labels.close],
-    });
-    await alert.present();
-    await alert.onWillDismiss();
+    if (this.#alertPresenting) {
+      return;
+    }
+    this.#alertPresenting = true;
+    try {
+      const alert = await this.#alertCtrl.create({
+        header: options.header,
+        subHeader: options.subHeader,
+        message: options.message,
+        buttons: [this.#labels.close],
+      });
+      await alert.present();
+      await alert.onWillDismiss();
+    } finally {
+      this.#alertPresenting = false;
+    }
   }
 
   /**
@@ -229,19 +255,30 @@ export class KitOverlayController {
    *   await remove();
    * }
    * ```
+   * @remarks
+   * Returns `false` immediately when another alert is already presenting (see {@link alertClose} /
+   * {@link alertConfirm} stacking guard).
    */
   async alertConfirm(options: KitAlertConfirmOptions): Promise<boolean> {
-    const alert = await this.#alertCtrl.create({
-      header: options.header,
-      subHeader: options.subHeader,
-      message: options.message,
-      buttons: [
-        { text: this.#labels.cancel, role: 'cancel' },
-        { text: options.okText, role: 'confirm' },
-      ],
-    });
-    await alert.present();
-    const { role } = await alert.onWillDismiss();
-    return role === 'confirm';
+    if (this.#alertPresenting) {
+      return false;
+    }
+    this.#alertPresenting = true;
+    try {
+      const alert = await this.#alertCtrl.create({
+        header: options.header,
+        subHeader: options.subHeader,
+        message: options.message,
+        buttons: [
+          { text: this.#labels.cancel, role: 'cancel' },
+          { text: options.okText, role: 'confirm' },
+        ],
+      });
+      await alert.present();
+      const { role } = await alert.onWillDismiss();
+      return role === 'confirm';
+    } finally {
+      this.#alertPresenting = false;
+    }
   }
 }
