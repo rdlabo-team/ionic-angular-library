@@ -37,6 +37,17 @@ const RETRYABLE_STATUSES = [0, 408, 429, 502, 503, 504];
 const MAX_RETRIES = 2;
 
 /**
+ * Fleet-wide per-request timeout. A request with no response within this window fails with a
+ * synthetic `408` (a {@link RETRYABLE_STATUSES | retryable status}). Deliberately generous — it
+ * catches a genuinely hung request (dead server) without cutting off legitimately slow work such as
+ * a large upload or an AI generation. `timeout({ each })` resets on every emission, so a streaming
+ * response that keeps emitting is unaffected.
+ *
+ * @internal
+ */
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
  * Parse a `Retry-After` header (delta-seconds or an HTTP-date) into milliseconds, or `null` when it
  * is absent or unparseable.
  *
@@ -90,15 +101,6 @@ export interface KitHttpConfig {
    * @returns A map of header names to values; return `{}` when none are needed.
    */
   buildExtraHeaders?(request: HttpRequest<unknown>): Record<string, string>;
-  /**
-   * Per-request timeout in milliseconds.
-   *
-   * @remarks
-   * Optional; when set, a request that does not respond within `timeoutMs` fails with a synthetic
-   * `408 Request Timeout`, which is a {@link RETRYABLE_STATUSES | retryable status} (so idempotent
-   * requests get another attempt). Omit for no timeout.
-   */
-  timeoutMs?: number;
   /**
    * Treat an otherwise-successful response as an error.
    *
@@ -340,15 +342,12 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
       const req = request.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders?.(request) } });
       const retryable = RETRYABLE_METHODS.includes(req.method) || req.headers.has('Idempotency-Key');
 
-      const base =
-        config.timeoutMs == null
-          ? next(req)
-          : next(req).pipe(
-              timeout({
-                each: config.timeoutMs,
-                with: () => throwError(() => new HttpErrorResponse({ status: 408, statusText: 'Request Timeout', url: req.url })),
-              }),
-            );
+      const base = next(req).pipe(
+        timeout({
+          each: DEFAULT_TIMEOUT_MS,
+          with: () => throwError(() => new HttpErrorResponse({ status: 408, statusText: 'Request Timeout', url: req.url })),
+        }),
+      );
 
       return base.pipe(
         map((event) => {

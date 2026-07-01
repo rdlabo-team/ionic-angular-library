@@ -2,8 +2,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { of, throwError, timer } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { of, throwError } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
 
 import { kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
@@ -423,10 +422,17 @@ describe('kitAuthInterceptor — timeoutMs & treatAsError', () => {
     expect(await firstValueFrom(runInterceptor(postReq, next))).toBe(ok);
   });
 
-  it('timeoutMs fails a slow request with a synthetic 408', async () => {
-    const config = makeConfig({ timeoutMs: 5 });
-    setupInterceptor(config);
-    const next = vi.fn().mockReturnValue(timer(200).pipe(map(() => new HttpResponse({ status: 200 }))));
-    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toMatchObject({ status: 408 });
+  it('times out a hung request with a synthetic 408 after the default timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      setupInterceptor(makeConfig());
+      const next = vi.fn().mockReturnValue(new Observable<never>(() => {})); // never emits
+      const result = firstValueFrom(runInterceptor(postReq, next));
+      const assertion = expect(result).rejects.toMatchObject({ status: 408 });
+      await vi.advanceTimersByTimeAsync(60_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
