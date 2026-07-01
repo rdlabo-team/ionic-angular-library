@@ -9,6 +9,7 @@ export * from './lib/storage/kit-storage.service';
 export * from './lib/overlay/overlay-config';
 export * from './lib/overlay/kit-overlay.controller';
 export * from './lib/overlay/kit-reload-alert.controller';
+export * from './lib/overlay/kit-auth-failed-alert';
 
 // Directives.
 export * from './lib/directives/autofill.directive';

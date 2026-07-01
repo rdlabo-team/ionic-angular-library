@@ -176,7 +176,7 @@ Functional `CanActivateFn` guards for a four-state auth model:
 | `'required'` | Not authenticated |
 | `'anonymous'` | Anonymous login active (can be prompted to register) |
 
-**Convention:** every redirect path and every app-specific hook (`onAuthorized`, `onUnauthenticated`) is supplied via `provideKitAuth`. The kit does not hard-code any routes.
+**Convention:** every redirect path is supplied via `provideKitAuth`; the kit does not hard-code any routes. `authState` and `redirects` are required. The app-specific hooks `onAuthorized` / `onUnauthenticated` are **optional** and default to `true` (allow the authenticated user through) / `false` (fall through to the `whenUnauthorized` redirect), so an app only supplies the ones with real logic.
 
 **Setup**
 
@@ -190,27 +190,40 @@ export const appConfig: ApplicationConfig = {
       const auth = inject(AuthService);
       return {
         authState: () => auth.state$,   // Observable<KitAuthState>
-        onAuthorized: async (state) => {
-          // Called for 'user' — perform token refresh, permission check, etc.
-          // Return true to proceed, UrlTree to redirect, false to block.
-          await auth.refreshToken();
-          return true;
-        },
-        onUnauthenticated: async (state) => {
-          // Called for 'required'/'confirm' in kitRequireAuthorizedGuard.
-          // Return true to allow anonymous access, false to redirect.
-          return false;
-        },
         redirects: {
           whenAuthorized: '/home',          // kitRequiredUnauthorizedGuard
           whenConfirming: '/auth/confirm',  // kitRequiredUnauthorizedGuard
           whenNotConfirming: '/auth/signin',// kitRequireConfirmingGuard
           whenUnauthorized: '/auth',        // kitRequireAuthorizedGuard
         },
+        // onAuthorized / onUnauthenticated omitted → defaults (allow / redirect).
+        // Supply onAuthorized only when 'user' needs extra work (token login, permissions):
+        // onAuthorized: async () => { await auth.refreshToken(); return true; },
+        // Supply onUnauthenticated only for a fallback such as anonymous sign-in:
+        // onUnauthenticated: async () => { await auth.signInAnonymously(); return true; },
       };
     }),
   ],
 };
+```
+
+### kitPresentAuthFailedAlert
+
+The fleet's canonical "sign-in / token exchange failed" alert: an informative alert (header + optional server error as sub-header + detail message) with a single close button that reloads the app so the user restarts cleanly. Text is passed in (no hardcoded i18n); the caller signs the user out around it. A standalone helper (takes `AlertController`) since `location.reload()` is navigation policy the overlay controller does not hold.
+
+```typescript
+import { kitPresentAuthFailedAlert } from '@rdlabo/ionic-angular-kit';
+
+const logged = await auth.tokenLogin().catch(async (e) => {
+  await kitPresentAuthFailedAlert(alertCtrl, {
+    header: 'ログインできませんでした',
+    subHeader: e.error.error,
+    message: e.error.detail,
+    closeText: '閉じる',
+  });
+  await auth.signOut();
+  return undefined;
+});
 ```
 
 **Guards**

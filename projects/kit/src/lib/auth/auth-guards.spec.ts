@@ -208,3 +208,39 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(navigate).toHaveBeenCalledWith([REDIRECTS.whenUnauthorized]);
   });
 });
+
+// A config may omit the optional hooks; the guard then applies the built-in defaults
+// (onAuthorized → true, onUnauthenticated → false).
+describe('kitRequireAuthorizedGuard — optional hooks omitted', () => {
+  afterEach(() => TestBed.resetTestingModule());
+
+  function setupBare(state: KitAuthState) {
+    const navigate = vi.fn().mockResolvedValue(true);
+    const setDirection = vi.fn();
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideKitAuth(() => ({
+          authState: () => of(state),
+          redirects: REDIRECTS,
+        })),
+        { provide: Router, useValue: { navigate } },
+        { provide: NavController, useValue: { setDirection } },
+      ],
+    });
+    return { navigate, setDirection };
+  }
+
+  it("'user' with no onAuthorized → defaults to true (allow)", async () => {
+    setupBare('user');
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(result).toBe(true);
+  });
+
+  it("'required' with no onUnauthenticated → defaults to false → redirects whenUnauthorized", async () => {
+    const { navigate } = setupBare('required');
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(result).toBe(false);
+    expect(navigate).toHaveBeenCalledWith([REDIRECTS.whenUnauthorized]);
+  });
+});

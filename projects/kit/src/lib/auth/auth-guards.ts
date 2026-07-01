@@ -42,8 +42,9 @@ export interface KitAuthRedirects {
  * Configuration consumed by the authentication guards, injected through {@link provideKitAuth}.
  *
  * @remarks
- * All members are required. The hooks let the host application plug its own auth service and
- * navigation policy into the otherwise fixed guard control flow.
+ * `authState` and `redirects` are required. The `onAuthorized` / `onUnauthenticated` hooks are
+ * optional and default to allowing the authenticated user through (`true`) and falling through to
+ * the default redirect (`false`) respectively, so an app only supplies the ones with real logic.
  */
 export interface KitAuthConfig {
   /**
@@ -60,23 +61,23 @@ export interface KitAuthConfig {
    *
    * @remarks
    * Typical responsibilities include token login, permission checks, terms-of-service acceptance,
-   * or restoring a previously requested redirect.
+   * or restoring a previously requested redirect. Optional; defaults to `true` (allow activation).
    *
    * @param state - The router state snapshot of the route being activated.
    * @returns `true` to allow activation, or a `UrlTree` to perform a custom redirect.
    */
-  onAuthorized(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
+  onAuthorized?(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
   /**
    * Fallback that runs in {@link kitRequireAuthorizedGuard} when the state is `required` (not authenticated).
    *
    * @remarks
-   * For example, attempt an anonymous sign-in and allow the route. Applications that do not need
-   * this should pass `async () => false` to fall through to the default redirect.
+   * For example, attempt an anonymous sign-in and allow the route. Optional; defaults to `false`
+   * (fall through to the default `whenUnauthorized` redirect).
    *
    * @param state - The router state snapshot of the route being activated.
    * @returns `true` to allow activation, a `UrlTree` for a custom redirect, or `false` to use the default redirect.
    */
-  onUnauthenticated(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
+  onUnauthenticated?(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
   /** Redirect targets used by the guards. */
   redirects: KitAuthRedirects;
 }
@@ -101,9 +102,8 @@ export const KIT_AUTH_CONFIG = new InjectionToken<KitAuthConfig>('@rdlabo/ionic-
  * provideKitAuth(() => {
  *   const auth = inject(AuthService);
  *   return {
+ *     // onAuthorized / onUnauthenticated are optional (default: allow / fall through to redirect).
  *     authState: () => auth.isAuth(),
- *     onAuthorized: async () => true,
- *     onUnauthenticated: async () => false,
  *     redirects: {
  *       whenAuthorized: '/',
  *       whenConfirming: '/auth/confirm',
@@ -210,12 +210,14 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   return authState().pipe(
     mergeMap(async (data) => {
       if (data === 'user') {
-        return onAuthorized(state);
+        // 既定は「許可」。tokenLogin / 権限確認等が必要なアプリだけ onAuthorized を渡す。
+        return onAuthorized ? onAuthorized(state) : true;
       }
       if (data === 'anonymous') {
         return true;
       }
-      const fallback = await onUnauthenticated(state);
+      // 既定は false（whenUnauthorized へ）。匿名ログイン等のフォールバックが要るアプリだけ渡す。
+      const fallback = onUnauthenticated ? await onUnauthenticated(state) : false;
       if (fallback !== false) {
         return fallback;
       }
