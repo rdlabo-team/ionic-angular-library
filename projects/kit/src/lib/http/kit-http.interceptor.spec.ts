@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { HttpErrorResponse, HttpRequest, HttpResponse } from '@angular/common/http';
+import { HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { of, throwError } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
@@ -15,6 +15,7 @@ vi.mock('@capacitor/network', () => ({
     getStatus: vi.fn().mockResolvedValue({ connected: true }),
   },
 }));
+import { Network } from '@capacitor/network';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -296,5 +297,91 @@ describe('kitAuthInterceptor', () => {
       expect(result).toBe(fallbackResponse);
       expect(config.onResponse).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Redesigned retry policy + status classification (kit 0.0.9)
+// ---------------------------------------------------------------------------
+describe('kitAuthInterceptor — retry policy & classification', () => {
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    vi.mocked(Network.getStatus).mockResolvedValue({ connected: true } as never);
+  });
+
+  const postReq = new HttpRequest<unknown>('POST', '/api/save', {});
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('does NOT retry a non-idempotent POST even on a retryable status (502)', async () => {
+    setupInterceptor(makeConfig());
+    let subs = 0;
+    const next = vi.fn().mockImplementation(
+      () =>
+        new Observable((s) => {
+          subs++;
+          s.error(new HttpErrorResponse({ status: 502 }));
+        }),
+    );
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toThrow();
+    expect(subs).toBe(1); // write is never auto-retried
+  });
+
+  it('offline → fails fast to offlineFallback, and onNetworkError is not called', async () => {
+    vi.mocked(Network.getStatus).mockResolvedValue({ connected: false } as never);
+    const fallback = of(new HttpResponse({ status: 200, body: { queued: true } }));
+    const config = makeConfig({ offlineFallback: vi.fn().mockReturnValue(fallback) });
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(throwError(() => new HttpErrorResponse({ status: 0 })));
+    const result = (await firstValueFrom(runInterceptor(baseReq, next))) as HttpResponse<unknown>;
+    expect(result.status).toBe(200);
+    expect(config.onNetworkError).not.toHaveBeenCalled();
+  });
+
+  it('502/503/504 → onServerBusy', async () => {
+    const config = makeConfig({ onServerBusy: vi.fn() });
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(throwError(() => new HttpErrorResponse({ status: 503 })));
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toThrow();
+    expect(config.onServerBusy).toHaveBeenCalledWith(503, undefined);
+  });
+
+  it('429 → onRateLimited with the Retry-After seconds', async () => {
+    const config = makeConfig({ onRateLimited: vi.fn() });
+    setupInterceptor(config);
+    const next = vi
+      .fn()
+      .mockReturnValue(throwError(() => new HttpErrorResponse({ status: 429, headers: new HttpHeaders({ 'Retry-After': '30' }) })));
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toThrow();
+    expect(config.onRateLimited).toHaveBeenCalledWith(30);
+  });
+
+  it('status 0 while connected → onNetworkError', async () => {
+    const config = makeConfig();
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(throwError(() => new HttpErrorResponse({ status: 0 })));
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toThrow();
+    await flush();
+    expect(config.onNetworkError).toHaveBeenCalledWith(0);
+  });
+
+  it('404 fires no generic alert hook', async () => {
+    const config = makeConfig({ onServerBusy: vi.fn(), onRateLimited: vi.fn() });
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(throwError(() => new HttpErrorResponse({ status: 404, error: { message: 'nope' } })));
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toThrow();
+    await flush();
+    expect(config.onNetworkError).not.toHaveBeenCalled();
+    expect(config.onServerError).not.toHaveBeenCalled();
+    expect(config.onServerBusy).not.toHaveBeenCalled();
+  });
+
+  it('getAuthHeaders rejection → onAuthError, request not sent', async () => {
+    const err = new Error('token failed');
+    const config = makeConfig({ getAuthHeaders: vi.fn().mockRejectedValue(err), onAuthError: vi.fn() });
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(of(new HttpResponse({ status: 200 })));
+    await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(err);
+    expect(config.onAuthError).toHaveBeenCalledWith(baseReq, err);
+    expect(next).not.toHaveBeenCalled();
   });
 });

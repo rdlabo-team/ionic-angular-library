@@ -290,9 +290,9 @@ A fleet-canonical HTTP interceptor with:
 
 - Per-request auth header injection
 - Configurable bypass (CDN, S3, external URLs)
-- Exponential-backoff retry (count: 2) skipping `[400, 403, 404, 418, 500, 502]` and `401`
-- Offline fallback (short-circuit error with a cached response)
-- Error hooks for 401, 403, network errors, and server errors with `error.message`
+- **Safe retry**: only idempotent methods (`GET`/`HEAD`/`OPTIONS`, or a request with an `Idempotency-Key`) are retried, and only on a transient status `[0, 408, 429, 502, 503, 504]`, up to 2 times with a short jittered backoff (honoring `Retry-After`). **Writes are never auto-retried** (no duplicate saves).
+- **Offline fast-fail**: when the device is offline the interceptor stops retrying immediately and hands off to `offlineFallback` instead of waiting out the backoff.
+- **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 
 **Convention:** all app-specific logic (auth headers, error UI) lives in the config factory. The retry policy, bypass evaluation, and error dispatch are fixed in the kit and not overridable per-call.
 
@@ -332,12 +332,16 @@ export const appConfig: ApplicationConfig = {
 };
 ```
 
-**Error dispatch order** (in `catchError`):
+**Error dispatch** (after retries, in `catchError`):
 1. `offlineFallback` non-null → return fallback observable (no further hooks called)
-2. `401` → `onUnauthorized`
-3. `403` → `onForbidden`
-4. Non-400/500 status AND device connected → `onNetworkError`
-5. 400 or 500 with `error.message` → `onServerError`
+2. `401` → `onUnauthorized` · `403` → `onForbidden`
+3. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
+4. `400/422/500` with `error.message` → `onServerError`
+5. anything else (`404`, …) → not handled here; the caller decides
+
+Plus: a `getAuthHeaders` rejection → `onAuthError(request, error)` (the request is never sent).
+
+**Note (0.0.9):** `onNetworkError` is now narrowed to genuine network failures (status `0`); `502/503/429` moved to `onServerBusy`/`onRateLimited`. Existing configs stay valid — they just fire less often — so adopt the new hooks only if you want to distinguish server-busy / rate-limit from a connection loss.
 
 ### KitReloadAlertController
 

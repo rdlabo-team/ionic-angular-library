@@ -8,19 +8,65 @@ import { from, retry, throwError, timer } from 'rxjs';
 import { catchError, mergeMap, tap } from 'rxjs/operators';
 
 /**
- * HTTP status codes that must never be retried. `401` is handled separately and thrown immediately.
+ * HTTP methods that are safe to retry automatically.
+ *
+ * @remarks
+ * Non-idempotent methods (`POST` / `PATCH` / `DELETE`) are never auto-retried, because a response
+ * lost *after* the server processed the write would be replayed into a duplicate write ("saved twice
+ * from one tap"). A non-idempotent request that is genuinely safe to replay opts in by carrying an
+ * `Idempotency-Key` header (which the server must honor).
  *
  * @internal
  */
-const NON_RETRYABLE_STATUSES = [400, 403, 404, 418, 500, 502];
+const RETRYABLE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+
+/**
+ * Transient HTTP statuses worth retrying: `0` (network/transport failure), `408` (request timeout),
+ * `429` (rate limited), and the `502` / `503` / `504` gateway-availability family. Every other status
+ * is thrown immediately — a whitelist is safer than a blacklist for deciding what to replay.
+ *
+ * @internal
+ */
+const RETRYABLE_STATUSES = [0, 408, 429, 502, 503, 504];
+
+/**
+ * Maximum number of automatic retries for a retryable request.
+ *
+ * @internal
+ */
+const MAX_RETRIES = 2;
+
+/**
+ * Parse a `Retry-After` header (delta-seconds or an HTTP-date) into milliseconds, or `null` when it
+ * is absent or unparseable.
+ *
+ * @internal
+ */
+const parseRetryAfterMs = (error: HttpErrorResponse): number | null => {
+  const header = error.headers?.get('Retry-After');
+  if (!header) {
+    return null;
+  }
+  const seconds = Number(header);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+  const dateMs = Date.parse(header);
+  return Number.isNaN(dateMs) ? null : Math.max(0, dateMs - Date.now());
+};
 
 /**
  * Configuration that customizes the behavior of {@link kitAuthInterceptor}, injected through {@link provideKitHttp}.
  *
  * @remarks
- * The interceptor fixes the retry policy (up to 2 retries with a linearly increasing backoff, plus immediate
- * throw on `401` and on every {@link NON_RETRYABLE_STATUSES | non-retryable status}) and the overall
- * control flow. Only the hooks below are application-specific.
+ * The interceptor fixes the retry policy and control flow; only the hooks below are app-specific:
+ *
+ * - Retries only {@link RETRYABLE_METHODS | idempotent methods} (or a request bearing an
+ *   `Idempotency-Key`) on a {@link RETRYABLE_STATUSES | transient status}, up to {@link MAX_RETRIES}
+ *   times with a short jittered backoff (honoring `Retry-After`). Writes are never auto-retried.
+ * - When the device is offline it fails fast to {@link KitHttpConfig.offlineFallback} instead of
+ *   waiting out the retries.
+ * - On a final error it classifies by status and calls the matching hook (see each hook below).
  *
  * Only {@link KitHttpConfig.getAuthHeaders} is required — it has no safe default. Every other hook is
  * optional and defaults to a no-op (or `{}` / `false` / `null` as appropriate), so an app configures
@@ -96,25 +142,64 @@ export interface KitHttpConfig {
    */
   onForbidden?(request: HttpRequest<unknown>): void;
   /**
-   * UX hook for network-originated errors while the device is connected.
+   * UX hook for a genuine network / transport failure (status `0`) while the device reports itself
+   * connected — i.e. the server is unreachable rather than the phone being offline.
    *
    * @remarks
-   * Optional; defaults to a no-op. The kit ships {@link KitReloadAlertController} as the fleet's
-   * canonical implementation of this hook (with auto-dismiss on reconnect via `onResponse`).
+   * Optional; defaults to a no-op. Narrow by design: it fires only for status `0` (not for `404`,
+   * `429`, `5xx`, …, which have their own hooks), so a "connection lost, reload?" prompt is not shown
+   * for server-side problems. When the device is offline it is not called at all — `offlineFallback`
+   * owns that path. The kit ships {@link KitReloadAlertController} as the canonical implementation
+   * (with de-dup so concurrent failures show a single alert, and auto-dismiss on reconnect).
    *
-   * @param status - The HTTP status code, or a string descriptor for non-HTTP failures.
+   * @param status - The HTTP status code (`0`), or a string descriptor for non-HTTP failures.
    * @returns Optionally a promise to await before continuing.
    */
   onNetworkError?(status: number | string): Promise<void> | void;
   /**
-   * UX hook for `400` / `500` responses that carry a server-provided message.
+   * UX hook for a transient server-availability failure (`502` / `503` / `504`), fired after retries
+   * are exhausted.
+   *
+   * @remarks
+   * Optional; defaults to a no-op. Distinct from {@link KitHttpConfig.onNetworkError} — the device's
+   * connection is fine, the server is momentarily unavailable — so the app can say "server busy, try
+   * again shortly" rather than prompt a reload.
+   *
+   * @param status - `502`, `503`, or `504`.
+   * @param retryAfterSeconds - The server's `Retry-After` hint in seconds, when provided.
+   */
+  onServerBusy?(status: number, retryAfterSeconds?: number): void;
+  /**
+   * UX hook for a `429 Too Many Requests` response, fired after retries are exhausted.
    *
    * @remarks
    * Optional; defaults to a no-op.
    *
+   * @param retryAfterSeconds - The server's `Retry-After` hint in seconds, when provided.
+   */
+  onRateLimited?(retryAfterSeconds?: number): void;
+  /**
+   * UX hook for `400` / `422` / `500` responses that carry a server-provided message.
+   *
+   * @remarks
+   * Optional; defaults to a no-op. Note that the message comes straight from the API; prefer a
+   * user-facing `userMessage` / `code` in your error contract over showing a raw developer message.
+   *
    * @param message - The message extracted from the error body.
    */
   onServerError?(message: string): void;
+  /**
+   * Side effect for a failure while *producing* the auth headers (`getAuthHeaders` rejected).
+   *
+   * @remarks
+   * Optional; defaults to a no-op. Because the request is never sent in this case, it does not reach
+   * the response-error hooks; classify it here (for example a failed token refresh) so it does not
+   * fail silently.
+   *
+   * @param request - The request whose headers could not be produced.
+   * @param error - The error thrown by `getAuthHeaders`.
+   */
+  onAuthError?(request: HttpRequest<unknown>, error: unknown): void;
 }
 
 /**
@@ -157,20 +242,55 @@ export const provideKitHttp = (configFactory: () => KitHttpConfig): EnvironmentP
   makeEnvironmentProviders([{ provide: KIT_HTTP_CONFIG, useFactory: configFactory }]);
 
 /**
+ * Classify a final (post-retry) error and invoke the matching {@link KitHttpConfig} hook.
+ *
+ * @internal
+ */
+const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: HttpErrorResponse): void => {
+  const status = error.status;
+  const retryAfterMs = parseRetryAfterMs(error);
+  const retryAfterSeconds = retryAfterMs === null ? undefined : Math.round(retryAfterMs / 1000);
+
+  if (status === 401) {
+    config.onUnauthorized?.(req);
+  } else if (status === 403) {
+    config.onForbidden?.(req);
+  } else if (status === 0) {
+    // Genuine network/transport failure. Only surface it when the device is actually connected
+    // (server unreachable); when offline, offlineFallback owns the UX — a reload prompt won't help.
+    void Network.getStatus().then((network) => {
+      if (network.connected) {
+        config.onNetworkError?.(status);
+      }
+    });
+  } else if (status === 429) {
+    config.onRateLimited?.(retryAfterSeconds);
+  } else if ([502, 503, 504].includes(status)) {
+    config.onServerBusy?.(status, retryAfterSeconds);
+  } else if ([400, 422, 500].includes(status) && error.error?.message) {
+    config.onServerError?.(error.error.message);
+  }
+  // Every other status (404, 418, …) is left to the caller — no generic alert.
+};
+
+/**
  * Canonical functional HTTP interceptor that applies authentication, retries, and error handling.
  *
  * @remarks
  * Behavior, driven by the injected {@link KitHttpConfig}:
  *
  * 1. Requests for which `bypass` returns `true` are forwarded untouched.
- * 2. Otherwise the headers from `getAuthHeaders` and `buildExtraHeaders` are merged onto a cloned request.
- * 3. Failed requests are retried up to 2 times with a linearly increasing backoff of `500ms * (retryCount + 5)`,
- *    except that `401` and any {@link NON_RETRYABLE_STATUSES | non-retryable status}
- *    (`400`, `403`, `404`, `418`, `500`, `502`) are thrown immediately without retrying.
- * 4. On error, `offlineFallback` is consulted first; otherwise `401` calls `onUnauthorized`, `403`
- *    calls `onForbidden`, network-class failures (anything other than `400`/`500`) call
- *    `onNetworkError` when the device is connected, and `400`/`500` responses carrying a body
- *    message call `onServerError`.
+ * 2. If `getAuthHeaders` rejects, `onAuthError` is called and the request is not sent.
+ * 3. Otherwise the headers from `getAuthHeaders` and `buildExtraHeaders` are merged onto a cloned request.
+ * 4. On failure the request is retried up to {@link MAX_RETRIES} times, but **only** when the device
+ *    is online, the method is a {@link RETRYABLE_METHODS | retryable method} (or carries an
+ *    `Idempotency-Key`), and the status is a {@link RETRYABLE_STATUSES | transient status}. The
+ *    backoff is `retryCount * 500ms` plus up to 250ms of jitter, or the server's `Retry-After`.
+ *    When the device is offline it stops retrying immediately.
+ * 5. On the final error, `offlineFallback` is consulted first; otherwise the error is classified by
+ *    status (see {@link dispatchError}): `401`→`onUnauthorized`, `403`→`onForbidden`, `0`→
+ *    `onNetworkError` (when connected), `429`→`onRateLimited`, `502`/`503`/`504`→`onServerBusy`, and
+ *    `400`/`422`/`500` with a body message→`onServerError`.
  *
  * @param request - The outgoing request.
  * @param next - The next handler in the interceptor chain.
@@ -188,47 +308,49 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
     return next(request);
   }
 
-  return from(config.getAuthHeaders(request)).pipe(
+  return from(Promise.resolve(config.getAuthHeaders(request))).pipe(
+    catchError((headerError: unknown) => {
+      // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
+      config.onAuthError?.(request, headerError);
+      return throwError(() => headerError);
+    }),
     mergeMap((authHeaders) => {
       const req = request.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders?.(request) } });
+      const retryable = RETRYABLE_METHODS.includes(req.method) || req.headers.has('Idempotency-Key');
 
       return next(req).pipe(
         retry({
-          count: 2,
-          delay: (e: HttpErrorResponse, retryCount) => {
-            if (e.status === 401) {
-              return throwError(() => e);
-            }
-            if (NON_RETRYABLE_STATUSES.includes(e.status)) {
-              return throwError(() => e);
-            }
-            return timer((retryCount + 5) * 500);
-          },
+          count: MAX_RETRIES,
+          delay: (error: HttpErrorResponse, retryCount: number) =>
+            from(Network.getStatus()).pipe(
+              mergeMap((network) => {
+                // Offline → don't wait out the retries; fail fast so offlineFallback can take over.
+                if (!network.connected) {
+                  return throwError(() => error);
+                }
+                // Only replay idempotent requests, and only on a transient status.
+                if (!retryable || !RETRYABLE_STATUSES.includes(error.status)) {
+                  return throwError(() => error);
+                }
+                // Short linear backoff (500ms, 1000ms, …) plus jitter to de-correlate a fleet of
+                // clients reconnecting at once; the server's Retry-After wins when present.
+                const backoff = parseRetryAfterMs(error) ?? retryCount * 500 + Math.random() * 250;
+                return timer(backoff);
+              }),
+            ),
         }),
         tap((event) => {
           if (event instanceof HttpResponse) {
             config.onResponse?.(event);
           }
         }),
-        catchError((e: HttpErrorResponse) => {
-          const fallback = config.offlineFallback?.(req, e);
+        catchError((error: HttpErrorResponse) => {
+          const fallback = config.offlineFallback?.(req, error);
           if (fallback) {
             return fallback;
           }
-          if (e.status === 401) {
-            config.onUnauthorized?.(req);
-          } else if (e.status === 403) {
-            config.onForbidden?.(req);
-          } else if (![400, 500].includes(e.status)) {
-            void Network.getStatus().then((status) => {
-              if (status.connected) {
-                config.onNetworkError?.(e.status);
-              }
-            });
-          } else if (e.error?.message) {
-            config.onServerError?.(e.error.message);
-          }
-          return throwError(() => e);
+          dispatchError(config, req, error);
+          return throwError(() => error);
         }),
       );
     }),
