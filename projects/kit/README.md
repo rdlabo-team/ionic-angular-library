@@ -293,6 +293,8 @@ A fleet-canonical HTTP interceptor with:
 - **Safe retry**: only idempotent methods (`GET`/`HEAD`/`OPTIONS`, or a request with an `Idempotency-Key`) are retried, and only on a transient status `[0, 408, 429, 502, 503, 504]`, up to 2 times with a short jittered backoff (honoring `Retry-After`). **Writes are never auto-retried** (no duplicate saves).
 - **Offline fast-fail**: when the device is offline the interceptor stops retrying immediately and hands off to `offlineFallback` instead of waiting out the backoff.
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
+- **Optional `timeoutMs`** — per-request timeout; a slow request fails with a synthetic (retryable) `408`.
+- **Optional `treatAsError(response)`** — reject a 2xx (e.g. `204`/`206`) as an error when a backend uses it to signal a condition. (These two let class-based interceptors with a timeout / 2xx-as-error convention migrate to `provideKitHttp`.)
 
 **Convention:** all app-specific logic (auth headers, error UI) lives in the config factory. The retry policy, bypass evaluation, and error dispatch are fixed in the kit and not overridable per-call.
 

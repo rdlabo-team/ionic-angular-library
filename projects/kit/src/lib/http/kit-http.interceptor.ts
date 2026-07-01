@@ -1,11 +1,11 @@
 import type { EnvironmentProviders } from '@angular/core';
 import { inject, InjectionToken, makeEnvironmentProviders } from '@angular/core';
-import type { HttpErrorResponse, HttpEvent, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
-import { HttpResponse } from '@angular/common/http';
+import type { HttpEvent, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
+import { HttpErrorResponse, HttpResponse } from '@angular/common/http';
 import { Network } from '@capacitor/network';
 import type { Observable } from 'rxjs';
 import { from, retry, throwError, timer } from 'rxjs';
-import { catchError, mergeMap, tap } from 'rxjs/operators';
+import { catchError, map, mergeMap, tap, timeout } from 'rxjs/operators';
 
 /**
  * HTTP methods that are safe to retry automatically.
@@ -90,6 +90,28 @@ export interface KitHttpConfig {
    * @returns A map of header names to values; return `{}` when none are needed.
    */
   buildExtraHeaders?(request: HttpRequest<unknown>): Record<string, string>;
+  /**
+   * Per-request timeout in milliseconds.
+   *
+   * @remarks
+   * Optional; when set, a request that does not respond within `timeoutMs` fails with a synthetic
+   * `408 Request Timeout`, which is a {@link RETRYABLE_STATUSES | retryable status} (so idempotent
+   * requests get another attempt). Omit for no timeout.
+   */
+  timeoutMs?: number;
+  /**
+   * Treat an otherwise-successful response as an error.
+   *
+   * @remarks
+   * Optional. Some backends use a 2xx status (for example `204` / `206`) to signal a condition the
+   * app wants to surface as an error rather than a success. Return `true` to throw the response so it
+   * flows through the error path; the status is not in {@link RETRYABLE_STATUSES}, so it is not
+   * retried and propagates to the caller. Defaults to treating every 2xx as a success.
+   *
+   * @param response - The successful `HttpResponse` about to be delivered.
+   * @returns `true` to reject the response as an error.
+   */
+  treatAsError?(response: HttpResponse<unknown>): boolean;
   /**
    * Called for every successful response that completed an actual network round trip.
    *
@@ -318,7 +340,24 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
       const req = request.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders?.(request) } });
       const retryable = RETRYABLE_METHODS.includes(req.method) || req.headers.has('Idempotency-Key');
 
-      return next(req).pipe(
+      const base =
+        config.timeoutMs == null
+          ? next(req)
+          : next(req).pipe(
+              timeout({
+                each: config.timeoutMs,
+                with: () => throwError(() => new HttpErrorResponse({ status: 408, statusText: 'Request Timeout', url: req.url })),
+              }),
+            );
+
+      return base.pipe(
+        map((event) => {
+          // A backend may signal an error condition with a 2xx status (e.g. 204/206); surface it as an error.
+          if (event instanceof HttpResponse && config.treatAsError?.(event)) {
+            throw event;
+          }
+          return event;
+        }),
         retry({
           count: MAX_RETRIES,
           delay: (error: HttpErrorResponse, retryCount: number) =>

@@ -2,7 +2,8 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { of, throwError } from 'rxjs';
+import { of, throwError, timer } from 'rxjs';
+import { map } from 'rxjs/operators';
 import { firstValueFrom } from 'rxjs';
 
 import { kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
@@ -383,5 +384,49 @@ describe('kitAuthInterceptor — retry policy & classification', () => {
     await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(err);
     expect(config.onAuthError).toHaveBeenCalledWith(baseReq, err);
     expect(next).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// timeoutMs + treatAsError (kit 0.0.10 — for local-interceptor migration)
+// ---------------------------------------------------------------------------
+describe('kitAuthInterceptor — timeoutMs & treatAsError', () => {
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    vi.mocked(Network.getStatus).mockResolvedValue({ connected: true } as never);
+  });
+
+  const postReq = new HttpRequest<unknown>('POST', '/api/save', {});
+
+  it('treatAsError rejects a 2xx response (204) as an error, without retrying it', async () => {
+    const config = makeConfig({ treatAsError: vi.fn((res: HttpResponse<unknown>) => res.status === 204) });
+    setupInterceptor(config);
+    let subs = 0;
+    const next = vi.fn().mockImplementation(
+      () =>
+        new Observable((s) => {
+          subs++;
+          s.next(new HttpResponse({ status: 204 }));
+          s.complete();
+        }),
+    );
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toBeInstanceOf(HttpResponse);
+    expect(config.treatAsError).toHaveBeenCalled();
+    expect(subs).toBe(1); // a treated-as-error 204 is not retried
+  });
+
+  it('treatAsError returning false lets a normal 200 through', async () => {
+    const config = makeConfig({ treatAsError: vi.fn(() => false) });
+    setupInterceptor(config);
+    const ok = new HttpResponse({ status: 200, body: { ok: true } });
+    const next = vi.fn().mockReturnValue(of(ok));
+    expect(await firstValueFrom(runInterceptor(postReq, next))).toBe(ok);
+  });
+
+  it('timeoutMs fails a slow request with a synthetic 408', async () => {
+    const config = makeConfig({ timeoutMs: 5 });
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(timer(200).pipe(map(() => new HttpResponse({ status: 200 }))));
+    await expect(firstValueFrom(runInterceptor(postReq, next))).rejects.toMatchObject({ status: 408 });
   });
 });
