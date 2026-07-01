@@ -26,9 +26,17 @@ npm install @rdlabo/ionic-angular-kit
 | `@ionic/angular` | `^8.0.0` |
 | `@ionic/storage-angular` | `^4.0.0` |
 | `@capacitor/core` | `>=6.0.0 <9.0.0` |
+| `@capacitor/haptics` | `>=6.0.0 <9.0.0` |
 | `@capacitor/keyboard` | `>=6.0.0 <9.0.0` |
 | `@capacitor/network` | `>=6.0.0 <9.0.0` |
+| `@capacitor/preferences` | `>=6.0.0 <9.0.0` |
+| `@capacitor/status-bar` | `>=6.0.0 <9.0.0` |
+| `@capacitor-community/in-app-review` | `>=6.0.0 <9.0.0` |
+| `@rdlabo/capacitor-brotherprint` | `>=6.0.0 <9.0.0` |
+| `dom-to-image-more` | `^3.0.0` |
 | `rxjs` | `^7.8.0` |
+
+Feature-scoped peers are only needed by the features that use them (`status-bar` → `KitThemeController`; `preferences` + `in-app-review` → `kitRequestReview`; `capacitor-brotherprint` + `dom-to-image-more` → the printer helpers); an app that doesn't use a feature can ignore its unmet-peer warning.
 
 ---
 
@@ -409,6 +417,43 @@ export class ComposePage {
 
 ---
 
+### KitThemeController + provideKitTheme
+
+Light/dark theme controller that unifies the theme logic that had drifted across the fleet: it persists the user's choice, follows the OS `prefers-color-scheme` until the user overrides it, toggles the configured palette classes, and syncs the native Android status bar. It also fixes a latent leak in one variant where the system-theme listener stayed registered after a manual toggle — `changeTheme()` always detaches the listener first, so a later OS change can't silently flip an app the user pinned.
+
+Per-app CSS differences are absorbed by config: `darkClasses` are toggled on when dark, `lightClasses` on when light. The kit ships no class names of its own. Subscribe to `themeSubject` (a `BehaviorSubject`) to reflect the current mode in the UI. It is a controller (not a plain function) because the subject and OS-listener are shared state across the app lifetime.
+
+```typescript
+// app.config.ts
+provideKitTheme({
+  storageKey: StorageKeyEnum.theme,
+  darkClasses: ['ion-palette-dark', 'a2ui-dark'],
+  lightClasses: ['a2ui-light'],
+});
+
+// app.component.ts — apply on boot
+inject(KitThemeController).setDefaultThemeMode();
+
+// settings page — bind a toggle
+const theme = inject(KitThemeController);
+theme.themeSubject.subscribe((mode) => this.isDark.set(mode === 'dark'));
+theme.changeTheme(true); // force dark, stop following the OS
+```
+
+---
+
+### kitRequestReview
+
+A plain function (no DI — `@capacitor/preferences`, `@capacitor-community/in-app-review` and `Capacitor` are all static) that requests the native in-app review dialog, throttled so the user is prompted at most once per window. A no-op on web. The wait/throttle/record sequence was previously copy-pasted verbatim across the fleet; centralizing it means a single place to tune the prompt cadence. The storage key and throttle window are passed as arguments, so the kit ships no config of its own.
+
+```typescript
+import { kitRequestReview } from '@rdlabo/ionic-angular-kit';
+
+await kitRequestReview({ storageKey: StorageEnum.lastRequestRate, throttleMonths: 3 });
+```
+
+---
+
 ### Utilities
 
 Framework-agnostic helpers (no DI required unless noted):
@@ -430,6 +475,61 @@ if (!objectEqual(prev, next)) { /* changed */ }
 async onSubmit(event: Event) {
   await disableHandler(event, this.save());
 }
+```
+
+Ionic-event / lifecycle helpers:
+
+```typescript
+import { kitChangeEventDisabled, kitCreateDidEnter } from '@rdlabo/ionic-angular-kit';
+
+// Toggle a signal-held ion-infinite-scroll / ion-refresher's `disabled` (no-op when empty).
+kitChangeEventDisabled(infiniteScrollSignal, true);
+
+// Observe an Ionic page's "is entered" state from its lifecycle DOM events (true on didEnter).
+readonly isEntered = toSignal(kitCreateDidEnter(inject(ElementRef)), { initialValue: false });
+```
+
+---
+
+### kitPresentLanguageActionSheet
+
+A plain function (the `ActionSheetController` is passed in — nothing injected) that presents a language picker and, on a new selection, reloads the app at that locale's entry point. Unifies the language-switch flow duplicated across apps: it stashes the current path in `sessionStorage` (to restore after reload), records the chosen locale in `localStorage`, and calls `window.location.replace()` with the app-provided URL. Being a navigation helper, it stays standalone rather than part of a controller. All text, the locale list, and the per-locale URL mapping are injected, so the kit stays free of i18n strings.
+
+```typescript
+import { kitPresentLanguageActionSheet } from '@rdlabo/ionic-angular-kit';
+
+await kitPresentLanguageActionSheet(inject(ActionSheetController), {
+  header: $localize`言語設定`,
+  locales: [{ text: 'English', data: 'en-US' }, { text: '日本語', data: 'ja' }],
+  cancelText: $localize`キャンセル`,
+  currentLocale: normalizedLocale,
+  currentPath: this.#router.url,
+  pathnameStorageKey: StorageKeyEnum.pathnameBeforeRedirect,
+  buildRedirectUrl: (locale) => location.origin + (localePath[locale.toLowerCase()] ?? '/index.html'),
+  enabled: environment.production,
+});
+```
+
+---
+
+### Printer (Brother label plumbing)
+
+Three pure functions (no DI) that extract the i18n-free core of the fleet's Brother label printing, so a device-quirk or print-setting fix lands in every app at once. The UI orchestration — search/channel-selection alerts, loading overlays, and the app-specific paper list — stays in each app, since those diverge (labels, paper options, copies policy).
+
+- `kitDomToPng(element, { rotate?, scale? })` — render a DOM element to a base64 PNG with the fleet's device fixes (iOS +2px to avoid bottom clipping, none on Android to avoid a black line; retries up to 10×). The caller presents its own loading UI.
+- `kitRotationImage(base64)` — rotate a base64 image 90° via canvas.
+- `kitBuildBrotherPrintSettings({ modelName, printBase64, label, numberOfCopies, halftoneThreshold })` — assemble the canonical `BRLMPrintOptions` (fit-page, centered, best quality, threshold halftone, standard margins, tape size parsed from the label's `W<w>H<h>` code). Merge `{ port, channelInfo }` from the selected channel before calling `BrotherPrint.printImage()`.
+
+```typescript
+import { kitDomToPng, kitBuildBrotherPrintSettings } from '@rdlabo/ionic-angular-kit';
+
+const png = await kitDomToPng(this.preview().nativeElement, { rotate: true });
+const settings = kitBuildBrotherPrintSettings({
+  modelName, printBase64: png, label,
+  numberOfCopies: printOptions.printNum,
+  halftoneThreshold: printOptions.halftoneThreshold,
+});
+await BrotherPrint.printImage({ ...settings, port: channel.port, channelInfo: channel.channelInfo });
 ```
 
 ---
