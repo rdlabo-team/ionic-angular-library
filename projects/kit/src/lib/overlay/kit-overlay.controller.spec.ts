@@ -156,12 +156,12 @@ describe('KitOverlayController', () => {
 
   // ---- presentToast ---------------------------------------------------------
   describe('presentToast', () => {
-    it('applies kit defaults (position=top, duration=2000) and presents the toast', async () => {
+    it('applies kit defaults (position=bottom, duration=2000) and presents the toast', async () => {
       const overlay = fakeOverlay();
       const { controller, toastCtrl } = setup({ toastOverlay: overlay });
       await controller.presentToast({ message: 'Hello' });
       const createArgs = toastCtrl.create.mock.calls[0][0];
-      expect(createArgs.position).toBe('top');
+      expect(createArgs.position).toBe('bottom');
       expect(createArgs.duration).toBe(2000);
       expect(overlay.present).toHaveBeenCalledOnce();
     });

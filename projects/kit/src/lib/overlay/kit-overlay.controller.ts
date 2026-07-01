@@ -152,9 +152,12 @@ export class KitOverlayController {
    * Present a toast using kit defaults that the caller may override.
    *
    * @remarks
-   * Defaults to a top position, a 2000ms duration, a vertical swipe gesture, and a close button
+   * Defaults to a bottom position, a 2000ms duration, a vertical swipe gesture, and a close button
    * from the configured labels; any of these can be overridden via `options`. Presenting a toast
    * also triggers light native haptic feedback as an intentional kit UX choice.
+   *
+   * Bottom is the fleet-wide default (top left the toast fighting the tab bar and the keyboard); an
+   * app that wants it elsewhere passes `position` / `positionAnchor` in `options`.
    *
    * @param options - Ionic toast options that override the kit defaults
    * @returns the presented toast element
@@ -166,7 +169,7 @@ export class KitOverlayController {
   async presentToast(options: ToastOptions): Promise<HTMLIonToastElement> {
     void kitImpact();
     const toast = await this.#toastCtrl.create({
-      position: 'top',
+      position: 'bottom',
       duration: 2000,
       buttons: [this.#labels.close],
       swipeGesture: 'vertical',

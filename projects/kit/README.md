@@ -154,7 +154,7 @@ presentPopover<O>(
 ): Promise<O | undefined>
 
 presentToast(options: ToastOptions): Promise<HTMLIonToastElement>
-// kit defaults: position='top', duration=2000, swipeGesture='vertical'
+// kit defaults: position='bottom', duration=2000, swipeGesture='vertical'
 // caller options spread over the defaults — any field can be overridden
 
 alertClose(options: { header: string; message: string; subHeader?: string }): Promise<void>
