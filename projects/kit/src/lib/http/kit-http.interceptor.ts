@@ -21,6 +21,10 @@ const NON_RETRYABLE_STATUSES = [400, 403, 404, 418, 500, 502];
  * The interceptor fixes the retry policy (up to 2 retries with a linearly increasing backoff, plus immediate
  * throw on `401` and on every {@link NON_RETRYABLE_STATUSES | non-retryable status}) and the overall
  * control flow. Only the hooks below are application-specific.
+ *
+ * Only {@link KitHttpConfig.getAuthHeaders} is required — it has no safe default. Every other hook is
+ * optional and defaults to a no-op (or `{}` / `false` / `null` as appropriate), so an app configures
+ * only the behavior that actually differs from the canonical baseline.
  */
 export interface KitHttpConfig {
   /**
@@ -33,71 +37,84 @@ export interface KitHttpConfig {
   /**
    * Produce additional headers for the outgoing request.
    *
+   * @remarks
+   * Optional; defaults to adding no extra headers.
+   *
    * @param request - The outgoing request about to be sent.
    * @returns A map of header names to values; return `{}` when none are needed.
    */
-  buildExtraHeaders(request: HttpRequest<unknown>): Record<string, string>;
+  buildExtraHeaders?(request: HttpRequest<unknown>): Record<string, string>;
   /**
    * Called for every successful response that completed an actual network round trip.
    *
    * @remarks
    * Responses synthesized by {@link KitHttpConfig.offlineFallback} are produced after `catchError`
    * and therefore never reach this hook, so it observes genuine successes only. A typical use is to
-   * reset an "offline" flag once connectivity is restored. Implement as a no-op when not needed.
+   * reset an "offline" flag once connectivity is restored. Optional; defaults to a no-op.
    *
    * @param event - The successful `HttpResponse`.
    */
-  onResponse(event: HttpResponse<unknown>): void;
+  onResponse?(event: HttpResponse<unknown>): void;
   /**
    * Decide whether to pass the request straight through, skipping auth, retry, and error handling.
    *
    * @remarks
-   * Useful for external URLs such as S3 or a CDN. Return `false` to always apply the standard pipeline.
+   * Useful for external URLs such as S3 or a CDN. Optional; defaults to `false` (never bypass).
    *
    * @param request - The outgoing request.
    * @returns `true` to bypass the interceptor pipeline.
    */
-  bypass(request: HttpRequest<unknown>): boolean;
+  bypass?(request: HttpRequest<unknown>): boolean;
   /**
    * Provide an offline short-circuit when a request fails.
    *
    * @remarks
    * Returning a non-null observable replaces the error with that response (for example a queued
-   * offline result). Return `null` to let normal error handling proceed.
+   * offline result). Optional; defaults to `null` (no fallback, normal error handling proceeds).
    *
    * @param request - The request that failed (after headers were applied).
    * @param error - The error response that triggered the fallback.
    * @returns A replacement event stream, or `null` for no fallback.
    */
-  offlineFallback(request: HttpRequest<unknown>, error: HttpErrorResponse): Observable<HttpEvent<unknown>> | null;
+  offlineFallback?(request: HttpRequest<unknown>, error: HttpErrorResponse): Observable<HttpEvent<unknown>> | null;
   /**
    * Side effect to run on a `401` response (for example an expired token).
    *
+   * @remarks
+   * Optional; defaults to a no-op.
+   *
    * @param request - The request that received the `401`.
    */
-  onUnauthorized(request: HttpRequest<unknown>): void;
+  onUnauthorized?(request: HttpRequest<unknown>): void;
   /**
    * Side effect to run on a `403` response (a permission error).
    *
    * @remarks
-   * Implement as a no-op when not needed.
+   * Optional; defaults to a no-op.
    *
    * @param request - The request that received the `403`.
    */
-  onForbidden(request: HttpRequest<unknown>): void;
+  onForbidden?(request: HttpRequest<unknown>): void;
   /**
    * UX hook for network-originated errors while the device is connected.
+   *
+   * @remarks
+   * Optional; defaults to a no-op. The kit ships {@link kitPresentReloadAlert} as the fleet's
+   * canonical implementation of this hook.
    *
    * @param status - The HTTP status code, or a string descriptor for non-HTTP failures.
    * @returns Optionally a promise to await before continuing.
    */
-  onNetworkError(status: number | string): Promise<void> | void;
+  onNetworkError?(status: number | string): Promise<void> | void;
   /**
    * UX hook for `400` / `500` responses that carry a server-provided message.
    *
+   * @remarks
+   * Optional; defaults to a no-op.
+   *
    * @param message - The message extracted from the error body.
    */
-  onServerError(message: string): void;
+  onServerError?(message: string): void;
 }
 
 /**
@@ -122,16 +139,13 @@ export const KIT_HTTP_CONFIG = new InjectionToken<KitHttpConfig>('@rdlabo/ionic-
  *     provideHttpClient(withInterceptors([kitAuthInterceptor])),
  *     provideKitHttp(() => {
  *       const auth = inject(AuthService);
+ *       const overlay = inject(KitOverlayController);
  *       return {
+ *         // Only getAuthHeaders is required; every other hook is optional and defaults to a no-op.
  *         getAuthHeaders: async () => ({ Authorization: `Bearer ${await auth.token()}` }),
- *         buildExtraHeaders: () => ({}),
- *         onResponse: () => {},
- *         bypass: (request) => request.url.startsWith('https://cdn.example.com'),
- *         offlineFallback: () => null,
  *         onUnauthorized: () => auth.signOut(),
- *         onForbidden: () => {},
- *         onNetworkError: () => {},
- *         onServerError: (message) => console.error(message),
+ *         onNetworkError: (status) =>
+ *           kitPresentReloadAlert(overlay, { header: 'Network error', message: `Reload? (${status})`, okText: 'Reload' }),
  *       };
  *     }),
  *   ],
@@ -169,13 +183,13 @@ export const provideKitHttp = (configFactory: () => KitHttpConfig): EnvironmentP
 export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
   const config = inject(KIT_HTTP_CONFIG);
 
-  if (config.bypass(request)) {
+  if (config.bypass?.(request)) {
     return next(request);
   }
 
   return from(config.getAuthHeaders(request)).pipe(
     mergeMap((authHeaders) => {
-      const req = request.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders(request) } });
+      const req = request.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders?.(request) } });
 
       return next(req).pipe(
         retry({
@@ -192,26 +206,26 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
         }),
         tap((event) => {
           if (event instanceof HttpResponse) {
-            config.onResponse(event);
+            config.onResponse?.(event);
           }
         }),
         catchError((e: HttpErrorResponse) => {
-          const fallback = config.offlineFallback(req, e);
+          const fallback = config.offlineFallback?.(req, e);
           if (fallback) {
             return fallback;
           }
           if (e.status === 401) {
-            config.onUnauthorized(req);
+            config.onUnauthorized?.(req);
           } else if (e.status === 403) {
-            config.onForbidden(req);
+            config.onForbidden?.(req);
           } else if (![400, 500].includes(e.status)) {
             void Network.getStatus().then((status) => {
               if (status.connected) {
-                config.onNetworkError(e.status);
+                config.onNetworkError?.(e.status);
               }
             });
           } else if (e.error?.message) {
-            config.onServerError(e.error.message);
+            config.onServerError?.(e.error.message);
           }
           return throwError(() => e);
         }),

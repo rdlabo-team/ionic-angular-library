@@ -265,31 +265,34 @@ A fleet-canonical HTTP interceptor with:
 
 **Convention:** all app-specific logic (auth headers, error UI) lives in the config factory. The retry policy, bypass evaluation, and error dispatch are fixed in the kit and not overridable per-call.
 
+**Only `getAuthHeaders` is required.** Every other hook is optional and defaults to a safe no-op (`buildExtraHeaders` → `{}`, `bypass` → `false`, `offlineFallback` → `null`), so a config specifies only the behavior that actually differs from the baseline.
+
 **Setup**
 
 ```typescript
 // app.config.ts
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { kitAuthInterceptor, provideKitHttp } from '@rdlabo/ionic-angular-kit';
+import { kitAuthInterceptor, provideKitHttp, kitPresentReloadAlert } from '@rdlabo/ionic-angular-kit';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideHttpClient(withInterceptors([kitAuthInterceptor])),
     provideKitHttp(() => {
       const auth = inject(AuthService);
-      const router = inject(Router);
-      const toast = inject(KitOverlayController);
+      const overlay = inject(KitOverlayController);
       return {
-        bypass: (req) => req.url.startsWith('https://cdn.example.com'),
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
-        buildExtraHeaders: (req) => ({ 'X-App-Version': '1.0.0' }),
-        offlineFallback: (req, err) => null,   // no offline queue
         onUnauthorized: (req) => auth.signOut(),
-        onForbidden: (req) => router.navigate(['/403']),
-        onNetworkError: (status) => toast.presentToast({ message: 'Network error' }),
-        onServerError: (message) => toast.presentToast({ message }),
+        // Fleet-canonical "network error → offer reload" (see kitPresentReloadAlert).
+        onNetworkError: (status) =>
+          kitPresentReloadAlert(overlay, {
+            header: 'ネットワークエラー',
+            message: `通信できませんでした。リフレッシュしますか？（${status}）`,
+            okText: 'リフレッシュ',
+          }),
+        // buildExtraHeaders / bypass / offlineFallback / onForbidden / onServerError omitted → kit defaults.
       };
     }),
   ],
@@ -302,6 +305,20 @@ export const appConfig: ApplicationConfig = {
 3. `403` → `onForbidden`
 4. Non-400/500 status AND device connected → `onNetworkError`
 5. 400 or 500 with `error.message` → `onServerError`
+
+### kitPresentReloadAlert
+
+The fleet's canonical "network error → offer to reload" confirmation, folding together the three concerns every app used to copy-paste: (1) suppress stacking when an `ion-alert` is already shown, (2) `alertConfirm`, (3) `location.reload()` on confirm. All text is passed in, so the kit stays free of hardcoded i18n. Usually wired from `onNetworkError`, but callable anywhere (e.g. an offline fallback).
+
+```typescript
+import { kitPresentReloadAlert } from '@rdlabo/ionic-angular-kit';
+
+await kitPresentReloadAlert(overlay, {
+  header: 'ネットワークエラー',
+  message: `通信できませんでした。リフレッシュしますか？（${status}）`,
+  okText: 'リフレッシュ',
+});
+```
 
 ---
 

@@ -58,6 +58,27 @@ describe('kitAuthInterceptor', () => {
     TestBed.resetTestingModule();
   });
 
+  // Every hook except getAuthHeaders is optional; a config that only provides
+  // getAuthHeaders must drive the pipeline without throwing on the missing hooks.
+  describe('optional hooks (only getAuthHeaders provided)', () => {
+    const minimalConfig: KitHttpConfig = { getAuthHeaders: vi.fn().mockResolvedValue({}) };
+
+    it('passes a successful response through without a bypass/onResponse hook', async () => {
+      setupInterceptor(minimalConfig);
+      const response = new HttpResponse({ status: 200, body: { ok: true } });
+      const next = vi.fn().mockReturnValue(of(response));
+      const result = await firstValueFrom(runInterceptor(baseReq, next));
+      expect(result).toBe(response);
+    });
+
+    it('re-throws a 403 without an onForbidden/offlineFallback hook', async () => {
+      setupInterceptor(minimalConfig);
+      const error = new HttpErrorResponse({ status: 403 });
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+    });
+  });
+
   // ---- bypass ---------------------------------------------------------------
   describe('bypass', () => {
     it('passes the original request to next without adding headers', async () => {
