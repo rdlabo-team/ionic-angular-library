@@ -174,6 +174,39 @@ describe('KitOverlayController', () => {
       expect(createArgs.duration).toBe(5000);
     });
 
+    it('auto-anchors a bottom toast above a visible ion-tab-bar', async () => {
+      const tabBar = document.createElement('ion-tab-bar');
+      tabBar.getBoundingClientRect = () => ({ height: 50 }) as DOMRect;
+      document.body.appendChild(tabBar);
+      try {
+        const { controller, toastCtrl } = setup();
+        await controller.presentToast({ message: 'Hi' });
+        expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBe(tabBar);
+      } finally {
+        document.body.removeChild(tabBar);
+      }
+    });
+
+    it('does not anchor when no tab bar is present', async () => {
+      const { controller, toastCtrl } = setup();
+      await controller.presentToast({ message: 'Hi' });
+      expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBeUndefined();
+    });
+
+    it('does not override an explicit positionAnchor', async () => {
+      const tabBar = document.createElement('ion-tab-bar');
+      tabBar.getBoundingClientRect = () => ({ height: 50 }) as DOMRect;
+      document.body.appendChild(tabBar);
+      const custom = document.createElement('div');
+      try {
+        const { controller, toastCtrl } = setup();
+        await controller.presentToast({ message: 'Hi', positionAnchor: custom });
+        expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBe(custom);
+      } finally {
+        document.body.removeChild(tabBar);
+      }
+    });
+
     it('includes the close label button from config', async () => {
       const { controller, toastCtrl } = setup();
       await controller.presentToast({ message: 'Test' });

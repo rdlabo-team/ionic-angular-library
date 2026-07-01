@@ -156,8 +156,12 @@ export class KitOverlayController {
    * from the configured labels; any of these can be overridden via `options`. Presenting a toast
    * also triggers light native haptic feedback as an intentional kit UX choice.
    *
-   * Bottom is the fleet-wide default (top left the toast fighting the tab bar and the keyboard); an
-   * app that wants it elsewhere passes `position` / `positionAnchor` in `options`.
+   * Bottom is the fleet-wide default (top left the toast fighting the tab bar and the keyboard).
+   * For a bottom toast with no explicit `positionAnchor`, if a visible `ion-tab-bar` is present the
+   * toast is automatically anchored above it (Ionic places a bottom toast above its `positionAnchor`),
+   * so the toast never sits behind the tabs. Avoiding the on-screen keyboard is handled by the native
+   * keyboard resize — the anchored/bottom toast rides the shrinking viewport above the keyboard;
+   * Ionic itself has no toast keyboard-avoidance option. An app can override either via `options`.
    *
    * @param options - Ionic toast options that override the kit defaults
    * @returns the presented toast element
@@ -168,13 +172,22 @@ export class KitOverlayController {
    */
   async presentToast(options: ToastOptions): Promise<HTMLIonToastElement> {
     void kitImpact();
-    const toast = await this.#toastCtrl.create({
+    const merged: ToastOptions = {
       position: 'bottom',
       duration: 2000,
       buttons: [this.#labels.close],
       swipeGesture: 'vertical',
       ...options,
-    });
+    };
+    // Anchor a bottom toast above the tab bar when one is visibly present and the caller did not
+    // set an explicit anchor, so the toast clears the tabs (and rides the keyboard-resized viewport).
+    if (merged.position === 'bottom' && merged.positionAnchor === undefined) {
+      const tabBar = document.querySelector('ion-tab-bar');
+      if (tabBar && tabBar.getBoundingClientRect().height > 0) {
+        merged.positionAnchor = tabBar as HTMLElement;
+      }
+    }
+    const toast = await this.#toastCtrl.create(merged);
     await toast.present();
     return toast;
   }

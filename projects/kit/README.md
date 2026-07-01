@@ -155,6 +155,8 @@ presentPopover<O>(
 
 presentToast(options: ToastOptions): Promise<HTMLIonToastElement>
 // kit defaults: position='bottom', duration=2000, swipeGesture='vertical'
+// A bottom toast with no explicit positionAnchor auto-anchors above a visible <ion-tab-bar>
+// (so it clears the tabs); keyboard avoidance rides the native keyboard resize.
 // caller options spread over the defaults — any field can be overridden
 
 alertClose(options: { header: string; message: string; subHeader?: string }): Promise<void>
