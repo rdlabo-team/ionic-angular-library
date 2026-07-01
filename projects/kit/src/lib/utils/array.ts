@@ -28,6 +28,10 @@
  *   items replace, and its items take precedence on duplicates.
  * @param key - The property of `T` used as the unique, numeric id for matching, range filtering, and sorting.
  * @param order - Sort direction by `key`: `'ASC'` for ascending or `'DESC'` for descending. Defaults to `'DESC'`.
+ * @param secondaryKey - Optional second property for extra de-duplication. When provided, any
+ *   surviving old item whose `secondaryKey` value matches that of *any* new item is dropped before
+ *   the `key` merge. Useful when a record keeps a stable `key` but its secondary identity changes
+ *   between pages (e.g. items keyed by `id` but also grouped by `parentId`). Omit to skip this step.
  * @returns A new array containing `arrayNew` merged with the out-of-window, non-duplicate old items, sorted by `key`.
  * @example
  * ```ts
@@ -52,7 +56,13 @@
  * // => [{ id: 30, title: 'c' }, { id: 20, title: 'b (updated)' }, { id: 15, title: 'a.5' }, { id: 10, title: 'a' }]
  * ```
  */
-export const arrayConcatById = <T>(arrayOld: T[], arrayNew: T[], key: keyof T, order: 'ASC' | 'DESC' = 'DESC'): T[] => {
+export const arrayConcatById = <T>(
+  arrayOld: T[],
+  arrayNew: T[],
+  key: keyof T,
+  order: 'ASC' | 'DESC' = 'DESC',
+  secondaryKey?: keyof T,
+): T[] => {
   if (!arrayNew.length && !arrayOld.length) {
     return [];
   }
@@ -64,7 +74,11 @@ export const arrayConcatById = <T>(arrayOld: T[], arrayNew: T[], key: keyof T, o
     return (lead > last && (value >= lead || value <= last)) || (lead < last && (value <= lead || value >= last)) || lead === last;
   });
 
-  const oldData = filteredOld.filter((vol) => !arrayNew.some((element) => element[key] === vol[key]));
+  const secondaryFilteredOld = secondaryKey
+    ? filteredOld.filter((vol) => !arrayNew.some((element) => element[secondaryKey] === vol[secondaryKey]))
+    : filteredOld;
+
+  const oldData = secondaryFilteredOld.filter((vol) => !arrayNew.some((element) => element[key] === vol[key]));
   const data = arrayNew.concat(oldData);
 
   const direction = order === 'ASC' ? 1 : -1;

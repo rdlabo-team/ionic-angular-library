@@ -30,4 +30,17 @@ describe('arrayConcatById', () => {
     const result = arrayConcatById<Row>([{ id: 1, label: 'a' }], [{ id: 2, label: 'b' }], 'id', 'ASC');
     expect(result.map((r) => r.id)).toEqual([1, 2]);
   });
+
+  it('drops old items sharing a secondaryKey with a new item', () => {
+    type Node = { id: number; parentId: number };
+    const old: Node[] = [
+      { id: 5, parentId: 1 },
+      { id: 4, parentId: 2 },
+    ];
+    const fresh: Node[] = [{ id: 6, parentId: 1 }];
+    // Single-item window keeps all old; without secondaryKey both survive.
+    expect(arrayConcatById<Node>(old, fresh, 'id').map((n) => n.id)).toEqual([6, 5, 4]);
+    // With secondaryKey 'parentId': old id 5 shares parentId 1 with new id 6 → dropped; id 4 kept.
+    expect(arrayConcatById<Node>(old, fresh, 'id', 'DESC', 'parentId').map((n) => n.id)).toEqual([6, 4]);
+  });
 });

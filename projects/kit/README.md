@@ -147,6 +147,12 @@ presentModal<O>(
   options?: KitModalPresentOptions,   // Omit<ModalOptions, 'component'|'componentProps'> + watchKeyboard?
 ): Promise<O | undefined>
 
+presentPopover<O>(
+  component: PopoverOptions['component'],
+  componentProps?: PopoverOptions['componentProps'],
+  options?: Omit<PopoverOptions, 'component'|'componentProps'>,   // e.g. { event } to anchor it
+): Promise<O | undefined>
+
 presentToast(options: ToastOptions): Promise<HTMLIonToastElement>
 // kit defaults: position='top', duration=2000, swipeGesture='vertical'
 // caller options spread over the defaults — any field can be overridden
@@ -162,6 +168,16 @@ alertConfirm(options: {
 ```
 
 `watchKeyboard: true` (on `presentModal` options) expands a bottom sheet to full height when the native keyboard appears (iOS/Android only; no-op on web).
+
+**Best practice — the modal launcher pattern.** Never call `modalController.create(...)` inline in a component. Instead, each modal/popover page exports a typed launcher next to itself and every call site goes through `KitOverlayController`:
+
+```typescript
+// detail.page.ts
+export const launchDetailPage = (overlay: KitOverlayController, props: DetailProps): Promise<DetailResult | undefined> =>
+  overlay.presentModal<DetailResult>(DetailPage, props, { backdropDismiss: false });
+```
+
+This centralizes presentation options, keeps component props and dismiss data type-safe, and makes every modal discoverable. A well-disciplined app has **zero** inline `controller.create()` calls.
 
 ---
 
@@ -356,6 +372,58 @@ An iOS workaround for `ion-input` autofill (password managers, iCloud Keychain).
 ```
 
 The directive is a no-op on non-iOS platforms.
+
+---
+
+### KitKeyboardController
+
+Registers native keyboard show/hide listeners that reposition an element when the soft keyboard appears — useful for a footer input bar that must stay above the keyboard. A no-op on web (`init` returns `[]`); on native it handles the iOS/Android differences. Three adjustment strategies:
+
+- `transform` — `translateY(-keyboardHeight + safeAreaBottom)` (smooth iOS animation; typical for `ion-footer`)
+- `offset` — sets the `--offset-bottom` custom property
+- `keyboard-offset` — sets the `--padding-bottom` custom property
+
+```typescript
+import { KitKeyboardController } from '@rdlabo/ionic-angular-kit';
+
+export class ComposePage {
+  readonly #keyboard = inject(KitKeyboardController);
+  readonly #footer = viewChild.required<ElementRef>('footer');
+  #handles: PluginListenerHandle[] = [];
+
+  async ngAfterViewInit() {
+    this.#handles = await this.#keyboard.init(this.#footer(), 'transform');
+  }
+  ngOnDestroy() {
+    this.#handles.forEach((h) => h.remove()); // caller owns the handles
+  }
+}
+```
+
+---
+
+### Utilities
+
+Framework-agnostic helpers (no DI required unless noted):
+
+```typescript
+import { kitImpact, arrayConcatById, objectEqual, disableHandler } from '@rdlabo/ionic-angular-kit';
+
+// Native light haptic (no-op on web).
+await kitImpact();
+
+// Merge a paginated page into an existing list by numeric id, sorted; new items win on duplicates.
+// Optional 5th arg `secondaryKey` drops old items sharing that secondary field with any new item.
+const merged = arrayConcatById(loaded, nextPage, 'id', 'DESC', 'parentId');
+
+// Order-independent deep equality (sorted-entries JSON) for cheap "did this state change?" checks.
+if (!objectEqual(prev, next)) { /* changed */ }
+
+// Disable the clicked button while an async op runs, re-enabling it after (even on error).
+async onSubmit(event: Event) {
+  await disableHandler(event, this.save());
+}
+```
 
 ---
 

@@ -1,6 +1,6 @@
 import { inject, Injectable } from '@angular/core';
-import type { ModalOptions, ToastOptions } from '@ionic/angular/standalone';
-import { AlertController, ModalController, ToastController } from '@ionic/angular/standalone';
+import type { ModalOptions, PopoverOptions, ToastOptions } from '@ionic/angular/standalone';
+import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { Capacitor } from '@capacitor/core';
 import { Keyboard } from '@capacitor/keyboard';
@@ -92,6 +92,7 @@ const watchModalKeyboard = async (modal: HTMLIonModalElement): Promise<PluginLis
 })
 export class KitOverlayController {
   readonly #modalCtrl = inject(ModalController);
+  readonly #popoverCtrl = inject(PopoverController);
   readonly #toastCtrl = inject(ToastController);
   readonly #alertCtrl = inject(AlertController);
   readonly #labels = inject(KIT_OVERLAY_CONFIG).labels;
@@ -120,6 +121,30 @@ export class KitOverlayController {
     const handle = watchKeyboard ? await watchModalKeyboard(modal) : null;
     const { data } = await modal.onDidDismiss<O>();
     await handle?.remove();
+    return data;
+  }
+
+  /**
+   * Present a popover and resolve with the data passed to its dismissal.
+   *
+   * @typeParam O - type of the data returned when the popover is dismissed
+   * @param component - the component to render inside the popover
+   * @param componentProps - props to pass to the popover component
+   * @param options - additional popover options (for example `event` to anchor it, or `cssClass`)
+   * @returns the dismiss data, or `undefined` when the popover is dismissed without data
+   * @example
+   * ```ts
+   * const choice = await overlay.presentPopover<MenuChoice>(MenuPopover, { items }, { event });
+   * ```
+   */
+  async presentPopover<O = unknown>(
+    component: PopoverOptions['component'],
+    componentProps?: PopoverOptions['componentProps'],
+    options: Omit<PopoverOptions, 'component' | 'componentProps'> = {},
+  ): Promise<O | undefined> {
+    const popover = await this.#popoverCtrl.create({ component, componentProps, ...options });
+    await popover.present();
+    const { data } = await popover.onDidDismiss<O>();
     return data;
   }
 

@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { AlertController, ModalController, ToastController } from '@ionic/angular/standalone';
+import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
 
 import { KitOverlayController } from './kit-overlay.controller';
 import { KIT_OVERLAY_CONFIG, provideKitOverlay } from './overlay-config';
@@ -48,14 +48,17 @@ const TEST_LABELS = { close: 'Close', cancel: 'Cancel' };
 
 function setup({
   modalOverlay = fakeOverlay(),
+  popoverOverlay = fakeOverlay(),
   toastOverlay = fakeOverlay(),
   alertOverlay = fakeOverlay(),
 }: {
   modalOverlay?: ReturnType<typeof fakeOverlay>;
+  popoverOverlay?: ReturnType<typeof fakeOverlay>;
   toastOverlay?: ReturnType<typeof fakeOverlay>;
   alertOverlay?: ReturnType<typeof fakeOverlay>;
 } = {}) {
   const modalCtrl = { create: vi.fn().mockResolvedValue(modalOverlay) };
+  const popoverCtrl = { create: vi.fn().mockResolvedValue(popoverOverlay) };
   const toastCtrl = { create: vi.fn().mockResolvedValue(toastOverlay) };
   const alertCtrl = { create: vi.fn().mockResolvedValue(alertOverlay) };
 
@@ -65,6 +68,7 @@ function setup({
       KitOverlayController,
       provideKitOverlay({ labels: TEST_LABELS }),
       { provide: ModalController, useValue: modalCtrl },
+      { provide: PopoverController, useValue: popoverCtrl },
       { provide: ToastController, useValue: toastCtrl },
       { provide: AlertController, useValue: alertCtrl },
     ],
@@ -73,9 +77,11 @@ function setup({
   return {
     controller: TestBed.inject(KitOverlayController),
     modalCtrl,
+    popoverCtrl,
     toastCtrl,
     alertCtrl,
     modalOverlay,
+    popoverOverlay,
     toastOverlay,
     alertOverlay,
   };
@@ -215,6 +221,23 @@ describe('KitOverlayController', () => {
       const { controller } = setup({ modalOverlay: overlay });
       await controller.presentModal(FakeComponent);
       expect(overlay.onDidDismiss).toHaveBeenCalledOnce();
+    });
+  });
+
+  // ---- presentPopover -------------------------------------------------------
+  describe('presentPopover', () => {
+    class FakeComponent {}
+
+    it('creates the popover with the component, props, and extra options; presents; returns data', async () => {
+      const { controller, popoverCtrl, popoverOverlay } = setup({ popoverOverlay: fakeOverlay(undefined, { picked: 'x' }) });
+      const event = {} as Event;
+      const result = await controller.presentPopover<{ picked: string }>(FakeComponent, { id: 1 }, { event });
+      const createArgs = popoverCtrl.create.mock.calls[0][0];
+      expect(createArgs.component).toBe(FakeComponent);
+      expect(createArgs.componentProps).toEqual({ id: 1 });
+      expect(createArgs.event).toBe(event);
+      expect(popoverOverlay.present).toHaveBeenCalledOnce();
+      expect(result).toEqual({ picked: 'x' });
     });
   });
 

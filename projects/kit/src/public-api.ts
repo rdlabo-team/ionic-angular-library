@@ -14,6 +14,9 @@ export * from './lib/overlay/kit-auth-failed-alert';
 // Directives.
 export * from './lib/directives/autofill.directive';
 
+// Keyboard: native keyboard reposition listeners.
+export * from './lib/keyboard/kit-keyboard.controller';
+
 // Auth: functional route guards.
 export * from './lib/auth/auth-guards';
 
@@ -23,3 +26,5 @@ export * from './lib/http/kit-http.interceptor';
 // Utils: framework-agnostic pure helpers.
 export * from './lib/utils/haptics';
 export * from './lib/utils/array';
+export * from './lib/utils/object';
+export * from './lib/utils/dom';
