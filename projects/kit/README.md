@@ -195,7 +195,7 @@ To make a prop **optional**, drop the default and use a bare `input<T>()` (its t
 ```typescript
 // detail.page.ts — component declares its return type:
 export class DetailPage {
-  declare static modalReturn: DetailResult;
+  declare static readonly modalReturn: DetailResult;
   readonly item = input.required<Item>();
 }
 
