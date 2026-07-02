@@ -1,4 +1,5 @@
 import { inject, Injectable } from '@angular/core';
+import type { InputSignalWithTransform } from '@angular/core';
 import type { ModalOptions, PopoverOptions, ToastOptions } from '@ionic/angular/standalone';
 import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
 import type { PluginListenerHandle } from '@capacitor/core';
@@ -23,6 +24,92 @@ export interface KitModalPresentOptions extends Omit<ModalOptions, 'component' |
    */
   watchKeyboard?: boolean;
 }
+
+/**
+ * Optional static metadata a modal component may declare to make {@link KitOverlayController.presentModal}
+ * type-safe in its dismiss data: the value passed to `dismiss()` is inferred from `modalReturn`.
+ *
+ * @remarks
+ * Props do *not* need to be declared here — {@link KitOverlayController.presentModal} infers them directly
+ * from the component's `input()` fields (see {@link ModalPropsOf}), so `input()` stays the single source of
+ * truth and can never drift from a hand-written declaration. Only the dismiss-data shape, which has no
+ * counterpart on the component, is declared — as a `declare static modalReturn` phantom type with no runtime
+ * value, so it adds nothing to the bundle.
+ *
+ * @example
+ * ```ts
+ * export class EditPage {
+ *   declare static modalReturn: { saved: boolean };
+ *   readonly id = input.required<number>();   // props are inferred from here
+ *   readonly note = input<string>();          // default-less input() → optional prop
+ * }
+ *
+ * // Caller — `id` is required (input.required), `note` optional; result is `{ saved: boolean } | undefined`:
+ * const result = await overlay.presentModal(EditPage, { id: 1 });
+ * ```
+ */
+export interface ModalMetadata<R = unknown> {
+  /** Shape of the data the modal resolves with when dismissed. */
+  modalReturn?: R;
+}
+
+/**
+ * Write type of a signal `input()` field (unwraps `input.required`, `input()` and transform inputs).
+ *
+ * @remarks
+ * Matched with `any` (not `unknown`): `InputSignalWithTransform`'s `TransformT` is contravariant, so
+ * `InputSignal<number>` is not assignable to `InputSignalWithTransform<unknown, unknown>`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type InputWriteType<F> = F extends InputSignalWithTransform<any, infer W> ? W : never;
+
+/** Instance type of a component constructor; `never` for non-class components (string / HTMLElement refs). */
+type InstanceOf<C> = C extends abstract new (...args: never[]) => infer I ? I : never;
+
+/** Keys of the `input()` signal fields on a component instance. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type InputFieldKeys<I> = { [K in keyof I]-?: I[K] extends InputSignalWithTransform<any, any> ? K : never }[keyof I];
+
+/**
+ * Props object inferred from a component's `input()` fields. Required vs. optional is decided by the write
+ * type: `input.required<T>()` / `input<T>(default)` yield `T` (no `undefined`) → required prop, while a
+ * default-less `input<T>()` yields `T | undefined` → optional prop.
+ *
+ * @remarks
+ * Angular's types cannot distinguish `input.required<T>()` from a defaulted `input<T>(default)` — both are
+ * `InputSignal<T>` — so a defaulted input is (safely) treated as required. Declare inputs you want to omit at
+ * the call site as default-less `input<T>()`.
+ */
+type ModalPropsOf<I> = { [K in InputFieldKeys<I> as undefined extends InputWriteType<I[K]> ? never : K]: InputWriteType<I[K]> } & {
+  [K in InputFieldKeys<I> as undefined extends InputWriteType<I[K]> ? K : never]?: InputWriteType<I[K]>;
+};
+
+/** `input()` keys whose write type excludes `undefined` (required / defaulted inputs). Empty when none. */
+type RequiredInputKeys<I> = { [K in InputFieldKeys<I>]: undefined extends InputWriteType<I[K]> ? never : K }[InputFieldKeys<I>];
+
+/**
+ * Dismiss-data type inferred from a component's static {@link ModalMetadata.modalReturn}. A component that
+ * declares no `modalReturn` resolves to `void`: it is treated as returning no dismiss data, so the compiler
+ * rejects any attempt to read the result. Declare `modalReturn` on modals that do resolve with data.
+ */
+type ModalReturnOf<C> = C extends { modalReturn: infer R } ? R : void;
+
+/** Loose trailing args (optional, untyped props) — used when a component exposes no signal `input()` fields. */
+type LooseModalPresentArgs = [componentProps?: ModalOptions['componentProps'], options?: KitModalPresentOptions];
+
+/**
+ * Trailing `presentModal` args derived from a component's `input()` fields: props are inferred and typed via
+ * {@link ModalPropsOf}. When the component declares at least one required input the props argument is required;
+ * when every input is optional the props argument itself is optional. Components with no signal inputs (plain
+ * classes, `@Input()`-decorator components, or non-class refs) fall back to loose, untyped props.
+ */
+type ModalPresentArgs<C, I = InstanceOf<C>> = [I] extends [never]
+  ? LooseModalPresentArgs
+  : [InputFieldKeys<I>] extends [never]
+    ? LooseModalPresentArgs
+    : [RequiredInputKeys<I>] extends [never]
+      ? [componentProps?: ModalPropsOf<I>, options?: KitModalPresentOptions]
+      : [componentProps: ModalPropsOf<I>, options?: KitModalPresentOptions];
 
 /**
  * Options for {@link KitOverlayController.alertClose}.
@@ -115,22 +202,29 @@ export class KitOverlayController {
    * @remarks
    * Presenting a modal triggers light native haptic feedback as an intentional kit UX choice,
    * consistent with {@link presentPopover} and {@link presentToast}.
+   *
+   * Props are inferred from the component's `input()` fields (see {@link ModalPropsOf}): required inputs
+   * become required props, so the compiler rejects a call that omits them. The return type is inferred from
+   * a static `modalReturn` (see {@link ModalMetadata}); a component with no `modalReturn` resolves to `void`
+   * — the modal is treated as returning no dismiss data.
    * @example
    * ```ts
-   * const data = await overlay.presentModal<{ saved: boolean }>(EditPage, { id: 1 }, { watchKeyboard: true });
+   * // Inferred — `id` required (input.required), `note` optional; result is `{ saved: boolean } | undefined`:
+   * const result = await overlay.presentModal(EditPage, { id: 1 });
    * ```
    */
-  async presentModal<O = unknown>(
+  presentModal<C extends ModalOptions['component']>(component: C, ...args: ModalPresentArgs<C>): Promise<ModalReturnOf<C> | undefined>;
+  async presentModal(
     component: ModalOptions['component'],
     componentProps?: ModalOptions['componentProps'],
     options: KitModalPresentOptions = {},
-  ): Promise<O | undefined> {
+  ): Promise<unknown> {
     void kitImpact();
     const { watchKeyboard, ...modalOptions } = options;
     const modal = await this.#modalCtrl.create({ component, componentProps, ...modalOptions });
     await modal.present();
     const handle = watchKeyboard ? await watchModalKeyboard(modal) : null;
-    const { data } = await modal.onDidDismiss<O>();
+    const { data } = await modal.onDidDismiss<unknown>();
     await handle?.remove();
     return data;
   }
