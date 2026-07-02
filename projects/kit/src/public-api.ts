@@ -8,6 +8,7 @@ export * from './lib/storage/kit-storage.service';
 // Overlay: wrapper around the Ionic Modal / Toast / Alert controllers.
 export * from './lib/overlay/overlay-config';
 export * from './lib/overlay/kit-overlay.controller';
+export * from './lib/overlay/kit-loading.controller';
 export * from './lib/overlay/kit-reload-alert.controller';
 export * from './lib/overlay/kit-auth-failed-alert';
 export * from './lib/overlay/kit-language-action-sheet';
