@@ -167,7 +167,7 @@ const watchModalKeyboard = async (modal: HTMLIonModalElement): Promise<PluginLis
  * constructor(private readonly overlay: KitOverlayController) {}
  *
  * async edit(): Promise<void> {
- *   const result = await this.overlay.presentModal<EditResult>(EditPage, { id: 1 });
+ *   const result = await this.overlay.presentModal(EditPage, { id: 1 });
  *   if (result) {
  *     await this.overlay.presentToast({ message: 'Saved' });
  *   }
