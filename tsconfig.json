@@ -18,6 +18,7 @@
     "paths": {
       "ionic-theme-ios26": ["./dist/ionic-theme-ios26"],
       "kit": ["./dist/kit"],
+      "@rdlabo/ionic-angular-kit": ["./projects/kit/src/public-api.ts"],
       "scroll-strategies": ["./dist/scroll-strategies"],
       "photo-editor": ["./dist/photo-editor"],
       "scroll-header": ["./dist/scroll-header"]

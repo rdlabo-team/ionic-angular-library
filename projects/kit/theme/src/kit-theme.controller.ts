@@ -3,7 +3,8 @@ import { Capacitor } from '@capacitor/core';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { BehaviorSubject } from 'rxjs';
 
-import { KitStorageService } from '../storage/kit-storage.service';
+import { KitStorageService } from '@rdlabo/ionic-angular-kit';
+
 import { KIT_THEME_CONFIG } from './theme-config';
 
 /** The active theme mode. */

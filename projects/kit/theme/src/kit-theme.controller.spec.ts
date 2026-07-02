@@ -1,7 +1,8 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 
-import { KitStorageService } from '../storage/kit-storage.service';
+import { KitStorageService } from '@rdlabo/ionic-angular-kit';
+
 import { KitThemeController } from './kit-theme.controller';
 import { provideKitTheme } from './theme-config';
 

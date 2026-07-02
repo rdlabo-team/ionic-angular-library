@@ -19,15 +19,9 @@ export * from './lib/directives/autofill.directive';
 // Keyboard: native keyboard reposition listeners.
 export * from './lib/keyboard/kit-keyboard';
 
-// Theme: light/dark controller with OS-follow and native status-bar sync.
-export * from './lib/theme/theme-config';
-export * from './lib/theme/kit-theme.controller';
-
-// Review: throttled native in-app review request.
-export * from './lib/review/kit-request-review';
-
-// Printer: pure Brother label plumbing (DOM→PNG, rotation, print-settings assembly).
-export * from './lib/printer/kit-printer';
+// Theme (`@rdlabo/ionic-angular-kit/theme`), Review (`.../review`) and Printer (`.../printer`) are
+// separate secondary entry points so their heavy native peers (status-bar / in-app-review+preferences /
+// brotherprint+dom-to-image) are only pulled in by apps that import those subpaths.
 
 // Auth: functional route guards.
 export * from './lib/auth/auth-guards';

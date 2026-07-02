@@ -23,8 +23,13 @@
             "polyfills": [],
             "tsConfig": "projects/demo/tsconfig.app.json",
             "inlineStyleLanguage": "scss",
-            "assets": ["projects/demo/src/favicon.ico", "projects/demo/src/assets"],
-            "styles": ["projects/demo/src/styles.scss"],
+            "assets": [
+              "projects/demo/src/favicon.ico",
+              "projects/demo/src/assets"
+            ],
+            "styles": [
+              "projects/demo/src/styles.scss"
+            ],
             "scripts": []
           },
           "configurations": {
@@ -74,7 +79,10 @@
         "lint": {
           "builder": "@angular-eslint/builder:lint",
           "options": {
-            "lintFilePatterns": ["projects/demo/**/*.ts", "projects/demo/**/*.html"],
+            "lintFilePatterns": [
+              "projects/demo/**/*.ts",
+              "projects/demo/**/*.html"
+            ],
             "eslintConfig": "projects/demo/eslint.config.js"
           }
         }
@@ -117,7 +125,10 @@
         "lint": {
           "builder": "@angular-eslint/builder:lint",
           "options": {
-            "lintFilePatterns": ["projects/photo-editor/**/*.ts", "projects/photo-editor/**/*.html"],
+            "lintFilePatterns": [
+              "projects/photo-editor/**/*.ts",
+              "projects/photo-editor/**/*.html"
+            ],
             "eslintConfig": "projects/photo-editor/eslint.config.js"
           }
         }
@@ -160,7 +171,10 @@
         "lint": {
           "builder": "@angular-eslint/builder:lint",
           "options": {
-            "lintFilePatterns": ["projects/scroll-header/**/*.ts", "projects/scroll-header/**/*.html"],
+            "lintFilePatterns": [
+              "projects/scroll-header/**/*.ts",
+              "projects/scroll-header/**/*.html"
+            ],
             "eslintConfig": "projects/scroll-header/eslint.config.js"
           }
         }
@@ -203,7 +217,10 @@
         "lint": {
           "builder": "@angular-eslint/builder:lint",
           "options": {
-            "lintFilePatterns": ["projects/scroll-strategies/**/*.ts", "projects/scroll-strategies/**/*.html"],
+            "lintFilePatterns": [
+              "projects/scroll-strategies/**/*.ts",
+              "projects/scroll-strategies/**/*.html"
+            ],
             "eslintConfig": "projects/scroll-strategies/eslint.config.js"
           }
         }
@@ -232,7 +249,13 @@
           "options": {
             "tsConfig": "projects/kit/tsconfig.spec.json",
             "runner": "vitest",
-            "runnerConfig": "vitest.config.ts"
+            "runnerConfig": "vitest.config.ts",
+            "include": [
+              "**/*.spec.ts",
+              "../printer/src/**/*.spec.ts",
+              "../theme/src/**/*.spec.ts",
+              "../review/src/**/*.spec.ts"
+            ]
           },
           "configurations": {
             "ci": {
@@ -244,7 +267,9 @@
     }
   },
   "cli": {
-    "schematicCollections": ["@ionic/angular-toolkit"],
+    "schematicCollections": [
+      "@ionic/angular-toolkit"
+    ],
     "analytics": "d798c364-4b03-4fed-88a1-24f2a20d600d"
   },
   "schematics": {
