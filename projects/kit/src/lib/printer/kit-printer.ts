@@ -27,12 +27,11 @@ export const kitRotationImage = async (imageData: string): Promise<string> => {
   const imgType = imageData.substring(5, imageData.indexOf(';'));
 
   const image = new Image();
-  const loaded = () =>
-    new Promise<void>((resolve) => {
-      image.onload = () => resolve();
-    });
-  setTimeout(() => (image.src = imageData));
-  await loaded();
+  const loaded = new Promise<void>((resolve) => {
+    image.onload = () => resolve();
+  });
+  image.src = imageData;
+  await loaded;
 
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -86,23 +85,19 @@ export const kitDomToPng = async (element: HTMLElement, options?: KitDomToPngOpt
   // iOS: ないと下が途切れる。Android: あると黒線が入る。
   const addClient = Capacitor.getPlatform() === 'ios' ? 2 : 0;
 
-  const dataUrl: string = await new Promise((resolve) => {
-    void (async () => {
-      for (let i = 0; i < 10; i++) {
-        const url = await domtoimage.toPng(element, {
-          width: clientWidth + addClient,
-          height: clientHeight + addClient,
-          scale: options?.scale ?? 3,
-          copyDefaultStyles: false,
-        });
-        if (url) {
-          resolve(url);
-          return;
-        }
-      }
-      resolve('');
-    })();
-  });
+  let dataUrl = '';
+  for (let i = 0; i < 10; i++) {
+    const url = await domtoimage.toPng(element, {
+      width: clientWidth + addClient,
+      height: clientHeight + addClient,
+      scale: options?.scale ?? 3,
+      copyDefaultStyles: false,
+    });
+    if (url) {
+      dataUrl = url;
+      break;
+    }
+  }
 
   return options?.rotate ? kitRotationImage(dataUrl) : dataUrl;
 };
