@@ -21,10 +21,8 @@ export const kitChangeEventDisabled = (
   completeEvent: WritableSignal<HTMLIonInfiniteScrollElement | HTMLIonRefresherElement | null | undefined>,
   disabled: boolean,
 ): void => {
-  completeEvent.update((event) => {
-    if (event) {
-      event.disabled = disabled;
-    }
-    return event;
-  });
+  const event = completeEvent();
+  if (event) {
+    event.disabled = disabled;
+  }
 };

@@ -18,6 +18,13 @@
     "dom-to-image-more": "^3.0.0",
     "rxjs": "^7.8.0"
   },
+  "peerDependenciesMeta": {
+    "@capacitor/preferences": { "optional": true },
+    "@capacitor/status-bar": { "optional": true },
+    "@capacitor-community/in-app-review": { "optional": true },
+    "@rdlabo/capacitor-brotherprint": { "optional": true },
+    "dom-to-image-more": { "optional": true }
+  },
   "dependencies": {
     "tslib": "^2.3.0"
   },
