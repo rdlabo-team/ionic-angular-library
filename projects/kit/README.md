@@ -127,8 +127,8 @@ export class MyPage {
   readonly #overlay = inject(KitOverlayController);
 
   async openDetail(): Promise<void> {
-    const result = await this.#overlay.presentModal<{ id: number }>(DetailPage, { item });
-    // result is the data passed to modal.dismiss()
+    const result = await this.#overlay.presentModal(DetailPage, { item });
+    // result type is inferred from `declare static modalReturn` on DetailPage
   }
 
   async confirm(): Promise<void> {
@@ -149,11 +149,12 @@ export class MyPage {
 **API**
 
 ```typescript
-presentModal<O>(
-  component: ModalOptions['component'],
-  componentProps?: ModalOptions['componentProps'],
-  options?: KitModalPresentOptions,   // Omit<ModalOptions, 'component'|'componentProps'> + watchKeyboard?
-): Promise<O | undefined>
+presentModal<C extends ModalOptions['component']>(
+  component: C,
+  ...args: ModalPresentArgs<C>,  // props inferred from input() fields; options?: KitModalPresentOptions
+): Promise<ModalReturnOf<C> | undefined>
+// Props inferred from the component's input() fields (required/optional).
+// Return type inferred from `declare static modalReturn: T` on the component (void if absent).
 
 presentPopover<O>(
   component: PopoverOptions['component'],
@@ -182,9 +183,14 @@ alertConfirm(options: {
 **Best practice — the modal launcher pattern.** Never call `modalController.create(...)` inline in a component. Instead, each modal/popover page exports a typed launcher next to itself and every call site goes through `KitOverlayController`:
 
 ```typescript
-// detail.page.ts
-export const launchDetailPage = (overlay: KitOverlayController, props: DetailProps): Promise<DetailResult | undefined> =>
-  overlay.presentModal<DetailResult>(DetailPage, props, { backdropDismiss: false });
+// detail.page.ts — component declares its return type:
+export class DetailPage {
+  declare static modalReturn: DetailResult;
+  readonly item = input.required<Item>();
+}
+
+export const launchDetailPage = (overlay: KitOverlayController, props: { item: Item }): Promise<DetailResult | undefined> =>
+  overlay.presentModal(DetailPage, props, { backdropDismiss: false });
 ```
 
 This centralizes presentation options, keeps component props and dismiss data type-safe, and makes every modal discoverable. A well-disciplined app has **zero** inline `controller.create()` calls.

@@ -1,4 +1,4 @@
-import { provideZonelessChangeDetection } from '@angular/core';
+import { Component, input, provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
 import { Capacitor } from '@capacitor/core';
@@ -283,11 +283,28 @@ describe('KitOverlayController', () => {
       expect(createArgs.componentProps).toEqual({ id: 1 });
     });
 
-    it('returns the dismiss data', async () => {
+    it('returns the dismiss data when the component declares modalReturn', async () => {
+      @Component({ template: '' })
+      class ResultModal {
+        declare static modalReturn: { selected: string };
+      }
       const dismissData = { selected: 'foo' };
       const { controller } = setup({ modalOverlay: fakeOverlay(undefined, dismissData) });
-      const result = await controller.presentModal<{ selected: string }>(FakeComponent);
+      const result = await controller.presentModal(ResultModal); // typed `{ selected: string } | undefined`
+      expect(result?.selected).toBe('foo');
       expect(result).toEqual(dismissData);
+    });
+
+    it('type: a modal without modalReturn resolves to void', async () => {
+      @Component({ template: '' })
+      class NoReturnModal {}
+      const { controller } = setup({ modalOverlay: fakeOverlay() });
+      const result = await controller.presentModal(NoReturnModal);
+      // `result` is `void`: it is assignable to void, and reading a property off it must not compile.
+      const assertVoid: void = result;
+      expect(assertVoid).toBeUndefined();
+      // @ts-expect-error — a void result carries no dismiss data.
+      result?.anything;
     });
 
     it('presents the modal', async () => {
@@ -302,6 +319,47 @@ describe('KitOverlayController', () => {
       const { controller } = setup({ modalOverlay: overlay });
       await controller.presentModal(FakeComponent);
       expect(overlay.onDidDismiss).toHaveBeenCalledOnce();
+    });
+
+    it('infers props from input() fields and the return type from static modalReturn', async () => {
+      @Component({ template: '' })
+      class TypedModal {
+        declare static modalReturn: { saved: boolean };
+        readonly id = input.required<number>(); // required input → required prop
+        readonly note = input<string>(); // default-less input() → optional prop
+      }
+      const { controller, modalCtrl } = setup({ modalOverlay: fakeOverlay(undefined, { saved: true }) });
+      // `{ id: 1 }` is type-checked against the inferred props; `result` is typed
+      // `{ saved: boolean } | undefined`, so `result?.saved` only compiles when inference is wired up.
+      const result = await controller.presentModal(TypedModal, { id: 1, note: 'hi' });
+      expect(modalCtrl.create.mock.calls[0][0].componentProps).toEqual({ id: 1, note: 'hi' });
+      expect(result?.saved).toBe(true);
+    });
+
+    it('type: required input makes its prop required and a defaulted input is required too', async () => {
+      @Component({ template: '' })
+      class RequiredModal {
+        readonly id = input.required<number>();
+        readonly count = input<number>(0); // defaulted input() is (safely) treated as required
+      }
+      const { controller } = setup({ modalOverlay: fakeOverlay() });
+
+      // @ts-expect-error — `id` is required, omitting the props object must not compile.
+      await controller.presentModal(RequiredModal);
+      // @ts-expect-error — `count` (defaulted input) is treated as required, so it cannot be omitted.
+      await controller.presentModal(RequiredModal, { id: 1 });
+
+      await controller.presentModal(RequiredModal, { id: 1, count: 5 }); // fully specified → ok
+    });
+
+    it('type: a component with only optional inputs allows omitting the props argument', async () => {
+      @Component({ template: '' })
+      class OptionalModal {
+        readonly note = input<string>();
+      }
+      const { controller } = setup({ modalOverlay: fakeOverlay() });
+      await controller.presentModal(OptionalModal); // props argument optional → ok
+      await controller.presentModal(OptionalModal, { note: 'hi' }); // still accepts the props
     });
   });
 

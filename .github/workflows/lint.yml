@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        project: [ demo, photo-editor, scroll-header, scroll-strategies]
+        project: [ demo, kit, photo-editor, scroll-header, scroll-strategies]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
