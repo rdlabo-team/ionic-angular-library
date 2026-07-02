@@ -180,6 +180,16 @@ alertConfirm(options: {
 
 `watchKeyboard: true` (on `presentModal` options) expands a bottom sheet to full height when the native keyboard appears (iOS/Android only; no-op on web).
 
+**How `presentModal` decides required vs. optional props.** Props are inferred from the component's `input()` fields, and whether each prop is **required** or **optional** is decided by a single rule: *does the input's type include `undefined`?* A default value is not "optional" — providing a default removes `undefined` from the input's type, so a defaulted input becomes a **required** prop.
+
+| Declaration              | Input type      | Includes `undefined`? | Prop                              |
+| ------------------------ | --------------- | --------------------- | --------------------------------- |
+| `input.required<T>()`    | `T`             | No                    | required                          |
+| `input<T>(defaultValue)` | `T`             | No                    | **required** ← a default makes it required |
+| `input<T>()` (no arg)    | `T \| undefined`| Yes                   | optional                          |
+
+To make a prop **optional**, drop the default and use a bare `input<T>()` (its type is `T | undefined`), then apply your fallback where you read it (e.g. `this.enabled() ?? true`). If a component has at least one required input, the `componentProps` argument itself becomes mandatory; if it has no required inputs, `componentProps` may be omitted; a component with no `input()` fields at all accepts loose, untyped props.
+
 **Best practice — the modal launcher pattern.** Never call `modalController.create(...)` inline in a component. Instead, each modal/popover page exports a typed launcher next to itself and every call site goes through `KitOverlayController`:
 
 ```typescript
