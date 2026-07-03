@@ -550,6 +550,60 @@ await BrotherPrint.printImage({ ...settings, port: channel.port, channelInfo: ch
 
 ---
 
+### Firebase auth (`@rdlabo/ionic-angular-kit/auth-firebase`)
+
+A secondary entry point so only apps that use it pull in `@angular/fire` and `firebase`. It exists to **isolate `@angular/fire`**: the SDK is touched in exactly one place — the DI provider — so apps import `KIT_FIREBASE_AUTH` and call these functions, never `@angular/fire` directly. That keeps the eventual `@angular/fire` → modular `firebase/auth` swap provider-local.
+
+**Design principle: the kit performs no UI.** Every function runs the Firebase operation and nothing else; loading overlays, prompts and error alerts are app side effects. The flow functions take the uniform lifecycle hooks `{ before, success, error, finally }` and, rather than throwing, resolve value flows to `null` and boolean flows to `false`, handing the raw error to the `error` hook so the app presents it from its own dictionary. For anything the functions don't express, drop down to `firebase/auth` directly.
+
+```typescript
+// app.config.ts — @angular/fire lives only here
+provideKitFirebase({ firebaseConfig: environment.firebase }),
+provideKitFirebaseAnalytics(),
+```
+
+```typescript
+import { inject, Injectable } from '@angular/core';
+import {
+  KIT_FIREBASE_AUTH, kitSignIn, kitSignOut, kitResolveAuthStatus, kitReauthWithRetry,
+} from '@rdlabo/ionic-angular-kit/auth-firebase';
+import { updatePassword } from 'firebase/auth'; // escape hatch for the reauth mutation
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  readonly #auth = inject(KIT_FIREBASE_AUTH);
+
+  // Simple flow: hooks carry the app's side effects; errors go to the app's own dictionary.
+  signIn(email: string, password: string) {
+    return kitSignIn(this.#auth, email, password, {
+      error: (e) => this.presentError(e),
+      success: () => this.nav.navigateRoot('/'),
+    });
+  }
+
+  // Re-auth: the kit owns only the re-auth + wrong-password-retry mechanic; the app supplies
+  // the password prompt and the loading overlay, and catches the thrown (non-wrong-password) error.
+  async changePassword(currentEmail: string, newPassword: string) {
+    const ok = await kitReauthWithRetry(this.#auth, currentEmail, {
+      prompt: (retry) => this.promptPassword(retry),
+      mutate: (user) => updatePassword(user, newPassword),
+      withLoading: (run) => this.withLoading(run),
+    }).catch((e) => (this.presentError(e), false));
+    if (ok) this.overlay.alertClose({ header: 'Saved', message: '…' });
+  }
+}
+```
+
+Surface:
+
+- **DI** — `KIT_FIREBASE_AUTH` (`InjectionToken<Auth>`), `provideKitFirebase({ firebaseConfig })`, `provideKitFirebaseAnalytics()`.
+- **Flow functions** (uniform hooks + no-throw null/false) — `kitSignIn`, `kitSignUp` (create + send verification), `kitSignOut`, `kitSendPasswordReset`, `kitSendEmailVerification`, `kitUnlinkProvider`.
+- **Mechanics** — `kitReauthWithRetry` (app injects `prompt` / `withLoading` / `mutate`; boolean result, non-wrong-password errors thrown), `kitResolveAuthStatus` (`'user' | 'confirm' | 'required'` from the user; social counts as verified; `allowWhen` bypass), `kitAuthState`, `kitGetIdToken`.
+- **Error dictionary** — `KIT_DEFAULT_AUTH_TEXT` (importable canonical constant; the kit does not present it — the app renders its own alert).
+- **Social** (`@rdlabo/ionic-angular-kit/auth-firebase/social`, separate nested entry to isolate the Capacitor plugins) — `kitFacebookLogin`, `kitAppleLogin`, `kitFacebookLogout`; options carry the same `{ before, success, error, finally }` hooks (`success` receives the identity payload for a backend call).
+
+---
+
 ## Consumer Vitest setup notes
 
 When testing a consumer app that declares `@rdlabo/ionic-angular-kit` as a `file:` symlink dependency, add the following to your `vitest.config.ts`:
