@@ -19,9 +19,10 @@ export * from './lib/directives/autofill.directive';
 // Keyboard: native keyboard reposition listeners.
 export * from './lib/keyboard/kit-keyboard';
 
-// Theme (`@rdlabo/ionic-angular-kit/theme`), Review (`.../review`) and Printer (`.../printer`) are
-// separate secondary entry points so their heavy native peers (status-bar / in-app-review+preferences /
-// brotherprint+dom-to-image) are only pulled in by apps that import those subpaths.
+// Theme (`@rdlabo/ionic-angular-kit/theme`), Review (`.../review`), Printer (`.../printer`) and
+// Firebase auth (`.../auth-firebase`) are separate secondary entry points so their heavy native peers
+// (status-bar / in-app-review+preferences / brotherprint+dom-to-image / @angular/fire+firebase) are
+// only pulled in by apps that import those subpaths.
 
 // Auth: functional route guards.
 export * from './lib/auth/auth-guards';
