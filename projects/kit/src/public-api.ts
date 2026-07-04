@@ -4,6 +4,8 @@
 
 // Storage: typed wrapper around the platform key/value store.
 export * from './lib/storage/kit-storage.service';
+// Remember/recall the last entered sign-in email (validated; storage-agnostic helpers).
+export * from './lib/storage/kit-auth-email-store';
 
 // Overlay: wrapper around the Ionic Modal / Toast / Alert controllers.
 export * from './lib/overlay/overlay-config';
@@ -14,7 +16,7 @@ export * from './lib/overlay/kit-auth-failed-alert';
 export * from './lib/overlay/kit-language-action-sheet';
 
 // Directives.
-export * from './lib/directives/autofill.directive';
+export * from './lib/directives/auth-input.directive';
 
 // Keyboard: native keyboard reposition listeners.
 export * from './lib/keyboard/kit-keyboard';
