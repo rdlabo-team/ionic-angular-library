@@ -26,6 +26,10 @@ export {
   kitSignOut,
   kitSendPasswordReset,
   kitSendEmailVerification,
+  kitUpdateEmail,
+  kitUpdatePassword,
+  kitSignInAnonymously,
+  kitLinkEmailPassword,
   kitUnlinkProvider,
   kitReauthWithRetry,
 } from './kit-firebase-auth';
@@ -34,4 +38,6 @@ export type {
   KitAuthStatus,
   KitResolveAuthStatusOptions,
   KitReauthWithRetryOptions,
+  User,
+  UserCredential,
 } from './kit-firebase-auth';

@@ -12,9 +12,13 @@ import {
   kitSendEmailVerification,
   kitSendPasswordReset,
   kitSignIn,
+  kitSignInAnonymously,
+  kitLinkEmailPassword,
   kitSignOut,
   kitSignUp,
   kitUnlinkProvider,
+  kitUpdateEmail,
+  kitUpdatePassword,
 } from './kit-firebase-auth';
 
 const reauthenticateWithCredential = vi.fn();
@@ -25,6 +29,10 @@ const sendEmailVerification = vi.fn();
 const sendPasswordResetEmail = vi.fn();
 const signOut = vi.fn();
 const unlink = vi.fn();
+const updateEmail = vi.fn();
+const updatePassword = vi.fn();
+const signInAnonymously = vi.fn();
+const linkWithCredential = vi.fn();
 
 vi.mock('@angular/fire/auth', () => ({
   reauthenticateWithCredential: (...a: unknown[]) => reauthenticateWithCredential(...a),
@@ -36,6 +44,10 @@ vi.mock('@angular/fire/auth', () => ({
   sendPasswordResetEmail: (...a: unknown[]) => sendPasswordResetEmail(...a),
   signOut: (...a: unknown[]) => signOut(...a),
   unlink: (...a: unknown[]) => unlink(...a),
+  updateEmail: (...a: unknown[]) => updateEmail(...a),
+  updatePassword: (...a: unknown[]) => updatePassword(...a),
+  signInAnonymously: (...a: unknown[]) => signInAnonymously(...a),
+  linkWithCredential: (...a: unknown[]) => linkWithCredential(...a),
 }));
 
 /** A Firebase-shaped error (extends Error, carries a `code`). */
@@ -283,5 +295,40 @@ describe('kitAuthState / kitGetIdToken', () => {
   it('throws (does not swallow) when the token fetch fails', async () => {
     const boom = fbError('auth/network-request-failed');
     await expect(kitGetIdToken(authWith({ getIdToken: () => Promise.reject(boom) }))).rejects.toBe(boom);
+  });
+});
+
+describe('kitUpdateEmail / kitUpdatePassword / kitSignInAnonymously / kitLinkEmailPassword', () => {
+  it('kitUpdateEmail updates the address then sends verification', async () => {
+    const user = authWith({ uid: 'u1' }).currentUser!;
+    updateEmail.mockResolvedValueOnce(undefined);
+    sendEmailVerification.mockResolvedValueOnce(undefined);
+    await kitUpdateEmail(user, 'new@example.com');
+    expect(updateEmail).toHaveBeenCalledWith(user, 'new@example.com');
+    expect(sendEmailVerification).toHaveBeenCalledWith(user);
+  });
+
+  it('kitUpdatePassword delegates to the SDK', async () => {
+    const user = authWith({ uid: 'u1' }).currentUser!;
+    updatePassword.mockResolvedValueOnce(undefined);
+    await kitUpdatePassword(user, 'next-password');
+    expect(updatePassword).toHaveBeenCalledWith(user, 'next-password');
+  });
+
+  it('kitSignInAnonymously reloads the user after sign-in', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const user = { uid: 'anon', reload };
+    signInAnonymously.mockResolvedValueOnce({ user });
+    expect(await kitSignInAnonymously(authWith(null))).toEqual({ user });
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it('kitLinkEmailPassword links email/password to the current user', async () => {
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const user = { uid: 'anon', reload };
+    linkWithCredential.mockResolvedValueOnce({ user });
+    expect(await kitLinkEmailPassword(authWith(user), 'a@b.com', 'pw')).toBe(user);
+    expect(linkWithCredential).toHaveBeenCalledWith(user, { email: 'a@b.com', password: 'pw' });
+    expect(reload).toHaveBeenCalled();
   });
 });

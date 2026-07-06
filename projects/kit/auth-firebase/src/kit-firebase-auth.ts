@@ -1,17 +1,22 @@
 import type { Auth, User, UserCredential } from 'firebase/auth';
+export type { User, UserCredential } from 'firebase/auth';
 // Ops must come from @angular/fire/auth — not root `firebase/auth`. @angular/fire 21 rc bundles
 // firebase@12 while apps often pin firebase@11; calling the wrong copy's signOut/onAuthStateChanged
 // against KIT_FIREBASE_AUTH is a silent no-op (logout appears broken fleet-wide).
 import {
   createUserWithEmailAndPassword,
   EmailAuthProvider,
+  linkWithCredential,
   onAuthStateChanged,
   reauthenticateWithCredential,
   sendEmailVerification,
   sendPasswordResetEmail,
+  signInAnonymously,
   signInWithEmailAndPassword,
   signOut,
   unlink,
+  updateEmail,
+  updatePassword,
 } from '@angular/fire/auth';
 import { Observable } from 'rxjs';
 
@@ -144,8 +149,67 @@ export const kitSendEmailVerification = (auth: Auth, hooks?: KitAuthHooks): Prom
     }
   }, hooks);
 
-// This module talks to `firebase/auth` directly (not @angular/fire); only the DI provider
-// (kit-firebase-provider.ts) touches @angular/fire, so the planned SDK swap is provider-local.
+/**
+ * Change the signed-in user's email and send a verification message to the new address.
+ *
+ * @remarks
+ * For use inside {@link kitReauthWithRetry}'s `mutate` callback (after re-authentication). Uses the
+ * same `@angular/fire/auth` module as {@link KIT_FIREBASE_AUTH} so the dual-firebase-sdk mismatch
+ * cannot silently no-op.
+ */
+export const kitUpdateEmail = async (user: User, newEmail: string): Promise<void> => {
+  await updateEmail(user, newEmail);
+  await sendEmailVerification(user);
+};
+
+/**
+ * Change the signed-in user's password.
+ *
+ * @remarks
+ * For use inside {@link kitReauthWithRetry}'s `mutate` callback (after re-authentication).
+ */
+export const kitUpdatePassword = async (user: User, newPassword: string): Promise<void> => {
+  await updatePassword(user, newPassword);
+};
+
+/**
+ * Sign in anonymously.
+ *
+ * @remarks
+ * Reloads the user after sign-in so `isAnonymous` and provider data are fresh. Resolves the
+ * credential, or `null` on failure (handed to the `error` hook).
+ */
+export const kitSignInAnonymously = (auth: Auth, hooks?: KitAuthHooks): Promise<UserCredential | null> =>
+  runAuthFlow(async () => {
+    const credential = await signInAnonymously(auth);
+    await credential.user.reload();
+    return credential;
+  }, hooks);
+
+/**
+ * Link an email/password credential to the current user (e.g. upgrade an anonymous account).
+ *
+ * @remarks
+ * Reloads the linked user before resolving. Resolves the updated `User`, or `null` on failure.
+ */
+export const kitLinkEmailPassword = (
+  auth: Auth,
+  email: string,
+  password: string,
+  hooks?: KitAuthHooks,
+): Promise<User | null> =>
+  runAuthFlow(async () => {
+    const user = auth.currentUser;
+    if (!user) {
+      throw new Error('kitLinkEmailPassword: no signed-in user');
+    }
+    const linked = await linkWithCredential(user, EmailAuthProvider.credential(email, password));
+    await linked.user.reload();
+    return linked.user;
+  }, hooks);
+
+// Ops come from `@angular/fire/auth` (same firebase copy as KIT_FIREBASE_AUTH). Types stay on
+// `firebase/auth` so apps never import the SDK for covered operations.
 
 /**
  * The current Firebase user as an Observable (emits on every auth-state change; `null` when signed out).
