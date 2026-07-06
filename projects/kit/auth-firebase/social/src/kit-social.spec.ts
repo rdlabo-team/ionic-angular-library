@@ -1,5 +1,5 @@
 import type { Auth } from 'firebase/auth';
-import { kitAppleLogin, kitFacebookLogin } from './kit-social';
+import { kitAppleLogin, kitFacebookLogin, kitFacebookLogout } from './kit-social';
 
 const signInWithCredential = vi.fn();
 const linkWithCredential = vi.fn();
@@ -11,9 +11,11 @@ const reauthenticateWithPopup = vi.fn();
 const isNativePlatform = vi.fn();
 const getPlatform = vi.fn();
 const facebookLogin = vi.fn();
+const facebookLogout = vi.fn();
+const facebookGetCurrentAccessToken = vi.fn();
 const appleAuthorize = vi.fn();
 
-vi.mock('firebase/auth', () => ({
+vi.mock('@angular/fire/auth', () => ({
   signInWithCredential: (...a: unknown[]) => signInWithCredential(...a),
   linkWithCredential: (...a: unknown[]) => linkWithCredential(...a),
   reauthenticateWithCredential: (...a: unknown[]) => reauthenticateWithCredential(...a),
@@ -41,7 +43,11 @@ vi.mock('@capacitor/core', () => ({
   Capacitor: { isNativePlatform: () => isNativePlatform(), getPlatform: () => getPlatform() },
 }));
 vi.mock('@capacitor-community/facebook-login', () => ({
-  FacebookLogin: { login: (...a: unknown[]) => facebookLogin(...a) },
+  FacebookLogin: {
+    login: (...a: unknown[]) => facebookLogin(...a),
+    logout: (...a: unknown[]) => facebookLogout(...a),
+    getCurrentAccessToken: (...a: unknown[]) => facebookGetCurrentAccessToken(...a),
+  },
 }));
 vi.mock('@capacitor-community/apple-sign-in', () => ({
   SignInWithApple: { authorize: (...a: unknown[]) => appleAuthorize(...a) },
@@ -176,5 +182,30 @@ describe('kitAppleLogin', () => {
     expect(await kitAppleLogin(authWith(null), { mode: 'new', ...h2 })).toEqual({ status: false });
     expect(h2.error).toHaveBeenCalledWith('other', expect.anything());
     expect(h2.finally).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('kitFacebookLogout', () => {
+  beforeEach(() => {
+    facebookLogout.mockResolvedValue(undefined);
+    facebookGetCurrentAccessToken.mockResolvedValue({ accessToken: { token: 'fb-token' } });
+  });
+
+  it('logs out when the Facebook SDK has an active session', async () => {
+    await kitFacebookLogout();
+    expect(facebookGetCurrentAccessToken).toHaveBeenCalled();
+    expect(facebookLogout).toHaveBeenCalled();
+  });
+
+  it('skips logout when there is no Facebook access token', async () => {
+    facebookGetCurrentAccessToken.mockRejectedValueOnce({ accessToken: { token: null } });
+    await kitFacebookLogout();
+    expect(facebookLogout).not.toHaveBeenCalled();
+  });
+
+  it('skips logout when getCurrentAccessToken returns a null token', async () => {
+    facebookGetCurrentAccessToken.mockResolvedValueOnce({ accessToken: { token: null } });
+    await kitFacebookLogout();
+    expect(facebookLogout).not.toHaveBeenCalled();
   });
 });

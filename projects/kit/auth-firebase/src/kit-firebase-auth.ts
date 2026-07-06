@@ -1,4 +1,7 @@
 import type { Auth, User, UserCredential } from 'firebase/auth';
+// Ops must come from @angular/fire/auth — not root `firebase/auth`. @angular/fire 21 rc bundles
+// firebase@12 while apps often pin firebase@11; calling the wrong copy's signOut/onAuthStateChanged
+// against KIT_FIREBASE_AUTH is a silent no-op (logout appears broken fleet-wide).
 import {
   createUserWithEmailAndPassword,
   EmailAuthProvider,
@@ -9,7 +12,7 @@ import {
   signInWithEmailAndPassword,
   signOut,
   unlink,
-} from 'firebase/auth';
+} from '@angular/fire/auth';
 import { Observable } from 'rxjs';
 
 /**

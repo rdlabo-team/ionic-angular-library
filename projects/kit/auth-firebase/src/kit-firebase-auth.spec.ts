@@ -26,7 +26,7 @@ const sendPasswordResetEmail = vi.fn();
 const signOut = vi.fn();
 const unlink = vi.fn();
 
-vi.mock('firebase/auth', () => ({
+vi.mock('@angular/fire/auth', () => ({
   reauthenticateWithCredential: (...a: unknown[]) => reauthenticateWithCredential(...a),
   EmailAuthProvider: { credential: (email: string, password: string) => ({ email, password }) },
   onAuthStateChanged: (...a: unknown[]) => onAuthStateChanged(...a),

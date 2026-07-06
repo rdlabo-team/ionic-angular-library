@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-kit",
-  "version": "0.0.17",
+  "version": "0.0.19",
   "peerDependencies": {
     "@angular/common": "^21.0.0",
     "@angular/core": "^21.0.0",
@@ -9,7 +9,7 @@
     "@ionic/angular": "^8.0.0",
     "@ionic/storage-angular": "^4.0.0",
     "@angular/fire": ">=21.0.0-rc.0",
-    "firebase": "^11.0.0",
+    "firebase": ">=11.0.0",
     "@capacitor/core": ">=6.0.0 <9.0.0",
     "@capacitor/haptics": ">=6.0.0 <9.0.0",
     "@capacitor/keyboard": ">=6.0.0 <9.0.0",

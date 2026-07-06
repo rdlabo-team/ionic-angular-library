@@ -9,7 +9,7 @@ import {
   reauthenticateWithPopup,
   signInWithCredential,
   signInWithPopup,
-} from 'firebase/auth';
+} from '@angular/fire/auth';
 import { Capacitor } from '@capacitor/core';
 import { FacebookLogin } from '@capacitor-community/facebook-login';
 import { SignInWithApple } from '@capacitor-community/apple-sign-in';
@@ -188,8 +188,16 @@ export const kitFacebookLogin = async (
  * @remarks
  * Apps that offer Facebook login typically call this alongside the Firebase sign-out, so it lives
  * here to keep the `@capacitor-community/facebook-login` import out of the app.
+ * Skips the call when the Facebook SDK has no active session — otherwise `FB.logout()` logs
+ * "called without an access token" on web and native rejects for email/password users.
  */
-export const kitFacebookLogout = (): Promise<void> => FacebookLogin.logout().catch(() => undefined);
+export const kitFacebookLogout = async (): Promise<void> => {
+  const session = await FacebookLogin.getCurrentAccessToken().catch(() => null);
+  if (!session?.accessToken?.token) {
+    return;
+  }
+  await FacebookLogin.logout().catch(() => undefined);
+};
 
 /**
  * Sign in with Apple / link, bundled. Native uses the plugin; the web uses the Firebase popup.
