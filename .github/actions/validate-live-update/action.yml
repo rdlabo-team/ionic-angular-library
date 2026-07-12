@@ -1,0 +1,26 @@
+name: Validate Capacitor Live Update
+description: Validate that a tagged web bundle is compatible with the current native app.
+inputs:
+  app-path:
+    description: Path to the Capacitor app from the repository root.
+    required: false
+    default: app
+  tag:
+    description: Release tag in vX.Y.Z or vX.Y.Z-N format.
+    required: true
+outputs:
+  version:
+    description: Normalized release version without the v prefix.
+    value: ${{ steps.validate.outputs.version }}
+  build_number:
+    description: Shared Android and iOS native build number.
+    value: ${{ steps.validate.outputs.build_number }}
+  production_channel:
+    description: Versioned production channel for the native build.
+    value: ${{ steps.validate.outputs.production_channel }}
+runs:
+  using: composite
+  steps:
+    - id: validate
+      shell: bash
+      run: node "$GITHUB_ACTION_PATH/validate-live-update.mjs" --app-path "${{ inputs.app-path }}" --tag "${{ inputs.tag }}"
