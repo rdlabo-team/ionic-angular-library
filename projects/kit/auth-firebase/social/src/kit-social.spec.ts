@@ -15,7 +15,7 @@ const facebookLogout = vi.fn();
 const facebookGetCurrentAccessToken = vi.fn();
 const appleAuthorize = vi.fn();
 
-vi.mock('@angular/fire/auth', () => ({
+vi.mock('firebase/auth', () => ({
   signInWithCredential: (...a: unknown[]) => signInWithCredential(...a),
   linkWithCredential: (...a: unknown[]) => linkWithCredential(...a),
   reauthenticateWithCredential: (...a: unknown[]) => reauthenticateWithCredential(...a),
@@ -104,7 +104,7 @@ describe('kitFacebookLogin', () => {
     expect(h.finally).toHaveBeenCalledTimes(1);
   });
 
-  it("uses the iOS OIDC nonce path (OAuthProvider) on native iOS", async () => {
+  it('uses the iOS OIDC nonce path (OAuthProvider) on native iOS', async () => {
     isNativePlatform.mockReturnValue(true);
     getPlatform.mockReturnValue('ios');
     facebookLogin.mockResolvedValueOnce({ accessToken: { token: 'tok' } });

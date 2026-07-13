@@ -34,7 +34,7 @@ const updatePassword = vi.fn();
 const signInAnonymously = vi.fn();
 const linkWithCredential = vi.fn();
 
-vi.mock('@angular/fire/auth', () => ({
+vi.mock('firebase/auth', () => ({
   reauthenticateWithCredential: (...a: unknown[]) => reauthenticateWithCredential(...a),
   EmailAuthProvider: { credential: (email: string, password: string) => ({ email, password }) },
   onAuthStateChanged: (...a: unknown[]) => onAuthStateChanged(...a),
@@ -69,25 +69,19 @@ describe('kitReauthenticateThenMutate', () => {
   it('throws KitReauthError and skips the mutation when re-auth fails', async () => {
     reauthenticateWithCredential.mockRejectedValueOnce(fbError('auth/wrong-password'));
     const mutate = vi.fn();
-    await expect(kitReauthenticateThenMutate(authWith({ uid: 'u1' }), 'me@x.com', 'bad', mutate)).rejects.toBeInstanceOf(
-      KitReauthError,
-    );
+    await expect(kitReauthenticateThenMutate(authWith({ uid: 'u1' }), 'me@x.com', 'bad', mutate)).rejects.toBeInstanceOf(KitReauthError);
     expect(mutate).not.toHaveBeenCalled();
   });
 
   it('throws KitReauthError when there is no signed-in user', async () => {
-    await expect(kitReauthenticateThenMutate(authWith(null), 'me@x.com', 'pw', vi.fn())).rejects.toBeInstanceOf(
-      KitReauthError,
-    );
+    await expect(kitReauthenticateThenMutate(authWith(null), 'me@x.com', 'pw', vi.fn())).rejects.toBeInstanceOf(KitReauthError);
     expect(reauthenticateWithCredential).not.toHaveBeenCalled();
   });
 
   it("propagates the mutation's own error unwrapped", async () => {
     reauthenticateWithCredential.mockResolvedValueOnce({});
     const boom = fbError('auth/email-already-in-use');
-    await expect(
-      kitReauthenticateThenMutate(authWith({ uid: 'u1' }), 'me@x.com', 'pw', () => Promise.reject(boom)),
-    ).rejects.toBe(boom);
+    await expect(kitReauthenticateThenMutate(authWith({ uid: 'u1' }), 'me@x.com', 'pw', () => Promise.reject(boom))).rejects.toBe(boom);
   });
 });
 

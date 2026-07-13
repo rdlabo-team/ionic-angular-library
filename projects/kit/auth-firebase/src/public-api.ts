@@ -1,7 +1,6 @@
-// Firebase auth: the flow library for the fleet. `@angular/fire` is used in *one* place only — the
-// DI provider (kit-firebase-provider.ts) — so the planned `@angular/fire` → `firebase/auth` swap is
-// provider-local. Apps inject `KIT_FIREBASE_AUTH` and call these pure flow functions, never importing
-// the SDK for the covered operations.
+// Firebase auth: the flow library for the fleet. The `firebase/auth` SDK is initialized in *one*
+// place only — the DI provider (kit-firebase-provider.ts). Apps inject `KIT_FIREBASE_AUTH` and call
+// these pure flow functions, never importing the SDK for the covered operations.
 //
 // The public surface is intentionally curated: dependency wiring plus pure flow functions (each
 // pairing a Firebase operation with the uniform `{ before, success, error, finally }` hooks and the
