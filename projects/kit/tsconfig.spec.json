@@ -12,6 +12,7 @@
     "printer/src/**/*.spec.ts",
     "theme/src/**/*.spec.ts",
     "review/src/**/*.spec.ts",
+    "live-update/src/**/*.spec.ts",
     "auth-firebase/src/**/*.spec.ts",
     "auth-firebase/social/src/**/*.spec.ts"
   ]

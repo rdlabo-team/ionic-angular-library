@@ -111,6 +111,40 @@ type ModalPresentArgs<C, I = InstanceOf<C>> = [I] extends [never]
       ? [componentProps?: ModalPropsOf<I>, options?: KitModalPresentOptions]
       : [componentProps: ModalPropsOf<I>, options?: KitModalPresentOptions];
 
+const BOTTOM_TAB_BAR_VIEWPORT_MARGIN_PX = 8;
+
+/**
+ * Returns a visible `ion-tab-bar` suitable for anchoring a bottom toast above it.
+ *
+ * Skips `slot="top"` bars (e.g. airlec desktop layout) and prefers the bar closest to the viewport bottom
+ * when multiple candidates exist.
+ */
+function findVisibleBottomTabBar(): HTMLElement | undefined {
+  let best: HTMLElement | undefined;
+  let bestBottom = -1;
+
+  for (const tabBar of Array.from(document.querySelectorAll('ion-tab-bar'))) {
+    if (!(tabBar instanceof HTMLElement)) continue;
+    if (tabBar.getAttribute('slot') === 'top') continue;
+
+    const rect = tabBar.getBoundingClientRect();
+    if (rect.height <= 0) continue;
+
+    const slot = tabBar.getAttribute('slot');
+    const isBottom =
+      slot === 'bottom' ||
+      (slot === null && rect.bottom >= window.innerHeight - BOTTOM_TAB_BAR_VIEWPORT_MARGIN_PX);
+    if (!isBottom) continue;
+
+    if (rect.bottom > bestBottom) {
+      bestBottom = rect.bottom;
+      best = tabBar;
+    }
+  }
+
+  return best;
+}
+
 /**
  * Options for {@link KitOverlayController.alertClose}.
  */
@@ -266,10 +300,11 @@ export class KitOverlayController {
    * also triggers light native haptic feedback as an intentional kit UX choice.
    *
    * Bottom is the fleet-wide default (top left the toast fighting the tab bar and the keyboard).
-   * For a bottom toast with no explicit `positionAnchor`, if a visible `ion-tab-bar` is present the
+   * For a bottom toast with no explicit `positionAnchor`, if a visible bottom `ion-tab-bar` is present the
    * toast is automatically anchored above it (Ionic places a bottom toast above its `positionAnchor`),
-   * so the toast never sits behind the tabs. Avoiding the on-screen keyboard is handled by the native
-   * keyboard resize — the anchored/bottom toast rides the shrinking viewport above the keyboard;
+   * so the toast never sits behind the tabs. Bars with `slot="top"` are ignored (desktop layouts that move
+   * tabs to the header). Avoiding the on-screen keyboard is handled by the native keyboard resize — the
+   * anchored/bottom toast rides the shrinking viewport above the keyboard;
    * Ionic itself has no toast keyboard-avoidance option. An app can override either via `options`.
    *
    * @param options - Ionic toast options that override the kit defaults
@@ -288,12 +323,12 @@ export class KitOverlayController {
       swipeGesture: 'vertical',
       ...options,
     };
-    // Anchor a bottom toast above the tab bar when one is visibly present and the caller did not
+    // Anchor a bottom toast above the tab bar when a bottom bar is visibly present and the caller did not
     // set an explicit anchor, so the toast clears the tabs (and rides the keyboard-resized viewport).
     if (merged.position === 'bottom' && merged.positionAnchor === undefined) {
-      const tabBar = document.querySelector('ion-tab-bar');
-      if (tabBar && tabBar.getBoundingClientRect().height > 0) {
-        merged.positionAnchor = tabBar as HTMLElement;
+      const tabBar = findVisibleBottomTabBar();
+      if (tabBar) {
+        merged.positionAnchor = tabBar;
       }
     }
     const toast = await this.#toastCtrl.create(merged);

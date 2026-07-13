@@ -164,8 +164,8 @@ presentPopover<O>(
 
 presentToast(options: ToastOptions): Promise<HTMLIonToastElement>
 // kit defaults: position='bottom', duration=2000, swipeGesture='vertical'
-// A bottom toast with no explicit positionAnchor auto-anchors above a visible <ion-tab-bar>
-// (so it clears the tabs); keyboard avoidance rides the native keyboard resize.
+// A bottom toast with no explicit positionAnchor auto-anchors above a visible bottom <ion-tab-bar>
+// (`slot="top"` bars are ignored) so it clears the tabs; keyboard avoidance rides the native keyboard resize.
 // caller options spread over the defaults — any field can be overridden
 
 alertClose(options: { header: string; message: string; subHeader?: string }): Promise<void>
@@ -552,12 +552,12 @@ await BrotherPrint.printImage({ ...settings, port: channel.port, channelInfo: ch
 
 ### Firebase auth (`@rdlabo/ionic-angular-kit/auth-firebase`)
 
-A secondary entry point so only apps that use it pull in `@angular/fire` and `firebase`. It exists to **isolate `@angular/fire`**: the SDK is touched in exactly one place — the DI provider — so apps import `KIT_FIREBASE_AUTH` and call these functions, never `@angular/fire` directly. That keeps the eventual `@angular/fire` → modular `firebase/auth` swap provider-local.
+A secondary entry point so only apps that use it pull in `firebase` (declared as an optional peer dependency — install `firebase` in the app). It exists to **isolate the Firebase SDK**: `firebase/auth` is initialized in exactly one place — the DI provider — so apps import `KIT_FIREBASE_AUTH` and call these functions, never wiring `firebase/auth` themselves. The kit uses the vanilla modular `firebase/auth` SDK directly (no `@angular/fire`).
 
 **Design principle: the kit performs no UI.** Every function runs the Firebase operation and nothing else; loading overlays, prompts and error alerts are app side effects. The flow functions take the uniform lifecycle hooks `{ before, success, error, finally }` and, rather than throwing, resolve value flows to `null` and boolean flows to `false`, handing the raw error to the `error` hook so the app presents it from its own dictionary. For anything the functions don't express, drop down to `firebase/auth` directly.
 
 ```typescript
-// app.config.ts — @angular/fire lives only here
+// app.config.ts — Firebase is initialized only here
 provideKitFirebase({ firebaseConfig: environment.firebase }),
 provideKitFirebaseAnalytics(),
 ```

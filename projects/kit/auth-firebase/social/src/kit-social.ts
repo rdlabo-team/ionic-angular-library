@@ -9,7 +9,7 @@ import {
   reauthenticateWithPopup,
   signInWithCredential,
   signInWithPopup,
-} from '@angular/fire/auth';
+} from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
 import { FacebookLogin } from '@capacitor-community/facebook-login';
 import { SignInWithApple } from '@capacitor-community/apple-sign-in';
@@ -24,10 +24,7 @@ export type KitOAuthModeName = 'new' | 'link' | 'credential';
  * The mode discriminator. `'credential'` links an email/password to the (re-authenticated) social
  * account, so it requires the new email/password; `'new'` / `'link'` do not.
  */
-export type KitOAuthMode =
-  | { mode: 'new' }
-  | { mode: 'link' }
-  | { mode: 'credential'; emailLogin: { email: string; password: string } };
+export type KitOAuthMode = { mode: 'new' } | { mode: 'link' } | { mode: 'credential'; emailLogin: { email: string; password: string } };
 
 /**
  * The apple identity payload handed to the `success` hook for the backend call. Populated from the
@@ -154,10 +151,7 @@ const nextFrame = (): Promise<void> =>
  * cancelled/failed plugin login or a handled Firebase error (the app was already notified via the
  * hooks).
  */
-export const kitFacebookLogin = async (
-  auth: Auth,
-  options: KitFacebookLoginOptions,
-): Promise<{ status: boolean }> => {
+export const kitFacebookLogin = async (auth: Auth, options: KitFacebookLoginOptions): Promise<{ status: boolean }> => {
   await options.before?.();
   try {
     const nonce = generateNonce();
@@ -248,10 +242,7 @@ export const kitAppleLogin = async (auth: Auth, options: KitAppleLoginOptions): 
           throw new Error('kit social: no signed-in user to re-authenticate');
         }
         await reauthenticateWithPopup(user, provider);
-        await linkWithCredential(
-          user,
-          EmailAuthProvider.credential(options.emailLogin.email, options.emailLogin.password),
-        );
+        await linkWithCredential(user, EmailAuthProvider.credential(options.emailLogin.email, options.emailLogin.password));
       } catch (e) {
         await options.error?.(classifyOAuthError(e), e);
         return { status: false };
@@ -262,10 +253,7 @@ export const kitAppleLogin = async (auth: Auth, options: KitAppleLoginOptions): 
 
     let result;
     try {
-      result =
-        options.mode === 'new'
-          ? await signInWithPopup(auth, provider)
-          : await linkWithPopup(requireUser(auth), provider);
+      result = options.mode === 'new' ? await signInWithPopup(auth, provider) : await linkWithPopup(requireUser(auth), provider);
     } catch (e) {
       await options.error?.(classifyOAuthError(e), e);
       return { status: false };

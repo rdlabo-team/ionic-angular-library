@@ -224,7 +224,8 @@ describe('KitOverlayController', () => {
 
     it('auto-anchors a bottom toast above a visible ion-tab-bar', async () => {
       const tabBar = document.createElement('ion-tab-bar');
-      tabBar.getBoundingClientRect = () => ({ height: 50 }) as DOMRect;
+      tabBar.setAttribute('slot', 'bottom');
+      tabBar.getBoundingClientRect = () => ({ height: 50, bottom: 800 }) as DOMRect;
       document.body.appendChild(tabBar);
       try {
         const { controller, toastCtrl } = setup();
@@ -232,6 +233,69 @@ describe('KitOverlayController', () => {
         expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBe(tabBar);
       } finally {
         document.body.removeChild(tabBar);
+      }
+    });
+
+    it('does not anchor when ion-tab-bar has slot=top', async () => {
+      const tabBar = document.createElement('ion-tab-bar');
+      tabBar.setAttribute('slot', 'top');
+      tabBar.getBoundingClientRect = () => ({ height: 50, bottom: 50 }) as DOMRect;
+      document.body.appendChild(tabBar);
+      try {
+        const { controller, toastCtrl } = setup();
+        await controller.presentToast({ message: 'Hi' });
+        expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBeUndefined();
+      } finally {
+        document.body.removeChild(tabBar);
+      }
+    });
+
+    it('anchors to the bottom tab bar when both top and bottom bars are present', async () => {
+      const topTabBar = document.createElement('ion-tab-bar');
+      topTabBar.setAttribute('slot', 'top');
+      topTabBar.getBoundingClientRect = () => ({ height: 50, bottom: 50 }) as DOMRect;
+      const bottomTabBar = document.createElement('ion-tab-bar');
+      bottomTabBar.setAttribute('slot', 'bottom');
+      bottomTabBar.getBoundingClientRect = () => ({ height: 50, bottom: 800 }) as DOMRect;
+      document.body.append(topTabBar, bottomTabBar);
+      try {
+        const { controller, toastCtrl } = setup();
+        await controller.presentToast({ message: 'Hi' });
+        expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBe(bottomTabBar);
+      } finally {
+        document.body.removeChild(topTabBar);
+        document.body.removeChild(bottomTabBar);
+      }
+    });
+
+    it('anchors when ion-tab-bar has no slot but sits at the viewport bottom', async () => {
+      const innerHeight = 800;
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(innerHeight);
+      const tabBar = document.createElement('ion-tab-bar');
+      tabBar.getBoundingClientRect = () => ({ height: 50, bottom: innerHeight }) as DOMRect;
+      document.body.appendChild(tabBar);
+      try {
+        const { controller, toastCtrl } = setup();
+        await controller.presentToast({ message: 'Hi' });
+        expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBe(tabBar);
+      } finally {
+        document.body.removeChild(tabBar);
+        vi.restoreAllMocks();
+      }
+    });
+
+    it('does not anchor when ion-tab-bar has no slot and is not at the viewport bottom', async () => {
+      vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(800);
+      const tabBar = document.createElement('ion-tab-bar');
+      tabBar.getBoundingClientRect = () => ({ height: 50, bottom: 200 }) as DOMRect;
+      document.body.appendChild(tabBar);
+      try {
+        const { controller, toastCtrl } = setup();
+        await controller.presentToast({ message: 'Hi' });
+        expect(toastCtrl.create.mock.calls[0][0].positionAnchor).toBeUndefined();
+      } finally {
+        document.body.removeChild(tabBar);
+        vi.restoreAllMocks();
       }
     });
 
@@ -243,7 +307,8 @@ describe('KitOverlayController', () => {
 
     it('does not override an explicit positionAnchor', async () => {
       const tabBar = document.createElement('ion-tab-bar');
-      tabBar.getBoundingClientRect = () => ({ height: 50 }) as DOMRect;
+      tabBar.setAttribute('slot', 'bottom');
+      tabBar.getBoundingClientRect = () => ({ height: 50, bottom: 800 }) as DOMRect;
       document.body.appendChild(tabBar);
       const custom = document.createElement('div');
       try {

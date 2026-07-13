@@ -1,8 +1,8 @@
 import type { Auth, User, UserCredential } from 'firebase/auth';
 export type { User, UserCredential } from 'firebase/auth';
-// Ops must come from @angular/fire/auth — not root `firebase/auth`. @angular/fire 21 rc bundles
-// firebase@12 while apps often pin firebase@11; calling the wrong copy's signOut/onAuthStateChanged
-// against KIT_FIREBASE_AUTH is a silent no-op (logout appears broken fleet-wide).
+// Ops and KIT_FIREBASE_AUTH must resolve to the *same* `firebase/auth` copy. The kit declares
+// `firebase` as a peerDependency so the app's single Firebase install is used everywhere; a second
+// copy would make signOut/onAuthStateChanged against KIT_FIREBASE_AUTH a silent no-op.
 import {
   createUserWithEmailAndPassword,
   EmailAuthProvider,
@@ -17,7 +17,7 @@ import {
   unlink,
   updateEmail,
   updatePassword,
-} from '@angular/fire/auth';
+} from 'firebase/auth';
 import { Observable } from 'rxjs';
 
 /**
@@ -77,12 +77,8 @@ const runAuthFlowVoid = async (op: () => Promise<void>, hooks?: KitAuthHooks): P
  * stays isolated in the kit). Resolves the credential, or `null` on failure (handed to the `error`
  * hook).
  */
-export const kitSignIn = (
-  auth: Auth,
-  email: string,
-  password: string,
-  hooks?: KitAuthHooks,
-): Promise<UserCredential | null> => runAuthFlow(() => signInWithEmailAndPassword(auth, email, password), hooks);
+export const kitSignIn = (auth: Auth, email: string, password: string, hooks?: KitAuthHooks): Promise<UserCredential | null> =>
+  runAuthFlow(() => signInWithEmailAndPassword(auth, email, password), hooks);
 
 /**
  * Create an account and send the verification email.
@@ -91,12 +87,7 @@ export const kitSignIn = (
  * Bundles the two-step "create → send verification" sequence. Resolves the credential, or `null` on
  * failure. Any success toast is the caller's, via the `success` hook.
  */
-export const kitSignUp = (
-  auth: Auth,
-  email: string,
-  password: string,
-  hooks?: KitAuthHooks,
-): Promise<UserCredential | null> =>
+export const kitSignUp = (auth: Auth, email: string, password: string, hooks?: KitAuthHooks): Promise<UserCredential | null> =>
   runAuthFlow(async () => {
     const credential = await createUserWithEmailAndPassword(auth, email, password);
     await sendEmailVerification(credential.user);
@@ -110,8 +101,7 @@ export const kitSignUp = (
  * App-specific cleanup (clearing stores, toasts, navigation, third-party logout) is the caller's,
  * done via the hooks — the kit only owns the Firebase op. `true` on success, `false` on failure.
  */
-export const kitSignOut = (auth: Auth, hooks?: KitAuthHooks): Promise<boolean> =>
-  runAuthFlowVoid(() => signOut(auth), hooks);
+export const kitSignOut = (auth: Auth, hooks?: KitAuthHooks): Promise<boolean> => runAuthFlowVoid(() => signOut(auth), hooks);
 
 /** Send a password-reset email. `true` on success, `false` on failure. */
 export const kitSendPasswordReset = (auth: Auth, email: string, hooks?: KitAuthHooks): Promise<boolean> =>
@@ -154,8 +144,8 @@ export const kitSendEmailVerification = (auth: Auth, hooks?: KitAuthHooks): Prom
  *
  * @remarks
  * For use inside {@link kitReauthWithRetry}'s `mutate` callback (after re-authentication). Uses the
- * same `@angular/fire/auth` module as {@link KIT_FIREBASE_AUTH} so the dual-firebase-sdk mismatch
- * cannot silently no-op.
+ * same `firebase/auth` copy as {@link KIT_FIREBASE_AUTH} so the dual-firebase-sdk mismatch cannot
+ * silently no-op.
  */
 export const kitUpdateEmail = async (user: User, newEmail: string): Promise<void> => {
   await updateEmail(user, newEmail);
@@ -192,12 +182,7 @@ export const kitSignInAnonymously = (auth: Auth, hooks?: KitAuthHooks): Promise<
  * @remarks
  * Reloads the linked user before resolving. Resolves the updated `User`, or `null` on failure.
  */
-export const kitLinkEmailPassword = (
-  auth: Auth,
-  email: string,
-  password: string,
-  hooks?: KitAuthHooks,
-): Promise<User | null> =>
+export const kitLinkEmailPassword = (auth: Auth, email: string, password: string, hooks?: KitAuthHooks): Promise<User | null> =>
   runAuthFlow(async () => {
     const user = auth.currentUser;
     if (!user) {
@@ -208,16 +193,15 @@ export const kitLinkEmailPassword = (
     return linked.user;
   }, hooks);
 
-// Ops come from `@angular/fire/auth` (same firebase copy as KIT_FIREBASE_AUTH). Types stay on
-// `firebase/auth` so apps never import the SDK for covered operations.
+// Ops and types come from `firebase/auth` (the single peer-installed copy shared with
+// KIT_FIREBASE_AUTH) so apps never import the SDK for covered operations.
 
 /**
  * The current Firebase user as an Observable (emits on every auth-state change; `null` when signed out).
  *
  * @remarks
- * Wraps `onAuthStateChanged` so consumers get an rxjs stream without pulling in `@angular/fire`'s
- * `authState` (or `rxfire`). Emits the current value on subscribe and completes its listener on
- * teardown.
+ * Wraps `firebase/auth`'s `onAuthStateChanged` so consumers get an rxjs stream without pulling in
+ * `rxfire`. Emits the current value on subscribe and completes its listener on teardown.
  *
  * @param auth - the Firebase `Auth` instance (inject `KIT_FIREBASE_AUTH`)
  */
@@ -379,11 +363,7 @@ export interface KitReauthWithRetryOptions {
  * @returns `true` if the mutation completed, `false` if the user cancelled
  * @throws the underlying Firebase error on a non-wrong-password failure, or `mutate`'s own error
  */
-export const kitReauthWithRetry = async (
-  auth: Auth,
-  currentEmail: string,
-  options: KitReauthWithRetryOptions,
-): Promise<boolean> => {
+export const kitReauthWithRetry = async (auth: Auth, currentEmail: string, options: KitReauthWithRetryOptions): Promise<boolean> => {
   const run = options.withLoading ?? ((fn) => fn());
   let wrongPasswordRetry = false;
   for (;;) {
@@ -442,8 +422,7 @@ export const kitResolveAuthStatus = (user: User | null, options?: KitResolveAuth
   if (user === null) {
     return 'required';
   }
-  const verifiedByProvider =
-    options?.verifiedProviders?.some((id) => user.providerData.some((p) => p.providerId === id)) ?? false;
+  const verifiedByProvider = options?.verifiedProviders?.some((id) => user.providerData.some((p) => p.providerId === id)) ?? false;
   const verified = user.emailVerified || verifiedByProvider || (options?.allowWhen?.(user) ?? false);
   return verified ? 'user' : 'confirm';
 };

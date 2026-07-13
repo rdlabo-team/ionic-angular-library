@@ -1,23 +1,21 @@
 import type { EnvironmentProviders } from '@angular/core';
 import { InjectionToken, makeEnvironmentProviders } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
-import type { FirebaseOptions } from '@angular/fire/app';
-import { getApp, initializeApp, provideFirebaseApp } from '@angular/fire/app';
-import { Auth, getAuth, indexedDBLocalPersistence, initializeAuth, provideAuth } from '@angular/fire/auth';
-import { getAnalytics, provideAnalytics } from '@angular/fire/analytics';
+import type { FirebaseApp, FirebaseOptions } from 'firebase/app';
+import { getApp, getApps, initializeApp } from 'firebase/app';
 import type { Auth as FirebaseAuth } from 'firebase/auth';
+import { getAuth, indexedDBLocalPersistence, initializeAuth } from 'firebase/auth';
+import { getAnalytics } from 'firebase/analytics';
 
 /**
  * DI token for the Firebase `Auth` instance.
  *
  * @remarks
- * Inject this (`inject(KIT_FIREBASE_AUTH)`) instead of `@angular/fire`'s `Auth`, so the
- * `@angular/fire` dependency stays isolated inside the kit. This is the seam that makes the planned
- * `@angular/fire` → `firebase/auth` migration a kit-internal change: only {@link provideKitFirebase}
- * (which binds this token) has to change; every consumer keeps injecting `KIT_FIREBASE_AUTH`.
+ * Inject this (`inject(KIT_FIREBASE_AUTH)`) instead of importing `getAuth()` in the app, so the
+ * Firebase SDK wiring stays isolated inside the kit: only {@link provideKitFirebase} (which binds
+ * this token) touches initialization; every consumer keeps injecting `KIT_FIREBASE_AUTH`.
  *
- * The value is a `firebase/auth` `Auth` (the SDK type is exposed directly, not re-abstracted —
- * Firebase Auth itself is not being dropped, only the `@angular/fire` wrapper).
+ * The value is a `firebase/auth` `Auth` — the SDK type is exposed directly, not re-abstracted.
  */
 export const KIT_FIREBASE_AUTH = new InjectionToken<FirebaseAuth>('@rdlabo/ionic-angular-kit:firebase-auth');
 
@@ -27,15 +25,19 @@ export interface KitFirebaseConfig {
   readonly firebaseConfig: FirebaseOptions;
 }
 
+/** Initialize (or reuse) the Firebase app for the kit's config. */
+const kitFirebaseApp = (config: KitFirebaseConfig): FirebaseApp => (getApps().length ? getApp() : initializeApp(config.firebaseConfig));
+
 /**
  * Wire Firebase App + Auth into the application and bind {@link KIT_FIREBASE_AUTH}.
  *
  * @remarks
- * Replaces each app's hand-rolled `provideFirebaseApp(...)` + `provideAuth(...)` (with its
- * native/web persistence branch) with one call, and — crucially — keeps `@angular/fire` out of the
- * application: apps inject {@link KIT_FIREBASE_AUTH} and import auth operations/types straight from
- * `firebase/auth`. On a native platform the persistence uses `indexedDBLocalPersistence`; on the web
- * it uses the default (`getAuth`).
+ * Replaces each app's hand-rolled `provideFirebaseApp(...)` + `provideAuth(...)` with one call.
+ * Firebase is initialized eagerly with the vanilla `firebase/app` + `firebase/auth` SDK (no
+ * `@angular/fire`), and the resulting `Auth` is bound to {@link KIT_FIREBASE_AUTH}. On a native
+ * platform the persistence uses `indexedDBLocalPersistence`; on the web it uses the default
+ * (`getAuth`). Apps inject {@link KIT_FIREBASE_AUTH} and call the kit's flow functions, keeping the
+ * Firebase SDK isolated inside the kit.
  *
  * @example
  * ```ts
@@ -44,21 +46,20 @@ export interface KitFirebaseConfig {
  * });
  * ```
  */
-export const provideKitFirebase = (config: KitFirebaseConfig): EnvironmentProviders =>
-  makeEnvironmentProviders([
-    provideFirebaseApp(() => initializeApp(config.firebaseConfig)),
-    provideAuth(() =>
-      Capacitor.isNativePlatform()
-        ? initializeAuth(getApp(), { persistence: indexedDBLocalPersistence })
-        : getAuth(),
-    ),
-    // Expose @angular/fire's Auth instance under the kit token; phase 3 rebinds this to a
-    // firebase/auth instance without touching any consumer.
-    { provide: KIT_FIREBASE_AUTH, useExisting: Auth },
-  ]);
+export const provideKitFirebase = (config: KitFirebaseConfig): EnvironmentProviders => {
+  const app = kitFirebaseApp(config);
+  const auth = Capacitor.isNativePlatform() ? initializeAuth(app, { persistence: indexedDBLocalPersistence }) : getAuth(app);
+  return makeEnvironmentProviders([{ provide: KIT_FIREBASE_AUTH, useValue: auth }]);
+};
 
 /**
  * Wire Firebase Analytics into the application (optional; only the apps that use it call this).
+ *
+ * @remarks
+ * Analytics is initialized eagerly against the already-initialized Firebase app, so this must be
+ * called after (or alongside) {@link provideKitFirebase}.
  */
-export const provideKitFirebaseAnalytics = (): EnvironmentProviders =>
-  makeEnvironmentProviders([provideAnalytics(() => getAnalytics())]);
+export const provideKitFirebaseAnalytics = (): EnvironmentProviders => {
+  getAnalytics(getApp());
+  return makeEnvironmentProviders([]);
+};

@@ -23,7 +23,7 @@ export * from './lib/keyboard/kit-keyboard';
 
 // Theme (`@rdlabo/ionic-angular-kit/theme`), Review (`.../review`), Printer (`.../printer`) and
 // Firebase auth (`.../auth-firebase`) are separate secondary entry points so their heavy native peers
-// (status-bar / in-app-review+preferences / brotherprint+dom-to-image / @angular/fire+firebase) are
+// (status-bar / in-app-review+preferences / brotherprint+dom-to-image / firebase) are
 // only pulled in by apps that import those subpaths.
 
 // Auth: functional route guards.
