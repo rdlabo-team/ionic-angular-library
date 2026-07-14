@@ -27,6 +27,13 @@ Sponsoring means you directly contribute to new features, improvements, and main
 | @rdlabo/ionic-angular-scroll-header | This is directive for scroll with Header.                                                  | [/project/scroll-header](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/scroll-header#readme) |
 | @rdlabo/ngx-cdk-scroll-strategies | This is directive for virtual scroll of dynamic item size.                                 | [/project/scroll-strategies](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/scroll-strategies#readme) |
 
+### Release
+
+All libraries (including kit) share one version line and are released together via `npm run release` (`np --no-tests --no-publish`) → `v*` tag → GitHub Actions `release.yml`.
+
+- Stable `vX.Y.Z` → npm `latest`
+- Prerelease `vX.Y.Z-N` (np style) → npm dist-tag **`beta`** (version string stays `X.Y.Z-N`)
+
 ### Kit Auth demo
 
 The demo app includes a **Kit** tab with a Firebase Auth harness (`/main/kit/auth`).

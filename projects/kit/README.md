@@ -15,7 +15,11 @@ A small ergonomic kit for Ionic Angular applications. It provides:
 
 ```bash
 npm install @rdlabo/ionic-angular-kit
+# prereleases (np: X.Y.Z-N) are on the npm dist-tag `beta`:
+# npm install @rdlabo/ionic-angular-kit@beta
 ```
+
+Kit shares the repo `v*` release line with the other libraries (see root README § Release).
 
 ### Peer dependencies
 

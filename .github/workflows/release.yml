@@ -89,7 +89,7 @@ jobs:
             if [ "$IS_STABLE" = "true" ]; then
               npm publish --provenance --access public
             else
-              npm publish --provenance --access public --tag next
+              npm publish --provenance --access public --tag beta
             fi
             cd ../..
           done
