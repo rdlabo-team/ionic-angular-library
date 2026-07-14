@@ -1,7 +1,14 @@
 import { inject, Injectable } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { mergeMap } from 'rxjs/operators';
-import { type KitAuthState, KitOverlayController } from '@rdlabo/ionic-angular-kit';
+import {
+  KIT_LAST_AUTH_EMAIL_KEY,
+  KIT_THEME_STORAGE_KEY,
+  kitClearStoragePreservingKeys,
+  type KitAuthState,
+  KitOverlayController,
+  KitStorageService,
+} from '@rdlabo/ionic-angular-kit';
 import {
   KIT_DEFAULT_AUTH_TEXT,
   KIT_FIREBASE_AUTH,
@@ -21,6 +28,7 @@ import { environment } from '../../../environments/environment';
 export class DemoAuthService {
   readonly #auth = inject(KIT_FIREBASE_AUTH);
   readonly #overlay = inject(KitOverlayController);
+  readonly #storage = inject(KitStorageService);
 
   /** Stream of the 4-state auth model consumed by `provideKitAuth`. */
   isAuth(isReload = false): Observable<KitAuthState> {
@@ -58,6 +66,7 @@ export class DemoAuthService {
 
   signOut(): Promise<boolean> {
     return kitSignOut(this.#auth, {
+      success: () => kitClearStoragePreservingKeys(this.#storage, [KIT_LAST_AUTH_EMAIL_KEY, KIT_THEME_STORAGE_KEY]),
       error: (e) => this.#presentError(e),
     });
   }

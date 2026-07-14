@@ -6,7 +6,8 @@ A small ergonomic kit for Ionic Angular applications. It provides:
 - **KitOverlayController** — a unified presenter for Ionic Modal, Toast, and Alert
 - **Auth guards** — functional `CanActivateFn` guards for a 4-state auth model
 - **HTTP interceptor** — a fleet-canonical auth + retry + error-hook interceptor
-- **KitAutofillDirective** — an iOS autofill workaround for `ion-input`
+- **KitAuthInputDirective** — sign-in email remember/prefill + iOS autofill workaround for `ion-input`
+- **kitClearStoragePreservingKeys** — `clear()` that restores selected keys (`KIT_LAST_AUTH_EMAIL_KEY`, `KIT_THEME_STORAGE_KEY`, …)
 
 ---
 
@@ -395,15 +396,36 @@ await reload.dismiss();
 
 ---
 
-### KitAutofillDirective
+### KitAuthInputDirective (`kitAuthInput`)
 
-An iOS workaround for `ion-input` autofill (password managers, iCloud Keychain). Without it, autofilled values are not reflected in the Angular form model on iOS native.
+Sign-in / sign-up conveniences on `ion-input`:
+
+- `'email'` — remember + prefill the last well-formed address (and forget when the user clears it)
+- `'email-remember'` — remember on change only (no prefill — use on sign-up)
+- `'autofill'` — iOS autofill propagation only (password fields)
 
 ```html
-<ion-input rdlaboAutofill formControlName="password" type="password" />
+<ion-input type="email" autocomplete="email" kitAuthInput="email" [formField]="form.email" />
 ```
 
-The directive is a no-op on non-iOS platforms.
+### kitClearStoragePreservingKeys
+
+Fleet apps typically `storage.clear()` on sign-out. Pass keys that must survive (e.g. the last sign-in email):
+
+```typescript
+import {
+  KIT_LAST_AUTH_EMAIL_KEY,
+  KIT_THEME_STORAGE_KEY,
+  kitClearStoragePreservingKeys,
+} from '@rdlabo/ionic-angular-kit';
+
+await kitSignOut(auth, {
+  success: () =>
+    kitClearStoragePreservingKeys(this.storage, [KIT_LAST_AUTH_EMAIL_KEY, KIT_THEME_STORAGE_KEY]),
+});
+```
+
+It snapshots the listed keys, clears the store, then writes non-null values back.
 
 ---
 

@@ -11,6 +11,9 @@ import { InjectionToken, makeEnvironmentProviders } from '@angular/core';
  * palette passes `darkClasses: ['ion-palette-dark'], lightClasses: []`, while an app with an extra
  * design-system palette adds its own classes (e.g. `darkClasses: ['ion-palette-dark', 'a2ui-dark']`,
  * `lightClasses: ['a2ui-light']`).
+ *
+ * Prefer `KIT_THEME_STORAGE_KEY` (from `@rdlabo/ionic-angular-kit`) as `storageKey` so logout
+ * clear-preserving lists stay in sync.
  */
 export interface KitThemeConfig {
   /** Key under which the chosen theme (`'light'` | `'dark'`) is persisted via `KitStorageService`. */
@@ -36,10 +39,13 @@ export const KIT_THEME_CONFIG = new InjectionToken<KitThemeConfig>('@rdlabo/ioni
  * @returns environment providers to add to the application's provider list
  * @example
  * ```ts
+ * import { KIT_THEME_STORAGE_KEY } from '@rdlabo/ionic-angular-kit';
+ * import { provideKitTheme } from '@rdlabo/ionic-angular-kit/theme';
+ *
  * bootstrapApplication(AppComponent, {
  *   providers: [
  *     provideKitTheme({
- *       storageKey: StorageKeyEnum.theme,
+ *       storageKey: KIT_THEME_STORAGE_KEY,
  *       darkClasses: ['ion-palette-dark', 'a2ui-dark'],
  *       lightClasses: ['a2ui-light'],
  *     }),
