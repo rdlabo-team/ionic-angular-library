@@ -25,11 +25,6 @@ jobs:
           node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Update npm
-        run: |
-          npm -v
-          npm install -g npm@latest
-
       - name: Extract version from tag
         id: tag_version
         run: |
@@ -39,8 +34,10 @@ jobs:
           echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION from tag: $TAG_NAME"
 
+      # Lint CI uses setup-node's npm as-is. Do not bump to npm@latest here:
+      # npm v12 defaults allow-git=none and breaks github:apple-sign-in.
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --allow-git=all
 
       - name: Extract library projects
         id: libraries
