@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-kit",
-  "version": "0.0.25",
+  "version": "0.0.26",
   "peerDependencies": {
     "@angular/common": "^21.0.0",
     "@angular/core": "^21.0.0",
