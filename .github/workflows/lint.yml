@@ -52,3 +52,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test -- ${{ matrix.project }} --watch=false
+  test-actions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+      - run: npm ci
+      - run: npm run test:actions

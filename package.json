@@ -28,7 +28,8 @@
     "prestart": "npm run prebuild",
     "release": "np --no-tests --no-publish",
     "lint": "ng lint",
-    "test:watch": "ng test"
+    "test:watch": "ng test",
+    "test:actions": "vitest run --config .github/actions/vitest.config.mjs"
   },
   "private": false,
   "dependencies": {

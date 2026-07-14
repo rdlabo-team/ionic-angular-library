@@ -1,0 +1,64 @@
+name: Publish Capacitor Live Update
+description: Bundle, sign and upload a Capacitor Live Update to a Capawesome production channel.
+inputs:
+  app-path:
+    description: Path to the Capacitor app from the repository root.
+    required: false
+    default: app
+  app-id:
+    description: Capawesome Cloud application id.
+    required: true
+  channel:
+    description: Target channel name (e.g. production-<build>).
+    required: true
+  build-number:
+    description: Shared Android and iOS native build number used for min/max bounds.
+    required: true
+  version:
+    description: Release version (with or without the leading v).
+    required: true
+  git-ref:
+    description: Git ref (commit SHA) recorded with the bundle.
+    required: false
+    default: ${{ github.sha }}
+  cli-version:
+    description: '@capawesome/cli version to use.'
+    required: false
+    default: '4.15.0'
+  input-path:
+    description: Web build directory to bundle.
+    required: false
+    default: www/browser
+  bundle-path:
+    description: Output path for the generated bundle.
+    required: false
+    default: bundle.zip
+  rollout-percentage:
+    description: Rollout percentage for the uploaded bundle.
+    required: false
+    default: '100'
+  token:
+    description: Capawesome Cloud API token.
+    required: true
+  private-key:
+    description: RSA private key (PEM) used to sign the bundle.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CAPAWESOME_TOKEN: ${{ inputs.token }}
+        CAPAWESOME_LIVE_UPDATE_PRIVATE_KEY: ${{ inputs.private-key }}
+      run: >
+        node "$GITHUB_ACTION_PATH/publish-live-update.mjs"
+        --app-path "${{ inputs.app-path }}"
+        --app-id "${{ inputs.app-id }}"
+        --channel "${{ inputs.channel }}"
+        --build-number "${{ inputs.build-number }}"
+        --version "${{ inputs.version }}"
+        --git-ref "${{ inputs.git-ref }}"
+        --cli-version "${{ inputs.cli-version }}"
+        --input-path "${{ inputs.input-path }}"
+        --bundle-path "${{ inputs.bundle-path }}"
+        --rollout-percentage "${{ inputs.rollout-percentage }}"
