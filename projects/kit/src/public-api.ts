@@ -6,6 +6,10 @@
 export * from './lib/storage/kit-storage.service';
 // Remember/recall the last entered sign-in email (validated; storage-agnostic helpers).
 export * from './lib/storage/kit-auth-email-store';
+// Canonical keys (email + theme) for clear-preserving lists.
+export * from './lib/storage/kit-storage-keys';
+// Clear storage while restoring selected keys (e.g. last sign-in email on logout).
+export * from './lib/storage/kit-clear-storage';
 
 // Overlay: wrapper around the Ionic Modal / Toast / Alert controllers.
 export * from './lib/overlay/overlay-config';

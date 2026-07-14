@@ -4,8 +4,8 @@ import {
   kitIsValidEmail,
   kitRecallEmail,
   kitRememberEmail,
+  type KitEmailStore,
 } from './kit-auth-email-store';
-import type { KitEmailStore } from './kit-auth-email-store';
 
 /** In-memory store that structurally satisfies `KitEmailStore`. */
 const fakeStore = (): KitEmailStore & { map: Map<string, unknown> } => {
