@@ -1,0 +1,9 @@
+# Demo deploys to https://rdlabo-ionic-angular-library.netlify.app/
+#
+# Firebase web apiKey is a public client identifier (access is enforced by Auth /
+# App Check / Security Rules), not a server secret. Netlify smart detection flags
+# the `AIza…` pattern anyway — omit it so deploy preview / production can build.
+
+[build.environment]
+  SECRETS_SCAN_SMART_DETECTION_OMIT_VALUES = "AIzaSyBuGDgJy26KfViIjusAxVwHhyAbQTYKoAw"
+  SECRETS_SCAN_OMIT_PATHS = "projects/demo/src/environments/**"

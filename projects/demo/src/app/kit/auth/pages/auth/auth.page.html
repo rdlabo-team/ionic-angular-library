@@ -1,0 +1,39 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-buttons slot="start">
+      <ion-back-button defaultHref="/main/kit"></ion-back-button>
+    </ion-buttons>
+    <ion-title>Auth</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content class="ion-padding">
+  @if (!firebaseConfigured) {
+    <ion-note color="warning">
+      Firebase config is empty. Fill <code>environment.firebase</code> before sign-in / e2e.
+    </ion-note>
+  }
+
+  <p>
+    Current state:
+    <strong data-testid="auth-state">{{ authState() }}</strong>
+  </p>
+
+  <ion-list>
+    <ion-item button="true" detail="true" routerLink="/main/kit/auth/signin">
+      <ion-label>Sign in</ion-label>
+    </ion-item>
+    <ion-item button="true" detail="true" routerLink="/main/kit/auth/signup">
+      <ion-label>Sign up</ion-label>
+    </ion-item>
+    <ion-item button="true" detail="true" routerLink="/main/kit/auth/confirm">
+      <ion-label>Confirm (email)</ion-label>
+    </ion-item>
+    <ion-item button="true" detail="true" routerLink="/main/kit/auth/home">
+      <ion-label>Home (authorized)</ion-label>
+    </ion-item>
+    <ion-item button="true" detail="true" routerLink="/main/kit/auth/reset">
+      <ion-label>Reset password</ion-label>
+    </ion-item>
+  </ion-list>
+</ion-content>

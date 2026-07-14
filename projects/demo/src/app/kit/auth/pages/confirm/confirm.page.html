@@ -1,0 +1,20 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-buttons slot="start">
+      <ion-back-button defaultHref="/main/kit/auth"></ion-back-button>
+    </ion-buttons>
+    <ion-title>Confirm email</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content class="ion-padding">
+  <ion-note>
+    We sent a verification link to <strong>{{ email() }}</strong>. Open it, then this page will continue
+    automatically. With <code>window.__E2E__</code> the confirm step is skipped.
+  </ion-note>
+
+  <div class="ion-text-center ion-padding-top">
+    <ion-button (click)="sendVerify()">Resend verification</ion-button>
+    <ion-button fill="outline" color="medium" (click)="signOut()">Sign out</ion-button>
+  </div>
+</ion-content>

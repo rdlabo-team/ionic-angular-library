@@ -1,0 +1,59 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-buttons slot="start">
+      <ion-back-button defaultHref="/main/kit/auth"></ion-back-button>
+    </ion-buttons>
+    <ion-title>Sign in</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content class="ion-padding">
+  <form novalidate (submit)="$event.preventDefault(); doSignIn()">
+    <ion-list>
+      <ion-item>
+        <ion-input
+          data-testid="auth-email"
+          type="email"
+          inputmode="email"
+          label="Email"
+          labelPlacement="floating"
+          autocomplete="email"
+          [formField]="loginForm.email"
+          kitAuthInput="email"
+        ></ion-input>
+      </ion-item>
+      <ion-item>
+        <ion-input
+          data-testid="auth-password"
+          type="password"
+          label="Password"
+          labelPlacement="floating"
+          autocomplete="current-password"
+          [formField]="loginForm.password"
+          kitAuthInput="autofill"
+        ></ion-input>
+      </ion-item>
+    </ion-list>
+
+    <div class="ion-text-center ion-padding-top">
+      <ion-button data-testid="auth-signin" type="submit" [disabled]="isLoading() || !loginForm().valid()">
+        @if (isLoading()) {
+          <ion-spinner name="crescent"></ion-spinner>
+        } @else {
+          Sign in
+        }
+      </ion-button>
+    </div>
+  </form>
+
+  <div class="ion-text-center">
+    <ion-button fill="clear" routerLink="/main/kit/auth/signup">Create account</ion-button>
+    <ion-button fill="clear" routerLink="/main/kit/auth/reset">Forgot password</ion-button>
+  </div>
+
+  <div class="ion-text-center ion-padding-top">
+    <ion-button data-testid="auth-anonymous" fill="outline" [disabled]="isLoading()" (click)="doAnonymous()">
+      Continue anonymously
+    </ion-button>
+  </div>
+</ion-content>
