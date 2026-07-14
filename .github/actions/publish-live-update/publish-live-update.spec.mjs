@@ -82,12 +82,31 @@ describe('command builders', () => {
     });
     expect(args).toContain('apps:liveupdates:upload');
     expect(args).toContain('--yes');
+    expect(args).not.toContain('--git-ref');
     for (const flag of ['--android-min', '--android-max', '--ios-min', '--ios-max']) {
       expect(args[args.indexOf(flag) + 1]).toBe('9000000');
     }
-    expect(args[args.indexOf('--custom-property') + 1]).toBe('version=9.0.0');
+    expect(args.filter((_, index) => args[index - 1] === '--custom-property')).toEqual([
+      'version=9.0.0',
+      'commit=deadbeef',
+    ]);
     expect(args[args.indexOf('--rollout-percentage') + 1]).toBe('100');
     expect(args[args.indexOf('--private-key') + 1]).toBe('private.pem');
+  });
+
+  it('uploadArgs omits commit custom property when gitRef is empty', () => {
+    const args = uploadArgs({
+      cliVersion: '4.15.0',
+      appId: 'a',
+      channel: 'production-1',
+      bundlePath: 'bundle.zip',
+      privateKeyPath: 'private.pem',
+      buildNumber: '1',
+      gitRef: undefined,
+      version: '1.0.0',
+      rolloutPercentage: '100',
+    });
+    expect(args.filter((_, index) => args[index - 1] === '--custom-property')).toEqual(['version=1.0.0']);
   });
 });
 

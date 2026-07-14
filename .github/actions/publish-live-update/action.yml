@@ -18,7 +18,10 @@ inputs:
     description: Release version (with or without the leading v).
     required: true
   git-ref:
-    description: Git ref (commit SHA) recorded with the bundle.
+    description: >
+      Commit SHA recorded on the uploaded bundle as a custom property
+      (`commit=<sha>`). Not passed as Capawesome `--git-ref` (that requires
+      linking a git repository to the Cloud app via `apps:link`).
     required: false
     default: ${{ github.sha }}
   cli-version:

@@ -39,7 +39,7 @@ export function channelCreateArgs({ cliVersion, appId, channel }) {
 }
 
 export function uploadArgs({ cliVersion, appId, channel, bundlePath, privateKeyPath, buildNumber, gitRef, version, rolloutPercentage }) {
-  return [
+  const args = [
     cli(cliVersion),
     'apps:liveupdates:upload',
     '--app-id',
@@ -58,14 +58,17 @@ export function uploadArgs({ cliVersion, appId, channel, bundlePath, privateKeyP
     String(buildNumber),
     '--ios-max',
     String(buildNumber),
-    '--git-ref',
-    gitRef,
     '--custom-property',
     `version=${version}`,
-    '--rollout-percentage',
-    String(rolloutPercentage),
-    '--yes',
   ];
+  // Capawesome `--git-ref` requires the Cloud app to have a linked git repository
+  // (`apps:link`). Local CI uploads do not need that — record the commit as a
+  // custom property instead so apps without a linked repo still publish.
+  if (gitRef) {
+    args.push('--custom-property', `commit=${gitRef}`);
+  }
+  args.push('--rollout-percentage', String(rolloutPercentage), '--yes');
+  return args;
 }
 
 /**
@@ -93,7 +96,6 @@ export function resolveOptions(args, env = {}) {
     channel: options.channel,
     'build-number': options.buildNumber,
     version: options.version,
-    'git-ref': options.gitRef,
     CAPAWESOME_TOKEN: options.token,
     CAPAWESOME_LIVE_UPDATE_PRIVATE_KEY: options.privateKey,
   };
