@@ -131,7 +131,7 @@ describe('main', () => {
       deps: {
         argv: baseArgv,
         env: baseEnv,
-        run: (command, args) => calls.push({ type: 'run', command, subcommand: args[1] }),
+        run: (command, args) => calls.push({ type: 'run', command, args, subcommand: args[1] }),
         chdir: (path) => calls.push({ type: 'chdir', path }),
         writeKey: (path, key) => calls.push({ type: 'writeKey', path, key }),
         removeKey: (path) => calls.push({ type: 'removeKey', path }),
@@ -152,6 +152,11 @@ describe('main', () => {
       'run:apps:liveupdates:upload',
       'removeKey',
     ]);
+    const bundleCall = calls.find((call) => call.subcommand === 'apps:liveupdates:bundle');
+    expect(bundleCall.args[bundleCall.args.indexOf('--output-path') + 1]).toBe('bundle.zip');
+    expect(bundleCall.args[bundleCall.args.indexOf('--input-path') + 1]).toBe('www/browser');
+    const uploadCall = calls.find((call) => call.subcommand === 'apps:liveupdates:upload');
+    expect(uploadCall.args[uploadCall.args.indexOf('--path') + 1]).toBe('bundle.zip');
     expect(calls.find((call) => call.type === 'writeKey').path).toBe(PRIVATE_KEY_FILE);
     expect(calls.find((call) => call.type === 'removeKey').path).toBe(PRIVATE_KEY_FILE);
   });

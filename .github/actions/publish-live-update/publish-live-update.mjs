@@ -18,8 +18,16 @@ export function parseArgs(argv) {
 
 const cli = (cliVersion) => `${CLI_PACKAGE}@${cliVersion}`;
 
-export function bundleArgs({ cliVersion, inputPath, outputPath }) {
-  return [cli(cliVersion), 'apps:liveupdates:bundle', '--input-path', inputPath, '--output-path', outputPath, '--overwrite'];
+export function bundleArgs({ cliVersion, inputPath, outputPath, bundlePath }) {
+  return [
+    cli(cliVersion),
+    'apps:liveupdates:bundle',
+    '--input-path',
+    inputPath,
+    '--output-path',
+    outputPath ?? bundlePath,
+    '--overwrite',
+  ];
 }
 
 export function loginArgs({ cliVersion, token }) {
