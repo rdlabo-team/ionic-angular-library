@@ -604,6 +604,53 @@ Surface:
 
 ---
 
+### Live Update (`@rdlabo/ionic-angular-kit/live-update`)
+
+A secondary entry point (so only apps that use it pull in `@capawesome/capacitor-live-update`, declared as an optional peer) for shipping [Capawesome Live Updates](https://capawesome.io/plugins/live-update/) — over-the-air replacement of the Web (Angular/Ionic) layer without a store review.
+
+#### `provideLiveUpdateReadiness()`
+
+Marks the running Live Update bundle **healthy** once the app has actually rendered, so Capawesome does not auto-roll-back a good bundle. It waits for Angular to become stable **and** the first route to finish (`NavigationEnd` + one animation frame) before calling `LiveUpdate.ready()`. This replaces a fixed `readyTimeout` in `capacitor.config.ts` with a signal tied to real readiness. **Native only** — a no-op on web.
+
+```typescript
+// app.config.ts
+import { provideLiveUpdateReadiness } from '@rdlabo/ionic-angular-kit/live-update';
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideZonelessChangeDetection(),
+    provideLiveUpdateReadiness(),
+    // ...
+  ],
+};
+```
+
+#### Release & channel model — 同じチャンネルのまま / チャンネルが変わる
+
+配信は各アプリの `.github/workflows/live-update.yml` が `vX.Y.Z` / `vX.Y.Z-N` タグ push で発火し、共有 composite action（[`ionic-angular-library/.github/actions`](https://github.com/rdlabo-team/ionic-angular-library/tree/main/.github/actions) の `validate-live-update` / `publish-live-update`）でバリデーション → バンドル署名 → アップロードまで自動実行します。
+
+配信チャンネルは常に **`production-<ネイティブビルド番号>`**（Android `versionCode` = iOS `CURRENT_PROJECT_VERSION`、両者は一致必須）です。Live Update は「同じネイティブバイナリの上で JS/HTML/CSS だけを差し替える」仕組みなので、互換な端末にしか配信されないよう **ビルド番号ごとにチャンネルを分離** します（アップロード時に `--android-min/max` `--ios-min/max` をビルド番号へ固定）。
+
+- **同じチャンネルのまま = Live Update で配信できる**
+  ネイティブビルド番号を **変えない** リリース。JS/HTML/CSS のみの変更（バグ修正・文言・UI・ロジック、ネイティブに影響しない npm 依存）。同じ `major.minor` で patch を上げるだけならチャンネルは据え置きで、既存ユーザーはストア更新なしで最新化されます。
+  例）`9.0.0`（build `9000000`）→ Web だけ直して `9.0.1` → どちらも `production-9000000`。
+
+- **チャンネルが変わる = ストアリリースが必要**
+  ネイティブビルド番号を **上げる** リリース。次のいずれかを含む場合：`app/android/**`・`app/ios/**`・`capacitor.config.ts`（または `.json`）の変更、または `@capacitor/*` / `@capawesome/capacitor-live-update` の **バージョン変更**。
+  例）ネイティブ更新で `9.1.0`（build `9100000`）→ 新チャンネル `production-9100000`。古い `9.0.x` 端末は `production-9000000` のまま影響を受けません。
+
+ビルド番号は `major`・`minor` を先頭にエンコードします：`floor(ビルド番号 / 10000) === major * 100 + minor`。
+
+| バージョン | ビルド番号 | チャンネル            |
+| ---------- | ---------- | --------------------- |
+| `9.0.x`    | `9000000`  | `production-9000000`  |
+| `9.1.x`    | `9100000`  | `production-9100000`  |
+| `10.2.x`   | `10020000` | `production-10020000` |
+
+`validate-live-update` は、直前の互換タグからネイティブ/設定/プラグイン依存が変わっているのに **ビルド番号を上げていない**（＝ストア更新が必要なのに Live Update で流そうとしている）ケースを CI で失敗させ、事故を防ぎます。
+
+---
+
 ## Consumer Vitest setup notes
 
 When testing a consumer app that declares `@rdlabo/ionic-angular-kit` as a `file:` symlink dependency, add the following to your `vitest.config.ts`:
