@@ -29,7 +29,9 @@
     "release": "np --no-tests --no-publish",
     "lint": "ng lint",
     "test:watch": "ng test",
-    "test:actions": "vitest run --config .github/actions/vitest.config.mjs"
+    "test:actions": "vitest run --config .github/actions/vitest.config.mjs",
+    "e2e": "playwright test",
+    "e2e:ui": "playwright test --ui"
   },
   "private": false,
   "dependencies": {
@@ -71,6 +73,7 @@
     "@eslint/js": "^9.39.4",
     "@ionic/angular-toolkit": "^12.3.0",
     "@ionic/storage-angular": "^4.0.0",
+    "@playwright/test": "^1.57.0",
     "@rdlabo/capacitor-brotherprint": "^8.1.1",
     "angular-eslint": "21.4.0",
     "child_process": "^1.0.2",

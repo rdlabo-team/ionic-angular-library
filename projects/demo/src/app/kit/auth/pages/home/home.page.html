@@ -1,0 +1,18 @@
+<ion-header>
+  <ion-toolbar>
+    <ion-buttons slot="start">
+      <ion-back-button defaultHref="/main/kit/auth"></ion-back-button>
+    </ion-buttons>
+    <ion-title>Home</ion-title>
+  </ion-toolbar>
+</ion-header>
+
+<ion-content class="ion-padding">
+  <p data-testid="auth-home">Authorized area</p>
+  <p>
+    State: <strong data-testid="auth-state">{{ authState() }}</strong>
+  </p>
+  <p>Signed in as: <strong data-testid="auth-email-display">{{ email() }}</strong></p>
+
+  <ion-button data-testid="auth-signout" expand="block" color="medium" (click)="signOut()">Sign out</ion-button>
+</ion-content>

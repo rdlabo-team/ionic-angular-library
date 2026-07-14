@@ -26,6 +26,10 @@ export const routes: Routes = [
         loadChildren: () => import('../scroll-strategies/scroll-strategies.routes').then((m) => m.routes),
       },
       {
+        path: 'kit',
+        loadChildren: () => import('../kit/kit.routes').then((m) => m.routes),
+      },
+      {
         path: '',
         redirectTo: '/main/photo-editor',
         pathMatch: 'full',
