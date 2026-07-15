@@ -650,29 +650,29 @@ export const appConfig: ApplicationConfig = {
 };
 ```
 
-#### Release & channel model — 同じチャンネルのまま / チャンネルが変わる
+#### Release and channel model
 
-配信は各アプリの release workflow が `vX.Y.Z` / `vX.Y.Z-N` タグ push で発火し、共有 composite action（[`ionic-angular-library/.github/actions`](https://github.com/rdlabo-team/ionic-angular-library/tree/main/.github/actions) の `classify-mobile-release`）が直前のリリースタグと比較して配信経路を決めます。同じ `major.minor` の patch / prerelease は `publish-live-update`、`major` / `minor` 更新は Capawesome Cloud Native Builds + App Store Publishing へ進みます。
+Each app's release workflow runs when a `vX.Y.Z` or `vX.Y.Z-N` tag is pushed. The shared `classify-mobile-release` composite action in [`ionic-angular-library/.github/actions`](https://github.com/rdlabo-team/ionic-angular-library/tree/main/.github/actions) compares the tag with the previous release and selects the delivery path. Patch and prerelease updates within the same `major.minor` line use `publish-live-update`; major and minor updates use Capawesome Cloud Native Builds and App Store Publishing.
 
-配信チャンネルは常に **`production-<ネイティブビルド番号>`**（Android `versionCode` = iOS `CURRENT_PROJECT_VERSION`、両者は一致必須）です。Live Update は「同じネイティブバイナリの上で JS/HTML/CSS だけを差し替える」仕組みなので、互換な端末にしか配信されないよう **ビルド番号ごとにチャンネルを分離** します（アップロード時に `--android-min/max` `--ios-min/max` をビルド番号へ固定）。
+Every delivery channel is named **`production-<native-build-number>`**, where the Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` must match. A Live Update replaces only the JS, HTML, and CSS on an existing native binary, so channels are isolated by build number and updates reach only compatible devices. The upload pins `--android-min/max` and `--ios-min/max` to that build number.
 
-- **同じチャンネルのまま = Live Update で配信できる**
-  ネイティブビルド番号を **変えない** リリース。JS/HTML/CSS のみの変更（バグ修正・文言・UI・ロジック、ネイティブに影響しない npm 依存）。同じ `major.minor` で patch を上げるだけならチャンネルは据え置きで、既存ユーザーはストア更新なしで最新化されます。
-  例）`9.0.0`（build `9000000`）→ Web だけ直して `9.0.1` → どちらも `production-9000000`。
+- **Same channel: eligible for Live Update**
+  Keep the native build number unchanged. This path is for JS, HTML, and CSS changes only, including bug fixes, copy, UI, application logic, and npm dependencies that do not affect native code. Incrementing only the patch version within the same `major.minor` line keeps the channel unchanged, so existing users receive the update without installing a new store build.
+  Example: `9.0.0` (build `9000000`) followed by a web-only `9.0.1` update; both use `production-9000000`.
 
-- **チャンネルが変わる = ストアリリースが必要**
-  `major` または `minor` とネイティブビルド番号を **上げる** リリース。`app/android/**`・`app/ios/**`・`capacitor.config.ts`（または `.json`）の変更、または Capacitor plugin のバージョン変更はこのリリースへ含めます。iOS は TestFlight、Android は Google Play Internal track へ自動送信し、本番昇格は各ストアで行います。
-  例）ネイティブ更新で `9.1.0`（build `9010000`）→ 新チャンネル `production-9010000`。古い `9.0.x` 端末は `production-9000000` のまま影響を受けません。
+- **New channel: store release required**
+  Increment the major or minor version and the native build number. Include changes to `app/android/**`, `app/ios/**`, `capacitor.config.ts` (or `.json`), and Capacitor plugin versions in this release type. The workflow submits iOS builds to TestFlight and Android builds to the Google Play Internal track; promotion to production happens in each store.
+  Example: a native update to `9.1.0` (build `9010000`) creates `production-9010000`. Devices still running `9.0.x` remain on `production-9000000` and are unaffected.
 
-ビルド番号は `major`・`minor` を先頭にエンコードします：`floor(ビルド番号 / 10000) === major * 100 + minor`。
+The build number encodes the major and minor versions at the front: `floor(buildNumber / 10000) === major * 100 + minor`.
 
-| バージョン | ビルド番号 | チャンネル            |
-| ---------- | ---------- | --------------------- |
-| `9.0.x`    | `9000000`  | `production-9000000`  |
-| `9.1.x`    | `9010000`  | `production-9010000`  |
-| `10.2.x`   | `10020000` | `production-10020000` |
+| Version  | Build number | Channel               |
+| -------- | ------------ | --------------------- |
+| `9.0.x`  | `9000000`    | `production-9000000`  |
+| `9.1.x`  | `9010000`    | `production-9010000`  |
+| `10.2.x` | `10020000`   | `production-10020000` |
 
-`classify-mobile-release` は、patch / prerelease にネイティブ・設定・Capacitor依存の変更が含まれていたら CI を失敗させ、`major` / `minor` bump を要求します。ストアリリースではタグと native marketing version の一致、Android/iOSのversion/build一致、ビルド番号の増加と上記エンコードを検証します。`validate-live-update` は既存consumer向けに互換維持します。
+`classify-mobile-release` fails CI when a patch or prerelease contains native, configuration, or Capacitor dependency changes and requires a major or minor bump instead. For store releases, it verifies that the tag matches the native marketing version, the Android and iOS versions and build numbers agree, the build number increases, and the encoding above is valid. `validate-live-update` remains available for compatibility with existing consumers.
 
 ---
 
