@@ -1,0 +1,32 @@
+name: Classify mobile release
+description: Route a tagged Capacitor release to Live Update or native store publishing.
+inputs:
+  app-path:
+    description: Path to the Capacitor app from the repository root.
+    required: false
+    default: app
+  tag:
+    description: Release tag in vX.Y.Z or vX.Y.Z-N format.
+    required: true
+outputs:
+  release_kind:
+    description: Either live-update or store.
+    value: ${{ steps.classify.outputs.release_kind }}
+  version:
+    description: Normalized release version without the v prefix.
+    value: ${{ steps.classify.outputs.version }}
+  build_number:
+    description: Shared Android and iOS native build number.
+    value: ${{ steps.classify.outputs.build_number }}
+  production_channel:
+    description: Versioned production channel for the native build.
+    value: ${{ steps.classify.outputs.production_channel }}
+runs:
+  using: composite
+  steps:
+    - id: classify
+      shell: bash
+      env:
+        INPUT_APP_PATH: ${{ inputs.app-path }}
+        INPUT_TAG: ${{ inputs.tag }}
+      run: node "$GITHUB_ACTION_PATH/classify-mobile-release.mjs" --app-path "$INPUT_APP_PATH" --tag "$INPUT_TAG"
