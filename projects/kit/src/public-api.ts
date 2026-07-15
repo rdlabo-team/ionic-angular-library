@@ -16,6 +16,7 @@ export * from './lib/overlay/overlay-config';
 export * from './lib/overlay/kit-overlay.controller';
 export * from './lib/overlay/kit-loading.controller';
 export * from './lib/overlay/kit-reload-alert.controller';
+export * from './lib/overlay/kit-maintenance.controller';
 export * from './lib/overlay/kit-auth-failed-alert';
 export * from './lib/overlay/kit-language-action-sheet';
 

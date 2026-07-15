@@ -345,6 +345,24 @@ describe('kitAuthInterceptor — retry policy & classification', () => {
     expect(config.onServerBusy).toHaveBeenCalledWith(503, undefined);
   });
 
+  it('503 + code MAINTENANCE → onMaintenance, no onServerBusy, no retry', async () => {
+    const config = makeConfig({ onServerBusy: vi.fn(), onMaintenance: vi.fn() });
+    setupInterceptor(config);
+    const next = vi.fn().mockReturnValue(
+      throwError(
+        () =>
+          new HttpErrorResponse({
+            status: 503,
+            error: { statusCode: 503, message: 'Service temporarily unavailable', code: 'MAINTENANCE' },
+          }),
+      ),
+    );
+    await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toThrow();
+    expect(config.onMaintenance).toHaveBeenCalledTimes(1);
+    expect(config.onServerBusy).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1); // GET would otherwise retry 503
+  });
+
   it('429 → onRateLimited with the Retry-After seconds', async () => {
     const config = makeConfig({ onRateLimited: vi.fn() });
     setupInterceptor(config);

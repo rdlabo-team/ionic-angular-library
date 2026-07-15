@@ -48,6 +48,19 @@ const MAX_RETRIES = 2;
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
+ * True when the error is the fleet maintenance short-circuit (`503` + body `code: 'MAINTENANCE'`).
+ *
+ * @remarks
+ * Matches Angular `HttpErrorResponse` as `error.error?.code === 'MAINTENANCE'` (body top-level
+ * `code`). Must not be retried and must not fall through to {@link KitHttpConfig.onServerBusy}.
+ *
+ * @param error - The failed response.
+ * @returns Whether this is a maintenance response.
+ */
+export const isMaintenanceError = (error: HttpErrorResponse): boolean =>
+  error.status === 503 && error.error?.code === 'MAINTENANCE';
+
+/**
  * Parse a `Retry-After` header (delta-seconds or an HTTP-date) into milliseconds, or `null` when it
  * is absent or unparseable.
  *
@@ -187,12 +200,22 @@ export interface KitHttpConfig {
    * @remarks
    * Optional; defaults to a no-op. Distinct from {@link KitHttpConfig.onNetworkError} — the device's
    * connection is fine, the server is momentarily unavailable — so the app can say "server busy, try
-   * again shortly" rather than prompt a reload.
+   * again shortly" rather than prompt a reload. **Not** called for fleet maintenance (`503` with
+   * `error.error?.code === 'MAINTENANCE'`) — that uses {@link KitHttpConfig.onMaintenance}.
    *
    * @param status - `502`, `503`, or `504`.
    * @param retryAfterSeconds - The server's `Retry-After` hint in seconds, when provided.
    */
   onServerBusy?(status: number, retryAfterSeconds?: number): void;
+  /**
+   * UX hook for fleet maintenance: HTTP `503` whose body has `code: 'MAINTENANCE'`.
+   *
+   * @remarks
+   * Optional; defaults to a no-op. Fired **without retries** (maintenance is intentional, not
+   * transient). Wire to {@link KitMaintenanceController.present} with the wait SSE URL so the lock
+   * overlay auto-dismisses when maintenance ends.
+   */
+  onMaintenance?(): void;
   /**
    * UX hook for a `429 Too Many Requests` response, fired after retries are exhausted.
    *
@@ -289,6 +312,8 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
     });
   } else if (status === 429) {
     config.onRateLimited?.(retryAfterSeconds);
+  } else if (isMaintenanceError(error)) {
+    config.onMaintenance?.();
   } else if ([502, 503, 504].includes(status)) {
     config.onServerBusy?.(status, retryAfterSeconds);
   } else if ([400, 422, 500].includes(status) && error.error?.message) {
@@ -313,8 +338,8 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
  *    When the device is offline it stops retrying immediately.
  * 5. On the final error, `offlineFallback` is consulted first; otherwise the error is classified by
  *    status (see {@link dispatchError}): `401`→`onUnauthorized`, `403`→`onForbidden`, `0`→
- *    `onNetworkError` (when connected), `429`→`onRateLimited`, `502`/`503`/`504`→`onServerBusy`, and
- *    `400`/`422`/`500` with a body message→`onServerError`.
+ *    `onNetworkError` (when connected), `429`→`onRateLimited`, maintenance `503`→`onMaintenance`,
+ *    other `502`/`503`/`504`→`onServerBusy`, and `400`/`422`/`500` with a body message→`onServerError`.
  *
  * @param request - The outgoing request.
  * @param next - The next handler in the interceptor chain.
@@ -367,7 +392,8 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
                   return throwError(() => error);
                 }
                 // Only replay idempotent requests, and only on a transient status.
-                if (!retryable || !RETRYABLE_STATUSES.includes(error.status)) {
+                // Maintenance 503 is intentional — never retry; go straight to onMaintenance.
+                if (!retryable || !RETRYABLE_STATUSES.includes(error.status) || isMaintenanceError(error)) {
                   return throwError(() => error);
                 }
                 // Short linear backoff (500ms, 1000ms, …) plus jitter to de-correlate a fleet of
