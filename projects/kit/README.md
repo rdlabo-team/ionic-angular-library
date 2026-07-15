@@ -23,23 +23,23 @@ Kit shares the repo `v*` release line with the other libraries (see root README 
 
 ### Peer dependencies
 
-| Package | Version |
-|---|---|
-| `@angular/common` | `^21.0.0` |
-| `@angular/core` | `^21.0.0` |
-| `@angular/router` | `^21.0.0` |
-| `@ionic/angular` | `^8.0.0` |
-| `@ionic/storage-angular` | `^4.0.0` |
-| `@capacitor/core` | `>=6.0.0 <9.0.0` |
-| `@capacitor/haptics` | `>=6.0.0 <9.0.0` |
-| `@capacitor/keyboard` | `>=6.0.0 <9.0.0` |
-| `@capacitor/network` | `>=6.0.0 <9.0.0` |
-| `@capacitor/preferences` | `>=6.0.0 <9.0.0` |
-| `@capacitor/status-bar` | `>=6.0.0 <9.0.0` |
+| Package                              | Version          |
+| ------------------------------------ | ---------------- |
+| `@angular/common`                    | `^21.0.0`        |
+| `@angular/core`                      | `^21.0.0`        |
+| `@angular/router`                    | `^21.0.0`        |
+| `@ionic/angular`                     | `^8.0.0`         |
+| `@ionic/storage-angular`             | `^4.0.0`         |
+| `@capacitor/core`                    | `>=6.0.0 <9.0.0` |
+| `@capacitor/haptics`                 | `>=6.0.0 <9.0.0` |
+| `@capacitor/keyboard`                | `>=6.0.0 <9.0.0` |
+| `@capacitor/network`                 | `>=6.0.0 <9.0.0` |
+| `@capacitor/preferences`             | `>=6.0.0 <9.0.0` |
+| `@capacitor/status-bar`              | `>=6.0.0 <9.0.0` |
 | `@capacitor-community/in-app-review` | `>=6.0.0 <9.0.0` |
-| `@rdlabo/capacitor-brotherprint` | `>=6.0.0 <9.0.0` |
-| `dom-to-image-more` | `^3.0.0` |
-| `rxjs` | `^7.8.0` |
+| `@rdlabo/capacitor-brotherprint`     | `>=6.0.0 <9.0.0` |
+| `dom-to-image-more`                  | `^3.0.0`         |
+| `rxjs`                               | `^7.8.0`         |
 
 Feature-scoped peers are only needed by the features that use them (`status-bar` → `KitThemeController`; `preferences` + `in-app-review` → `kitRequestReview`; `capacitor-brotherprint` + `dom-to-image-more` → the printer helpers); an app that doesn't use a feature can ignore its unmet-peer warning.
 
@@ -61,9 +61,7 @@ import { IonicStorageModule } from '@ionic/storage-angular';
 import { importProvidersFrom } from '@angular/core';
 
 export const appConfig: ApplicationConfig = {
-  providers: [
-    importProvidersFrom(IonicStorageModule.withConfig({ name: '__mydb' })),
-  ],
+  providers: [importProvidersFrom(IonicStorageModule.withConfig({ name: '__mydb' }))],
 };
 ```
 
@@ -185,13 +183,13 @@ alertConfirm(options: {
 
 `watchKeyboard: true` (on `presentModal` options) expands a bottom sheet to full height when the native keyboard appears (iOS/Android only; no-op on web).
 
-**How `presentModal` decides required vs. optional props.** Props are inferred from the component's `input()` fields, and whether each prop is **required** or **optional** is decided by a single rule: *does the input's type include `undefined`?* A default value is not "optional" — providing a default removes `undefined` from the input's type, so a defaulted input becomes a **required** prop.
+**How `presentModal` decides required vs. optional props.** Props are inferred from the component's `input()` fields, and whether each prop is **required** or **optional** is decided by a single rule: _does the input's type include `undefined`?_ A default value is not "optional" — providing a default removes `undefined` from the input's type, so a defaulted input becomes a **required** prop.
 
-| Declaration              | Input type      | Includes `undefined`? | Prop                              |
-| ------------------------ | --------------- | --------------------- | --------------------------------- |
-| `input.required<T>()`    | `T`             | No                    | required                          |
-| `input<T>(defaultValue)` | `T`             | No                    | **required** ← a default makes it required |
-| `input<T>()` (no arg)    | `T \| undefined`| Yes                   | optional                          |
+| Declaration              | Input type       | Includes `undefined`? | Prop                                       |
+| ------------------------ | ---------------- | --------------------- | ------------------------------------------ |
+| `input.required<T>()`    | `T`              | No                    | required                                   |
+| `input<T>(defaultValue)` | `T`              | No                    | **required** ← a default makes it required |
+| `input<T>()` (no arg)    | `T \| undefined` | Yes                   | optional                                   |
 
 To make a prop **optional**, drop the default and use a bare `input<T>()` (its type is `T | undefined`), then apply your fallback where you read it (e.g. `this.enabled() ?? true`). If a component has at least one required input, the `componentProps` argument itself becomes mandatory; if it has no required inputs, `componentProps` may be omitted; a component with no `input()` fields at all accepts loose, untyped props.
 
@@ -216,11 +214,11 @@ This centralizes presentation options, keeps component props and dismiss data ty
 
 Functional `CanActivateFn` guards for a four-state auth model:
 
-| State | Meaning |
-|---|---|
-| `'user'` | Fully authenticated |
-| `'confirm'` | Authenticated but email confirmation pending |
-| `'required'` | Not authenticated |
+| State         | Meaning                                              |
+| ------------- | ---------------------------------------------------- |
+| `'user'`      | Fully authenticated                                  |
+| `'confirm'`   | Authenticated but email confirmation pending         |
+| `'required'`  | Not authenticated                                    |
 | `'anonymous'` | Anonymous login active (can be prompted to register) |
 
 **Convention:** every redirect path is supplied via `provideKitAuth`; the kit does not hard-code any routes. `authState` and `redirects` are required. The app-specific hooks `onAuthorized` / `onUnauthenticated` are **optional** and default to `true` (allow the authenticated user through) / `false` (fall through to the `whenUnauthorized` redirect), so an app only supplies the ones with real logic.
@@ -236,12 +234,12 @@ export const appConfig: ApplicationConfig = {
     provideKitAuth(() => {
       const auth = inject(AuthService);
       return {
-        authState: () => auth.state$,   // Observable<KitAuthState>
+        authState: () => auth.state$, // Observable<KitAuthState>
         redirects: {
-          whenAuthorized: '/home',          // kitRequiredUnauthorizedGuard
-          whenConfirming: '/auth/confirm',  // kitRequiredUnauthorizedGuard
-          whenNotConfirming: '/auth/signin',// kitRequireConfirmingGuard
-          whenUnauthorized: '/auth',        // kitRequireAuthorizedGuard
+          whenAuthorized: '/home', // kitRequiredUnauthorizedGuard
+          whenConfirming: '/auth/confirm', // kitRequiredUnauthorizedGuard
+          whenNotConfirming: '/auth/signin', // kitRequireConfirmingGuard
+          whenUnauthorized: '/auth', // kitRequireAuthorizedGuard
         },
         // onAuthorized / onUnauthenticated omitted → defaults (allow / redirect).
         // Supply onAuthorized only when 'user' needs extra work (token login, permissions):
@@ -277,11 +275,7 @@ const logged = await auth.tokenLogin().catch(async (e) => {
 
 ```typescript
 // routes.ts
-import {
-  kitRequiredUnauthorizedGuard,
-  kitRequireConfirmingGuard,
-  kitRequireAuthorizedGuard,
-} from '@rdlabo/ionic-angular-kit';
+import { kitRequiredUnauthorizedGuard, kitRequireConfirmingGuard, kitRequireAuthorizedGuard } from '@rdlabo/ionic-angular-kit';
 
 export const routes: Routes = [
   {
@@ -364,6 +358,7 @@ export const appConfig: ApplicationConfig = {
 ```
 
 **Error dispatch** (after retries, in `catchError`):
+
 1. `offlineFallback` non-null → return fallback observable (no further hooks called)
 2. `401` → `onUnauthorized` · `403` → `onForbidden`
 3. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
@@ -417,15 +412,10 @@ Sign-in / sign-up conveniences on `ion-input`:
 Fleet apps typically `storage.clear()` on sign-out. Pass keys that must survive (e.g. the last sign-in email):
 
 ```typescript
-import {
-  KIT_LAST_AUTH_EMAIL_KEY,
-  KIT_THEME_STORAGE_KEY,
-  kitClearStoragePreservingKeys,
-} from '@rdlabo/ionic-angular-kit';
+import { KIT_LAST_AUTH_EMAIL_KEY, KIT_THEME_STORAGE_KEY, kitClearStoragePreservingKeys } from '@rdlabo/ionic-angular-kit';
 
 await kitSignOut(auth, {
-  success: () =>
-    kitClearStoragePreservingKeys(this.storage, [KIT_LAST_AUTH_EMAIL_KEY, KIT_THEME_STORAGE_KEY]),
+  success: () => kitClearStoragePreservingKeys(this.storage, [KIT_LAST_AUTH_EMAIL_KEY, KIT_THEME_STORAGE_KEY]),
 });
 ```
 
@@ -542,7 +532,10 @@ import { kitPresentLanguageActionSheet } from '@rdlabo/ionic-angular-kit';
 
 await kitPresentLanguageActionSheet(inject(ActionSheetController), {
   header: $localize`言語設定`,
-  locales: [{ text: 'English', data: 'en-US' }, { text: '日本語', data: 'ja' }],
+  locales: [
+    { text: 'English', data: 'en-US' },
+    { text: '日本語', data: 'ja' },
+  ],
   cancelText: $localize`キャンセル`,
   currentLocale: normalizedLocale,
   currentPath: this.#router.url,
@@ -567,7 +560,9 @@ import { kitDomToPng, kitBuildBrotherPrintSettings } from '@rdlabo/ionic-angular
 
 const png = await kitDomToPng(this.preview().nativeElement, { rotate: true });
 const settings = kitBuildBrotherPrintSettings({
-  modelName, printBase64: png, label,
+  modelName,
+  printBase64: png,
+  label,
   numberOfCopies: printOptions.printNum,
   halftoneThreshold: printOptions.halftoneThreshold,
 });
@@ -591,7 +586,11 @@ provideKitFirebaseAnalytics(),
 ```typescript
 import { inject, Injectable } from '@angular/core';
 import {
-  KIT_FIREBASE_AUTH, kitSignIn, kitSignOut, kitResolveAuthStatus, kitReauthWithRetry,
+  KIT_FIREBASE_AUTH,
+  kitSignIn,
+  kitSignOut,
+  kitResolveAuthStatus,
+  kitReauthWithRetry,
 } from '@rdlabo/ionic-angular-kit/auth-firebase';
 import { updatePassword } from 'firebase/auth'; // escape hatch for the reauth mutation
 
@@ -653,7 +652,7 @@ export const appConfig: ApplicationConfig = {
 
 #### Release & channel model — 同じチャンネルのまま / チャンネルが変わる
 
-配信は各アプリの `.github/workflows/live-update.yml` が `vX.Y.Z` / `vX.Y.Z-N` タグ push で発火し、共有 composite action（[`ionic-angular-library/.github/actions`](https://github.com/rdlabo-team/ionic-angular-library/tree/main/.github/actions) の `validate-live-update` / `publish-live-update`）でバリデーション → バンドル署名 → アップロードまで自動実行します。
+配信は各アプリの release workflow が `vX.Y.Z` / `vX.Y.Z-N` タグ push で発火し、共有 composite action（[`ionic-angular-library/.github/actions`](https://github.com/rdlabo-team/ionic-angular-library/tree/main/.github/actions) の `classify-mobile-release`）が直前のリリースタグと比較して配信経路を決めます。同じ `major.minor` の patch / prerelease は `publish-live-update`、`major` / `minor` 更新は Capawesome Cloud Native Builds + App Store Publishing へ進みます。
 
 配信チャンネルは常に **`production-<ネイティブビルド番号>`**（Android `versionCode` = iOS `CURRENT_PROJECT_VERSION`、両者は一致必須）です。Live Update は「同じネイティブバイナリの上で JS/HTML/CSS だけを差し替える」仕組みなので、互換な端末にしか配信されないよう **ビルド番号ごとにチャンネルを分離** します（アップロード時に `--android-min/max` `--ios-min/max` をビルド番号へ固定）。
 
@@ -662,18 +661,18 @@ export const appConfig: ApplicationConfig = {
   例）`9.0.0`（build `9000000`）→ Web だけ直して `9.0.1` → どちらも `production-9000000`。
 
 - **チャンネルが変わる = ストアリリースが必要**
-  ネイティブビルド番号を **上げる** リリース。次のいずれかを含む場合：`app/android/**`・`app/ios/**`・`capacitor.config.ts`（または `.json`）の変更、または `@capacitor/*` / `@capawesome/capacitor-live-update` の **バージョン変更**。
-  例）ネイティブ更新で `9.1.0`（build `9100000`）→ 新チャンネル `production-9100000`。古い `9.0.x` 端末は `production-9000000` のまま影響を受けません。
+  `major` または `minor` とネイティブビルド番号を **上げる** リリース。`app/android/**`・`app/ios/**`・`capacitor.config.ts`（または `.json`）の変更、または Capacitor plugin のバージョン変更はこのリリースへ含めます。iOS は TestFlight、Android は Google Play Internal track へ自動送信し、本番昇格は各ストアで行います。
+  例）ネイティブ更新で `9.1.0`（build `9010000`）→ 新チャンネル `production-9010000`。古い `9.0.x` 端末は `production-9000000` のまま影響を受けません。
 
 ビルド番号は `major`・`minor` を先頭にエンコードします：`floor(ビルド番号 / 10000) === major * 100 + minor`。
 
 | バージョン | ビルド番号 | チャンネル            |
 | ---------- | ---------- | --------------------- |
 | `9.0.x`    | `9000000`  | `production-9000000`  |
-| `9.1.x`    | `9100000`  | `production-9100000`  |
+| `9.1.x`    | `9010000`  | `production-9010000`  |
 | `10.2.x`   | `10020000` | `production-10020000` |
 
-`validate-live-update` は、直前の互換タグからネイティブ/設定/プラグイン依存が変わっているのに **ビルド番号を上げていない**（＝ストア更新が必要なのに Live Update で流そうとしている）ケースを CI で失敗させ、事故を防ぎます。
+`classify-mobile-release` は、patch / prerelease にネイティブ・設定・Capacitor依存の変更が含まれていたら CI を失敗させ、`major` / `minor` bump を要求します。ストアリリースではタグと native marketing version の一致、Android/iOSのversion/build一致、ビルド番号の増加と上記エンコードを検証します。`validate-live-update` は既存consumer向けに互換維持します。
 
 ---
 
@@ -685,14 +684,7 @@ When testing a consumer app that declares `@rdlabo/ionic-angular-kit` as a `file
 // vitest.config.ts
 export default defineConfig({
   resolve: {
-    dedupe: [
-      '@angular/core',
-      '@angular/common',
-      '@angular/router',
-      '@ionic/angular',
-      '@ionic/core',
-      'rxjs',
-    ],
+    dedupe: ['@angular/core', '@angular/common', '@angular/router', '@ionic/angular', '@ionic/core', 'rxjs'],
   },
   test: {
     server: {
@@ -701,7 +693,7 @@ export default defineConfig({
           /@ionic\/angular/,
           /@ionic\/core/,
           /ionicons/,
-          /@rdlabo\/ionic-angular-kit/,  // inline the kit itself
+          /@rdlabo\/ionic-angular-kit/, // inline the kit itself
         ],
       },
     },
