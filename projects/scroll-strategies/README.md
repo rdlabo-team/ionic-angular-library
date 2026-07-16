@@ -14,8 +14,9 @@ This is a simple coding concept:
 
 Use `[itemDynamicSizes]` directive instead of `[itemSize]` or `[autosize]` directive. `[itemDynamicSizes]` value's type is `itemDynamicSize[]`.
 
-This library is based largely on this blog: https://dev.to/georgii/virtual-scrolling-of-content-with-variable-height-with-angular-3a52
+Every data item must have one corresponding `itemDynamicSizes` entry in the same order. Each `itemSize` must be a finite number greater than zero. If Angular updates the data and size signals in separate turns, the strategy keeps the last complete geometry until their lengths match; it never estimates unknown heights.
 
+This library is based largely on this blog: https://dev.to/georgii/virtual-scrolling-of-content-with-variable-height-with-angular-3a52
 
 ## Installation
 
@@ -66,7 +67,6 @@ Other than this, it works the same way as `@angular/cdk/scrolling`.
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/advanced
 - Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-advanced
-
 
 ### Reverse Usage
 
@@ -120,8 +120,10 @@ div.reverse-items {
 }
 ```
 
-__In Reverse Scroll, CdkVirtualScrollViewport's measureScrollOffset does not work. Please use the scrollOffset of this directive.__
-https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts#L383-L386
+**In Reverse Scroll, CdkVirtualScrollViewport's measureScrollOffset does not work. Please use the scrollOffset of this directive.**
+https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts
+
+The reverse layout uses negative native `scrollTop` values. `scrollToIndex()` accepts a logical item index as usual and converts its cumulative offset to that native coordinate internally.
 
 ### Optional
 
@@ -134,6 +136,7 @@ import { DynamicSizeVirtualScrollService } from '@rdlabo/ngx-cdk-scroll-strategi
 Detail is here: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll.service.ts
 
 ## FQA
+
 ### Why don't use `autosize` directive?
 
 `autosize` directive use average item size. This is not support "item size is changed" "item is removed". Because don't have item size cache.

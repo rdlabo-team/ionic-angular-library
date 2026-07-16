@@ -9,7 +9,7 @@ import { Observable, Subject } from 'rxjs';
 import { distinctUntilChanged } from 'rxjs/operators';
 import { CdkVirtualScrollViewport, VIRTUAL_SCROLL_STRATEGY, VirtualScrollStrategy } from '@angular/cdk/scrolling';
 
-/** Virtual scrolling strategy for lists with items of known fixed size. */
+/** Virtual scrolling strategy for lists whose item sizes are known in advance. */
 export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
   private readonly _scrolledIndexChange = new Subject<number>();
 
@@ -22,6 +22,10 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
   /** The size of the items in the virtually scrolling list. */
   private _itemDynamicSize: itemDynamicSize[];
 
+  /** Cumulative item boundaries. Rebuilt only when the size model or data length changes. */
+  private _prefixSums: number[] = [0];
+  private _prefixDataLength = -1;
+
   /** The minimum amount of buffer rendered beyond the viewport (in pixels). */
   private _minBufferPx: number;
 
@@ -30,10 +34,9 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
 
   /** This is added for reverse virtual scroll **/
   private _isReverse: boolean;
-  measureScrollOffset = 0;
 
-  /** This is added for change dataLength **/
-  private _latestDataLength = 0;
+  /** Last normalized scroll offset, exposed because CDK cannot measure the reverse layout. */
+  measureScrollOffset = 0;
 
   /**
    * @param itemSize The size of the items in the virtually scrolling list.
@@ -42,6 +45,7 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
    * @param isReverse Added from rdlabo for reverse
    */
   constructor(itemSize: itemDynamicSize[], minBufferPx: number, maxBufferPx: number, isReverse: boolean) {
+    validateConfiguration(itemSize, minBufferPx, maxBufferPx);
     this._itemDynamicSize = itemSize;
     this._minBufferPx = minBufferPx;
     this._maxBufferPx = maxBufferPx;
@@ -72,10 +76,9 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
    * @param isReverse
    */
   updateItemAndBufferSize(itemDynamicSize: itemDynamicSize[], minBufferPx: number, maxBufferPx: number, isReverse: boolean) {
-    if (maxBufferPx < minBufferPx) {
-      throw Error('CDK virtual scroll: maxBufferPx must be greater than or equal to minBufferPx');
-    }
+    validateConfiguration(itemDynamicSize, minBufferPx, maxBufferPx);
     this._itemDynamicSize = itemDynamicSize;
+    this._prefixDataLength = -1;
     this._minBufferPx = minBufferPx;
     this._maxBufferPx = maxBufferPx;
     this._isReverse = isReverse;
@@ -111,8 +114,13 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
    */
   scrollToIndex(index: number, behavior: ScrollBehavior): void {
     if (this._viewport) {
-      const size = sumItemSize(this._itemDynamicSize, index);
-      this._viewport.scrollToOffset(size, behavior);
+      if (!this._hasCompleteSizeModel(this._viewport.getDataLength())) {
+        return;
+      }
+      const prefixSums = this._getPrefixSums(this._viewport.getDataLength());
+      const boundedIndex = Math.min(prefixSums.length - 1, Math.max(0, Math.trunc(index)));
+      const offset = prefixSums[boundedIndex];
+      this._viewport.scrollToOffset(this._isReverse ? -offset : offset, behavior);
     }
   }
 
@@ -122,8 +130,17 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
       return;
     }
 
-    const size = sumItemSize(this._itemDynamicSize, this._viewport.getDataLength());
-    this._viewport.setTotalContentSize(size);
+    const dataLength = this._viewport.getDataLength();
+    if (dataLength === 0) {
+      this._viewport.setTotalContentSize(0);
+      return;
+    }
+    if (!this._hasCompleteSizeModel(dataLength)) {
+      return;
+    }
+
+    const prefixSums = this._getPrefixSums(dataLength);
+    this._viewport.setTotalContentSize(prefixSums[prefixSums.length - 1]);
   }
 
   /** Update the viewport's rendered range. */
@@ -142,116 +159,79 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
     const viewportSize = this._viewport.getViewportSize();
     const dataLength = this._viewport.getDataLength();
 
+    if (dataLength === 0) {
+      this._viewport.setRenderedRange({ start: 0, end: 0 });
+      this._viewport.setRenderedContentOffset(0);
+      this.measureScrollOffset = 0;
+      this._scrolledIndexChange.next(0);
+      return;
+    }
+
+    // Angular can update cdkVirtualForOf and itemDynamicSizes in separate turns. A partial size
+    // model cannot define an exact total height or offset, so retain the last complete geometry
+    // until both lengths agree. On first attachment, render one item so a measuring consumer can
+    // obtain its initial size.
+    if (!this._hasCompleteSizeModel(dataLength)) {
+      if (newRange.start === 0 && newRange.end === 0) {
+        this._viewport.setRenderedRange({ start: 0, end: 1 });
+        this._viewport.setRenderedContentOffset(0);
+      }
+      return;
+    }
+
+    const prefixSums = this._getPrefixSums(dataLength);
+    const totalContentSize = prefixSums[dataLength];
+
     // Reverse offset if _isReverse
-    let scrollOffset = !this._isReverse
+    const measuredScrollOffset = !this._isReverse
       ? this._viewport.measureScrollOffset()
       : Math.max(0, this._viewport.getElementRef().nativeElement.scrollTop * -1);
+    // The browser clamps the actual offset to this interval. Applying the same clamp immediately
+    // also makes a data-length shrink deterministic before the next native scroll event.
+    const scrollOffset = Math.min(Math.max(0, measuredScrollOffset), Math.max(0, totalContentSize - viewportSize));
+    const firstVisibleIndex = indexAtOffset(prefixSums, scrollOffset);
 
-    // let firstVisibleIndex = this._itemDynamicSize > 0 ? scrollOffset / this._itemDynamicSize : 0;
-    let firstVisibleIndex = this._itemDynamicSize.length > 0 ? Math.floor(calcIndex(this._itemDynamicSize, scrollOffset)) : 0;
-
-    // If user scrolls to the bottom of the list and data changes to a smaller list
-    if (newRange.end > dataLength) {
-      // We have to recalculate the first visible index based on new data length and viewport size.
-      const maxVisibleItems = Math.ceil(calcIndex(this._itemDynamicSize, viewportSize));
-      const newVisibleIndex = Math.max(0, Math.min(firstVisibleIndex, dataLength - maxVisibleItems));
-
-      // If first visible index changed we must update scroll offset to handle start/end buffers
-      // Current range must also be adjusted to cover the new position (bottom of new list).
-      if (firstVisibleIndex != newVisibleIndex) {
-        firstVisibleIndex = newVisibleIndex;
-        // scrollOffset = newVisibleIndex * this._itemDynamicSize;
-        scrollOffset = sumItemSize(this._itemDynamicSize, newVisibleIndex);
-        newRange.start = Math.floor(firstVisibleIndex);
-      }
-
-      newRange.end = Math.max(0, Math.min(dataLength, newRange.start + maxVisibleItems));
-    }
-
-    // const startBuffer = scrollOffset - newRange.start * this._itemDynamicSize;
-    const startBuffer = scrollOffset - sumItemSize(this._itemDynamicSize, newRange.start);
-    if (startBuffer < this._minBufferPx && newRange.start != 0) {
-      // const expandStart = Math.ceil((this._maxBufferPx - startBuffer) / this._itemDynamicSize);
-      const expandStart = Math.ceil(calcIndex(this._itemDynamicSize, this._maxBufferPx - startBuffer, newRange.start, true));
-      newRange.start = Math.max(0, newRange.start - expandStart);
-      // newRange.end = Math.min(dataLength, Math.ceil(firstVisibleIndex + (viewportSize + this._minBufferPx) / this._itemDynamicSize));
-      newRange.end = Math.min(
-        dataLength,
-        Math.ceil(firstVisibleIndex + calcIndex(this._itemDynamicSize, viewportSize + this._minBufferPx, firstVisibleIndex)) + 1, // firstVisibleIndexを削った影響
-      );
-
-      // console.log(
-      //   'expandStart',
-      //   firstVisibleIndex,
-      //   '"' + newRange.start + '-' + newRange.end + '"',
-      //   dataLength,
-      //   viewportSize + this._minBufferPx,
-      //   Math.ceil(firstVisibleIndex + calcIndex(this._itemDynamicSize, viewportSize + this._minBufferPx, firstVisibleIndex)),
-      // );
+    const rangeIsInvalid = newRange.start < 0 || newRange.start >= newRange.end || newRange.end > dataLength;
+    if (rangeIsInvalid) {
+      setRangeForBuffer(newRange, prefixSums, scrollOffset, viewportSize, this._maxBufferPx);
     } else {
-      // const endBuffer = newRange.end * this._itemSize - (scrollOffset + viewportSize);
-      const endBuffer = Math.max(sumItemSize(this._itemDynamicSize, newRange.end) - (scrollOffset + viewportSize), 0);
-      if (endBuffer < this._minBufferPx && newRange.end != dataLength) {
-        // const expandEnd = Math.ceil((this._maxBufferPx - endBuffer) / this._itemDynamicSize);
-        const expandEnd = Math.ceil(calcIndex(this._itemDynamicSize, this._maxBufferPx - endBuffer, newRange.end));
+      const startBuffer = scrollOffset - prefixSums[newRange.start];
+      const endBuffer = prefixSums[newRange.end] - (scrollOffset + viewportSize);
 
-        if (expandEnd > 0) {
-          newRange.end = Math.min(dataLength, newRange.end + expandEnd);
-          // Math.floor(firstVisibleIndex - this._minBufferPx / this._itemSize),
-          newRange.start = Math.max(
-            0,
-            Math.floor(firstVisibleIndex - calcIndex(this._itemDynamicSize, this._minBufferPx, firstVisibleIndex, true)),
-          );
-          // console.log(
-          //   'expandEnd',
-          //   firstVisibleIndex,
-          //   '"' + newRange.start + '-' + newRange.end + '"',
-          //   dataLength,
-          //   Math.ceil(firstVisibleIndex + calcIndex(this._itemDynamicSize, viewportSize + this._minBufferPx, firstVisibleIndex)),
-          // );
-        }
+      if (startBuffer < this._minBufferPx && newRange.start > 0) {
+        newRange.start = startIndexForOffset(prefixSums, scrollOffset - this._maxBufferPx);
+        newRange.end = endIndexForOffset(prefixSums, scrollOffset + viewportSize + this._minBufferPx);
+      } else if (endBuffer < this._minBufferPx && newRange.end < dataLength) {
+        newRange.end = endIndexForOffset(prefixSums, scrollOffset + viewportSize + this._maxBufferPx);
+        newRange.start = startIndexForOffset(prefixSums, scrollOffset - this._minBufferPx);
       }
-    }
-
-    if (newRange.start === 0 && newRange.end === 0 && dataLength > 0) {
-      // Have items but not rendered yet.
-      // This can happen when itemDynamicSizes is still empty while dataLength is already available.
-      // Use the same policy as the initial render in fixed-size virtual scroll: viewport + maxBuffer.
-      if (this._itemDynamicSize.length === 0) {
-        newRange.end = Math.min(dataLength, 1);
-      } else {
-        const initialEnd = Math.ceil(calcIndex(this._itemDynamicSize, viewportSize + this._maxBufferPx, 0)) + 1;
-        newRange.end = Math.min(dataLength, Math.max(1, initialEnd));
-      }
-    }
-
-    if (firstVisibleIndex === 0 && newRange.start > firstVisibleIndex) {
-      // This is bug fix. If newRange.start > firstVisibleIndex, can't visible '0'
-      newRange.start = firstVisibleIndex;
-    }
-
-    if (newRange.start > newRange.end) {
-      // This is bug fix. If newRange.start > newRange.end, it will cause infinite loop.
-      newRange.end = Math.min(
-        dataLength,
-        Math.ceil(newRange.start + calcIndex(this._itemDynamicSize, viewportSize + this._minBufferPx, newRange.start)),
-      );
     }
 
     this._viewport.setRenderedRange(newRange);
-    // this._viewport.setRenderedContentOffset(this._itemDynamicSize * newRange.start);
     if (!this._isReverse) {
-      this._viewport.setRenderedContentOffset(sumItemSize(this._itemDynamicSize, newRange.start));
+      this._viewport.setRenderedContentOffset(prefixSums[newRange.start]);
     } else {
-      let offset = Math.min(0, sumItemSize(this._itemDynamicSize, newRange.start) * -1);
+      let offset = Math.min(0, prefixSums[newRange.start] * -1);
       if (offset === 0) {
         offset = 0;
       }
       this._viewport.setRenderedContentOffset(offset);
     }
     this.measureScrollOffset = scrollOffset;
-    this._latestDataLength = dataLength;
     this._scrolledIndexChange.next(firstVisibleIndex);
+  }
+
+  private _getPrefixSums(dataLength: number): number[] {
+    const modeledLength = dataLength;
+    if (modeledLength !== this._prefixDataLength) {
+      this._prefixSums = createPrefixSums(this._itemDynamicSize, modeledLength);
+      this._prefixDataLength = modeledLength;
+    }
+    return this._prefixSums;
+  }
+
+  private _hasCompleteSizeModel(dataLength: number): boolean {
+    return this._itemDynamicSize.length === dataLength;
   }
 }
 
@@ -265,29 +245,27 @@ export function _dynamicSizeVirtualScrollStrategyFactory(fixedSizeDir: CdkDynami
   return fixedSizeDir._scrollStrategy;
 }
 
+/** Describes the exact pixel size of an item and any consumer-defined tracking metadata. */
 export type itemDynamicSize = { itemSize: number } & Record<string, string | number>;
 
+/** Returns the cumulative size of all items before `endIndex`. */
 export const sumItemSize = (dynamicSize: itemDynamicSize[], endIndex: number): number => {
   return dynamicSize.slice(0, endIndex).reduce((acc, item) => acc + item.itemSize, 0);
 };
 
 /**
- * TODO: 計算方法の見直し
- * 0.5 = 0個目の半分はマイナスの計算が生まれるため、1個目からカウント
+ * Retains the package's legacy pixel-to-index calculation for compatibility.
+ * @deprecated Use `calculateItemCountForPixelDistance` for mathematically continuous results.
  */
 export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number, startIndex = 0, isReverse = false): number => {
   let sum = 0;
   let diffIndex = 0;
-  const item = isReverse ? structuredClone(dynamicSize).reverse() : dynamicSize;
+  const item = isReverse ? [...dynamicSize].reverse() : dynamicSize;
   if (isReverse) {
     startIndex = dynamicSize.length - startIndex;
   }
-  const calcIndex = item.reduce((acc, currentValue, index) => {
-    if (index < startIndex) {
-      return acc;
-    }
-    if (acc !== -1) {
-      // 既に見つかった場合、何もしない
+  const calculatedIndex = item.reduce((acc, currentValue, index) => {
+    if (index < startIndex || acc !== -1) {
       return acc;
     }
     sum += currentValue.itemSize;
@@ -295,20 +273,124 @@ export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number,
       if (sum === itemSizeRange) {
         return index - startIndex;
       }
-
       const diff = sum - itemSizeRange;
       const getOver = item[index].itemSize - diff;
       diffIndex = getOver / item[index].itemSize;
       return Math.max(0, index - 1 + diffIndex - startIndex);
-    } else if (index === item.length - 1) {
+    }
+    if (index === item.length - 1) {
       return index - startIndex + 1;
     }
     return acc;
   }, -1);
-  return calcIndex === -1 ? 0 : calcIndex;
+  return calculatedIndex === -1 ? 0 : calculatedIndex;
 };
 
-/** A virtual scroll strategy that supports fixed-size items. */
+/**
+ * Converts a pixel distance into an exact fractional item count.
+ *
+ * Forward measurement starts at `startIndex`. Reverse measurement starts immediately before
+ * `startIndex`, matching the items that precede a rendered range. The result is bounded by the
+ * number of available items in that direction.
+ */
+export const calculateItemCountForPixelDistance = (
+  dynamicSize: itemDynamicSize[],
+  itemSizeRange: number,
+  startIndex = 0,
+  isReverse = false,
+): number => {
+  let remaining = Math.max(0, itemSizeRange);
+  let count = 0;
+  let index = isReverse ? Math.min(dynamicSize.length, Math.max(0, Math.trunc(startIndex))) - 1 : Math.max(0, Math.trunc(startIndex));
+  const step = isReverse ? -1 : 1;
+
+  while (index >= 0 && index < dynamicSize.length && remaining > 0) {
+    const size = dynamicSize[index].itemSize;
+    if (remaining < size) {
+      return count + remaining / size;
+    }
+    remaining -= size;
+    count += 1;
+    index += step;
+  }
+
+  return count;
+};
+
+const createPrefixSums = (dynamicSize: itemDynamicSize[], length: number): number[] => {
+  const prefixSums = new Array<number>(length + 1);
+  prefixSums[0] = 0;
+  for (let index = 0; index < length; index += 1) {
+    prefixSums[index + 1] = prefixSums[index] + dynamicSize[index].itemSize;
+  }
+  return prefixSums;
+};
+
+const lowerBound = (values: number[], target: number): number => {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle] < target) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+};
+
+const upperBound = (values: number[], target: number): number => {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle] <= target) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+};
+
+const indexAtOffset = (prefixSums: number[], offset: number): number => {
+  const itemCount = prefixSums.length - 1;
+  return Math.min(itemCount - 1, Math.max(0, upperBound(prefixSums, offset) - 1));
+};
+
+const startIndexForOffset = (prefixSums: number[], offset: number): number => {
+  const itemCount = prefixSums.length - 1;
+  return Math.min(itemCount - 1, Math.max(0, upperBound(prefixSums, offset) - 1));
+};
+
+const endIndexForOffset = (prefixSums: number[], offset: number): number => {
+  return Math.min(prefixSums.length - 1, Math.max(1, lowerBound(prefixSums, offset)));
+};
+
+const setRangeForBuffer = (
+  range: { start: number; end: number },
+  prefixSums: number[],
+  scrollOffset: number,
+  viewportSize: number,
+  bufferPx: number,
+): void => {
+  range.start = startIndexForOffset(prefixSums, scrollOffset - bufferPx);
+  range.end = endIndexForOffset(prefixSums, scrollOffset + viewportSize + bufferPx);
+};
+
+const validateConfiguration = (dynamicSize: itemDynamicSize[], minBufferPx: number, maxBufferPx: number): void => {
+  if (!Number.isFinite(minBufferPx) || minBufferPx < 0 || !Number.isFinite(maxBufferPx) || maxBufferPx < minBufferPx) {
+    throw Error('CDK virtual scroll: buffers must be finite, non-negative, and maxBufferPx must be greater than or equal to minBufferPx');
+  }
+  dynamicSize.forEach(({ itemSize }, index) => {
+    if (!Number.isFinite(itemSize) || itemSize <= 0) {
+      throw Error(`CDK virtual scroll: item size at index ${index} must be a finite number greater than zero`);
+    }
+  });
+};
+
+/** Directive that installs dynamic-size virtual scrolling on a CDK viewport. */
 @Directive({
   selector: 'cdk-virtual-scroll-viewport[itemDynamicSizes]',
   providers: [
