@@ -547,16 +547,19 @@ await kitPresentLanguageActionSheet(inject(ActionSheetController), {
 
 ---
 
-### Printer (Brother label plumbing)
+### Printer (label image and PDF plumbing)
 
-Three pure functions (no DI) that extract the i18n-free core of the fleet's Brother label printing, so a device-quirk or print-setting fix lands in every app at once. The UI orchestration — search/channel-selection alerts, loading overlays, and the app-specific paper list — stays in each app, since those diverge (labels, paper options, copies policy).
+Pure functions (no DI) that extract the i18n-free core of the fleet's label printing, so a device-quirk, layout, or PDF fix lands in every app at once. The UI orchestration — paper-selection alerts, loading overlays, storage, printer transport, and app-specific copies policy — stays in each app.
 
 - `kitDomToPng(element, { rotate?, scale? })` — render a DOM element to a base64 PNG with the fleet's device fixes (iOS +2px to avoid bottom clipping, none on Android to avoid a black line; retries up to 10×). The caller presents its own loading UI.
 - `kitRotationImage(base64)` — rotate a base64 image 90° via canvas.
 - `kitBuildBrotherPrintSettings({ modelName, printBase64, label, numberOfCopies, halftoneThreshold })` — assemble the canonical `BRLMPrintOptions` (fit-page, centered, best quality, threshold halftone, standard margins, tape size parsed from the label's `W<w>H<h>` code). Merge `{ port, channelInfo }` from the selected channel before calling `BrotherPrint.printImage()`.
+- `kitCalculatePrintLayout({ paper, labelWidthPx, labelHeightPx, copies, measure?, marginMm? })` — calculate row-major positions across as many pages as required. The default outer margin is 5mm.
+- `kitBuildLabelPdf({ imageData, ...layoutOptions })` — embed the PNG artwork at the calculated positions and return PDF bytes. It deliberately does not open a browser tab or call a native printer.
+- `kitPrintPaperSizes` — A4/B5 presets. Callers may pass any other `KitPrintPaper` dimensions without changing the kit.
 
 ```typescript
-import { kitDomToPng, kitBuildBrotherPrintSettings } from '@rdlabo/ionic-angular-kit';
+import { kitBuildBrotherPrintSettings, kitBuildLabelPdf, kitDomToPng, kitPrintPaperSizes } from '@rdlabo/ionic-angular-kit/printer';
 
 const png = await kitDomToPng(this.preview().nativeElement, { rotate: true });
 const settings = kitBuildBrotherPrintSettings({
@@ -567,6 +570,15 @@ const settings = kitBuildBrotherPrintSettings({
   halftoneThreshold: printOptions.halftoneThreshold,
 });
 await BrotherPrint.printImage({ ...settings, port: channel.port, channelInfo: channel.channelInfo });
+
+const pdfBytes = await kitBuildLabelPdf({
+  imageData: png,
+  paper: kitPrintPaperSizes.a4,
+  labelWidthPx: 200,
+  labelHeightPx: 100,
+  copies: 6,
+  marginMm: 5,
+});
 ```
 
 ---
