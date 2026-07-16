@@ -1,12 +1,7 @@
 import { ListRange } from '@angular/cdk/collections';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import {
-  calcIndex,
-  calculateItemCountForPixelDistance,
-  DynamicSizeVirtualScrollStrategy,
-  itemDynamicSize,
-  sumItemSize,
-} from './dynamic-size-virtual-scroll-strategy';
+import { DynamicSizeVirtualScrollStrategy } from './dynamic-size-virtual-scroll-strategy';
+import { itemDynamicSize } from './dynamic-size-virtual-scroll.util';
 
 interface ViewportHarness {
   viewport: CdkVirtualScrollViewport;
@@ -188,28 +183,5 @@ describe('DynamicSizeVirtualScrollStrategy', () => {
   it('rejects sizes that cannot form a strictly increasing prefix sum', () => {
     expect(() => new DynamicSizeVirtualScrollStrategy(items(50, 0), 20, 50, false)).toThrow(/index 1/);
     expect(() => new DynamicSizeVirtualScrollStrategy(items(50), -1, 50, false)).toThrow(/buffers/);
-  });
-});
-
-describe('size helpers', () => {
-  it('sums complete items before an index', () => {
-    expect(sumItemSize(items(30, 70, 20), 2)).toBe(100);
-    expect(sumItemSize(items(30, 70, 20), 99)).toBe(120);
-  });
-
-  it('preserves the legacy calcIndex results for existing consumers', () => {
-    const sizes = items(55, 55, 42);
-    expect(calcIndex(sizes, 50)).toBe(0);
-    expect(calcIndex(sizes, 60)).toBe(0.09090909090909091);
-  });
-
-  it('converts pixels to a mathematically continuous item count through the explicit helper', () => {
-    const sizes = items(30, 70, 20);
-    expect(calculateItemCountForPixelDistance(sizes, 0)).toBe(0);
-    expect(calculateItemCountForPixelDistance(sizes, 30)).toBe(1);
-    expect(calculateItemCountForPixelDistance(sizes, 65)).toBe(1.5);
-    expect(calculateItemCountForPixelDistance(sizes, 100)).toBe(2);
-    expect(calculateItemCountForPixelDistance(sizes, 10, 2)).toBe(0.5);
-    expect(calculateItemCountForPixelDistance(sizes, 10, 2, true)).toBeCloseTo(1 / 7);
   });
 });
