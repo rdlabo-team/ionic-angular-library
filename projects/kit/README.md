@@ -41,7 +41,7 @@ Kit shares the repo `v*` release line with the other libraries (see root README 
 | `dom-to-image-more`                  | `^3.0.0`         |
 | `rxjs`                               | `^7.8.0`         |
 
-Feature-scoped peers are only needed by the features that use them (`status-bar` → `KitThemeController`; `preferences` + `in-app-review` → `kitRequestReview`; `capacitor-brotherprint` + `dom-to-image-more` → the printer helpers); an app that doesn't use a feature can ignore its unmet-peer warning.
+Feature-scoped peers are only needed by the features that use them (`status-bar` → `KitThemeController`; `preferences` + `in-app-review` → `kitRequestReview`; `capacitor-brotherprint` + `dom-to-image-more` → the Brother/PNG printer helpers; `pdf-lib` → the PDF printer helper); an app that doesn't use a feature can ignore its unmet-peer warning.
 
 ---
 
