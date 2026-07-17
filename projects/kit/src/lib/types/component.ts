@@ -1,4 +1,4 @@
-import type { InputSignal, OutputEmitterRef, Signal } from '@angular/core';
+import type { InputSignal, InputSignalWithTransform, OutputEmitterRef, Signal } from '@angular/core';
 
 /**
  * Component のうち Signal（computed / input / viewChild 等）と `output()` だけを
@@ -24,5 +24,5 @@ export type ReactiveHost<T> = Pick<
  * `implements ComponentPropsType<Props>` で component 側の input 宣言を揃える。
  */
 export type ComponentPropsType<T> = {
-  [K in keyof T]: InputSignal<T[K]>;
+  [K in keyof T]: InputSignal<T[K]> | InputSignalWithTransform<T[K], any>;
 };
