@@ -44,3 +44,6 @@ export * from './lib/utils/object';
 export * from './lib/utils/dom';
 export * from './lib/utils/ionic-scroll-event';
 export * from './lib/utils/ionic-view-enter';
+
+// Types: shared Component / ViewModel helpers.
+export * from './lib/types/component';

@@ -53,3 +53,20 @@ export interface IDictionaryForService {
   album: string;
   cancel: string;
 }
+
+/** Props for presenting {@link PhotoViewerPage} via Ionic Modal `componentProps`. */
+export interface PhotoViewerProps {
+  imageUrls?: string[];
+  index?: number;
+  isCircle?: boolean;
+  enableDelete?: boolean;
+  enableFooterSafeArea?: boolean;
+  labels?: Partial<IDictionaryForViewer>;
+}
+
+/** Props for presenting {@link PhotoEditorPage} via Ionic Modal `componentProps`. */
+export interface PhotoEditorProps {
+  requireSquare?: boolean;
+  value: string;
+  labels?: Partial<IDictionaryForEditor>;
+}
