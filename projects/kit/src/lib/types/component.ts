@@ -1,8 +1,8 @@
-import type { InputSignal, Signal } from '@angular/core';
+import type { InputSignal, OutputEmitterRef, Signal } from '@angular/core';
 
 /**
- * Component のうち Signal（computed / input / viewChild 等）だけを ViewModel から見えるようにする型。
- * `vm` は循環参照になるため除外する。
+ * Component のうち Signal（computed / input / viewChild 等）と `output()` だけを
+ * ViewModel から見えるようにする型。`vm` は循環参照になるため除外する。
  *
  * 注意: `new ViewModel(this)` の引数型に直接使うと、vm 依存 computed の推論と循環する。
  * ViewModel 側は constructor(host: Component) で受け、フィールドを `ReactiveHost<Component>` に
@@ -11,7 +11,11 @@ import type { InputSignal, Signal } from '@angular/core';
 export type ReactiveHost<T> = Pick<
   T,
   {
-    [K in Exclude<keyof T, 'vm'>]-?: T[K] extends Signal<unknown> ? K : never;
+    [K in Exclude<keyof T, 'vm'>]-?: T[K] extends Signal<unknown>
+      ? K
+      : T[K] extends OutputEmitterRef<any>
+        ? K
+        : never;
   }[Exclude<keyof T, 'vm'>]
 >;
 
