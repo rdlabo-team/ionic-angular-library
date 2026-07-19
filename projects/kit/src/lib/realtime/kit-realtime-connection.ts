@@ -5,7 +5,7 @@ import { Injectable } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { Subject } from 'rxjs';
 
-/** One WebSocket endpoint and its ordered subprotocol list. */
+/** One WebSocket endpoint and its ordered subprotocol list. URLs must be unique within a target set. */
 export interface KitRealtimeSocketTarget {
   url: string;
   protocols: string[];
@@ -31,6 +31,7 @@ export interface KitRealtimeConnectionOptions {
 }
 
 interface SocketHealth {
+  key: string;
   lastActivityAt: number;
   openTimer: ReturnType<typeof setTimeout> | null;
   watchdog: KitRealtimeLivenessWatchdog;
@@ -96,7 +97,7 @@ export class KitRealtimeLivenessWatchdog {
  *
  * Subclasses provide connection intent and one or more targets. The base owns foreground/network
  * suspension, exponential backoff, open/liveness timeouts, runtime-friendly application pings,
- * all-target atomic reconnect, and a resync signal after connectivity is restored.
+ * target-scoped reconnect, and a resync signal after connectivity is restored.
  */
 @Injectable()
 export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
@@ -106,11 +107,13 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   /** Client ID used to classify self echoes. */
   protected readonly listeners: PluginListenerHandle[] = [];
 
-  #sockets = new Set<WebSocket>();
+  #sockets = new Map<string, WebSocket>();
   readonly #health = new Map<WebSocket, SocketHealth>();
+  #targets = new Map<string, KitRealtimeSocketTarget>();
   #opening = false;
   #generation = 0;
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  #reconnectPendingGeneration: number | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
   #reconnectAttempt = 0;
   #isAppActive = true;
@@ -148,7 +151,11 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
 
   /** Whether every configured socket is currently open. */
   get isStreamOpen(): boolean {
-    return this.#sockets.size > 0 && [...this.#sockets].every((socket) => socket.readyState === WebSocket.OPEN);
+    return (
+      this.#targets.size > 0 &&
+      this.#sockets.size === this.#targets.size &&
+      [...this.#sockets.values()].every((socket) => socket.readyState === WebSocket.OPEN)
+    );
   }
 
   /** Whether every configured socket has produced recent server activity. */
@@ -255,56 +262,67 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
     this.#reconnectAttempt = 0;
   }
 
-  /** Open every current target, or schedule an atomic reconnect if any target fails. */
+  /** Open missing targets, preserving healthy sockets when another target fails. */
   protected async open(): Promise<void> {
-    if (!this.#canOpen || this.#opening || this.#sockets.size > 0) {
+    const hasMissingTarget = this.#targets.size === 0 || [...this.#targets.keys()].some((key) => !this.#sockets.has(key));
+    if (!this.#canOpen || this.#opening || (this.#sockets.size > 0 && !hasMissingTarget)) {
       return;
     }
     this.#clearReconnectTimer();
     this.#opening = true;
-    const generation = ++this.#generation;
+    const generation = this.#generation;
 
     try {
       const targets = await this.buildSocketTargets();
       if (!this.#canOpen || generation !== this.#generation) {
         return;
       }
-      if (targets.length === 0) {
-        this.#opening = false;
-        return;
+      const nextTargets = new Map(targets.map((target) => [toKitWebSocketUrl(target.url), target]));
+      for (const [key, socket] of this.#sockets) {
+        if (nextTargets.has(key)) {
+          continue;
+        }
+        const health = this.#health.get(socket);
+        if (health) {
+          this.#removeSocket(socket, health);
+        }
       }
-
-      const openedSockets = new Set<WebSocket>();
+      this.#targets = nextTargets;
+      if (this.#sockets.size === 0) {
+        this.#clearPingTimer();
+      }
       for (const target of targets) {
-        const socket = this.createWebSocket(toKitWebSocketUrl(target.url), target.protocols);
+        const key = toKitWebSocketUrl(target.url);
+        if (this.#sockets.has(key)) {
+          continue;
+        }
+        const socket = this.createWebSocket(key, target.protocols);
         const health: SocketHealth = {
+          key,
           lastActivityAt: 0,
           openTimer: null,
-          watchdog: new KitRealtimeLivenessWatchdog(this.#options.livenessTimeoutMs, () => this.#connectionFailed(generation)),
+          watchdog: new KitRealtimeLivenessWatchdog(this.#options.livenessTimeoutMs, () => this.#connectionFailed(generation, socket)),
         };
-        this.#sockets.add(socket);
+        this.#sockets.set(key, socket);
         this.#health.set(socket, health);
-        health.openTimer = setTimeout(() => this.#connectionFailed(generation), this.#options.openTimeoutMs);
+        health.openTimer = setTimeout(() => this.#connectionFailed(generation, socket), this.#options.openTimeoutMs);
 
         socket.onopen = () => {
-          if (generation !== this.#generation) {
+          if (generation !== this.#generation || this.#sockets.get(key) !== socket) {
             return;
           }
           this.#clearOpenTimer(health);
           this.#markActivity(health);
           this.#startPing();
-          openedSockets.add(socket);
-          if (openedSockets.size !== targets.length) {
-            return;
+          if (this.isStreamOpen) {
+            this.#reconnectAttempt = 0;
+            this.#reconnected$.next();
           }
-          this.#opening = false;
-          this.#reconnected$.next();
         };
         socket.onmessage = ({ data }) => {
-          if (generation !== this.#generation || typeof data !== 'string') {
+          if (generation !== this.#generation || this.#sockets.get(key) !== socket || typeof data !== 'string') {
             return;
           }
-          this.#reconnectAttempt = 0;
           this.#markActivity(health);
           if (data === this.#options.pong) {
             return;
@@ -317,26 +335,48 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
             // Ignore malformed application messages while retaining the healthy socket.
           }
         };
-        socket.onerror = () => this.#connectionFailed(generation);
-        socket.onclose = () => this.#connectionFailed(generation);
+        socket.onerror = () => this.#connectionFailed(generation, socket);
+        socket.onclose = () => this.#connectionFailed(generation, socket);
       }
+      this.#opening = false;
     } catch {
-      this.#connectionFailed(generation);
+      this.#opening = false;
+      this.#requestReconnect();
     } finally {
-      if (generation === this.#generation && this.#sockets.size === 0) {
+      if (generation === this.#generation) {
         this.#opening = false;
       }
     }
   }
 
-  #connectionFailed(generation: number): void {
-    if (generation !== this.#generation) {
+  #connectionFailed(generation: number, socket: WebSocket): void {
+    const health = this.#health.get(socket);
+    if (generation !== this.#generation || !health || this.#sockets.get(health.key) !== socket) {
       return;
     }
-    this.#closeSockets();
+    this.#removeSocket(socket, health);
+    if (this.#sockets.size === 0) {
+      this.#clearPingTimer();
+    }
+    this.#requestReconnect();
+  }
+
+  #requestReconnect(): void {
+    const generation = this.#generation;
+    if (!this.#canOpen || this.#reconnectPendingGeneration === generation || this.#reconnectTimer) {
+      return;
+    }
+    this.#reconnectPendingGeneration = generation;
     void this.handleConnectionFailure()
       .catch(() => undefined)
-      .finally(() => this.#scheduleReconnect());
+      .finally(() => {
+        if (this.#reconnectPendingGeneration === generation) {
+          this.#reconnectPendingGeneration = null;
+        }
+        if (generation === this.#generation) {
+          this.#scheduleReconnect();
+        }
+      });
   }
 
   #markActivity(health: SocketHealth): void {
@@ -349,7 +389,7 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
       return;
     }
     this.#pingTimer = setInterval(() => {
-      for (const socket of this.#sockets) {
+      for (const socket of this.#sockets.values()) {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(this.#options.ping);
         }
@@ -362,28 +402,36 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
     this.#opening = false;
     this.#clearPingTimer();
     const sockets = this.#sockets;
-    this.#sockets = new Set();
-    for (const socket of sockets) {
+    this.#sockets = new Map();
+    this.#targets = new Map();
+    for (const socket of sockets.values()) {
       const health = this.#health.get(socket);
       if (health) {
-        health.watchdog.clear();
-        this.#clearOpenTimer(health);
-      }
-      this.#health.delete(socket);
-      socket.onopen = null;
-      socket.onmessage = null;
-      socket.onerror = null;
-      socket.onclose = null;
-      try {
-        socket.close(1000, 'client suspended');
-      } catch {
-        // Reconnect processing continues even if a CONNECTING socket cannot close cleanly.
+        this.#removeSocket(socket, health, false);
       }
     }
   }
 
+  #removeSocket(socket: WebSocket, health: SocketHealth, removeFromCurrent = true): void {
+    health.watchdog.clear();
+    this.#clearOpenTimer(health);
+    this.#health.delete(socket);
+    if (removeFromCurrent && this.#sockets.get(health.key) === socket) {
+      this.#sockets.delete(health.key);
+    }
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    try {
+      socket.close(1000, 'client suspended');
+    } catch {
+      // Reconnect processing continues even if a CONNECTING socket cannot close cleanly.
+    }
+  }
+
   #scheduleReconnect(): void {
-    if (!this.#canOpen || this.#reconnectTimer || this.#sockets.size > 0) {
+    if (!this.#canOpen || this.#reconnectTimer) {
       return;
     }
     const delay = Math.min(1000 * 2 ** this.#reconnectAttempt, this.#options.maxBackoffMs);

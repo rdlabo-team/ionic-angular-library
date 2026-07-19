@@ -12,20 +12,19 @@ Sponsoring means you directly contribute to new features, improvements, and main
 ## Support Version
 
 | Angular | Package version |
-|---------|-----------------|
+| ------- | --------------- |
 | v20     | 20.x.x          |
 | v19     | 19.x.x          |
 | v18     | 2.x.x           |
 
-
 ## packages
 
-| package name                        | description                                                                                | path                                                                                                       |
-|-------------------------------------|--------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-| @rdlabo/ionic-angular-kit           | Auth guards, Firebase flows, storage, overlay, HTTP interceptor, and other fleet helpers.  | [/projects/kit](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/kit#readme) |
-| @rdlabo/ionic-angular-photo-editor  | This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor. | [/project/photo-editor](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/photo-editor#readme)   |
-| @rdlabo/ionic-angular-scroll-header | This is directive for scroll with Header.                                                  | [/project/scroll-header](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/scroll-header#readme) |
-| @rdlabo/ngx-cdk-scroll-strategies | This is directive for virtual scroll of dynamic item size.                                 | [/project/scroll-strategies](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/scroll-strategies#readme) |
+| package name                        | description                                                                                | path                                                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| @rdlabo/ionic-angular-kit           | Auth guards, Firebase flows, storage, overlay, HTTP interceptor, and other fleet helpers.  | [/projects/kit](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/kit#readme)                            |
+| @rdlabo/ionic-angular-photo-editor  | This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor. | [/project/photo-editor](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/photo-editor#readme)           |
+| @rdlabo/ionic-angular-scroll-header | This is directive for scroll with Header.                                                  | [/project/scroll-header](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/scroll-header#readme)         |
+| @rdlabo/ngx-cdk-scroll-strategies   | This is directive for virtual scroll of dynamic item size.                                 | [/project/scroll-strategies](https://github.com/rdlabo-team/ionic-angular-library/tree/main/projects/scroll-strategies#readme) |
 
 ### Release
 
@@ -42,7 +41,6 @@ The demo app includes a **Kit** tab with a Firebase Auth harness (`/main/kit/aut
 2. `npm start` — open the Kit tab.
 3. `npm run e2e` — Playwright signs up with a UUID email; `window.__E2E__` skips email confirmation.
 4. `npm run cap` — copy a production build to iOS/Android for device checks (e.g. `kitAuthInput` autofill).
-
 
 ## sponsors
 

@@ -37,6 +37,7 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   targetCount = 1;
   failTargets = false;
   failFailureHook = false;
+  pendingFailureHook: Promise<void> | null = null;
   failureCalls = 0;
   readonly sockets: FakeWebSocket[] = [];
   readonly removeAppListener = vi.fn(() => Promise.resolve());
@@ -65,6 +66,9 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
 
   protected override handleConnectionFailure(): Promise<void> {
     this.failureCalls += 1;
+    if (this.pendingFailureHook) {
+      return this.pendingFailureHook;
+    }
     if (this.failFailureHook) {
       return Promise.reject(new Error('storage unavailable'));
     }
@@ -128,7 +132,7 @@ describe('KitRealtimeConnection', () => {
     expect(TestBed.inject(InheritedConstructorConnection)).toBeInstanceOf(InheritedConstructorConnection);
   });
 
-  it('pings all targets and atomically reconnects after one closes', async () => {
+  it('pings all targets and reconnects only the target that closes', async () => {
     vi.useFakeTimers();
     const connection = new TestConnection();
     connection.targetCount = 2;
@@ -141,7 +145,8 @@ describe('KitRealtimeConnection', () => {
     connection.sockets[0].close();
     await vi.runAllTicks();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(connection.sockets).toHaveLength(4);
+    expect(connection.sockets).toHaveLength(3);
+    expect(connection.sockets[1].readyState).toBe(WebSocket.OPEN);
     connection.stop();
   });
 
@@ -181,15 +186,104 @@ describe('KitRealtimeConnection', () => {
     const connection = new TestConnection();
     connection.targetCount = 2;
     const reconnected = vi.fn();
+    const events: TestEvent[] = [];
     connection.reconnected$.subscribe(reconnected);
+    connection.events$.subscribe((event) => events.push(event));
     await connection.openForTest();
     connection.sockets[0].open();
     connection.sockets[1].close();
     await vi.runAllTicks();
     await vi.advanceTimersByTimeAsync(1000);
     connection.sockets[2].open();
-    connection.sockets[3].open();
+    connection.sockets[0].message(JSON.stringify({ topic: 'healthy-target' }));
     expect(reconnected).toHaveBeenCalledOnce();
+    expect(events).toContainEqual(expect.objectContaining({ topic: 'healthy-target' }));
+    connection.stop();
+  });
+
+  it('does not amplify repeated single-target failures into all-target reconnect waves', async () => {
+    vi.useFakeTimers();
+    const connection = new TestConnection();
+    connection.targetCount = 20;
+    await connection.openForTest();
+    connection.sockets.forEach((socket) => socket.open());
+    let failedSocket = connection.sockets[0];
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (attempt % 20 === 0) {
+        connection.sockets.filter((socket) => socket.readyState === WebSocket.OPEN).forEach((socket) => socket.message('pong'));
+      }
+      failedSocket.close();
+      await vi.runAllTicks();
+      await vi.advanceTimersByTimeAsync(1000);
+      failedSocket = connection.sockets.at(-1)!;
+      failedSocket.open();
+    }
+
+    expect(connection.sockets).toHaveLength(120);
+    expect(connection.sockets.slice(1, 20).every((socket) => socket.readyState === WebSocket.OPEN)).toBe(true);
+    connection.stop();
+  });
+
+  it('closes every remaining socket when a retry resolves to an empty target set', async () => {
+    vi.useFakeTimers();
+    const connection = new TestConnection();
+    connection.targetCount = 2;
+    await connection.openForTest();
+    connection.sockets.forEach((socket) => socket.open());
+    connection.targetCount = 0;
+
+    connection.sockets[0].close();
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(connection.sockets[1].readyState).toBe(WebSocket.CLOSED);
+    expect(connection.isStreamOpen).toBe(false);
+    connection.stop();
+  });
+
+  it('coalesces concurrent target failures into one retry while retaining healthy targets', async () => {
+    vi.useFakeTimers();
+    const connection = new TestConnection();
+    connection.targetCount = 3;
+    await connection.openForTest();
+    connection.sockets.forEach((socket) => socket.open());
+
+    connection.sockets[0].close();
+    connection.sockets[1].close();
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(connection.failureCalls).toBe(1);
+    expect(connection.sockets).toHaveLength(5);
+    expect(connection.sockets[2].readyState).toBe(WebSocket.OPEN);
+    connection.stop();
+  });
+
+  it('ignores a failure hook that resolves after a new connection generation starts', async () => {
+    vi.useFakeTimers();
+    let resolveOldFailure!: () => void;
+    const connection = new TestConnection();
+    connection.pendingFailureHook = new Promise<void>((resolve) => {
+      resolveOldFailure = resolve;
+    });
+    await connection.openForTest();
+    connection.sockets[0].open();
+
+    connection.sockets[0].close();
+    await vi.runAllTicks();
+    connection.stop();
+    connection.connectEnabled = true;
+    connection.pendingFailureHook = null;
+    await connection.openForTest();
+    connection.sockets[1].open();
+
+    resolveOldFailure();
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(connection.sockets).toHaveLength(2);
+    expect(connection.sockets[1].readyState).toBe(WebSocket.OPEN);
     connection.stop();
   });
 

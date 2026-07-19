@@ -53,7 +53,7 @@ Feature-scoped peers are only needed by the features that use them (`status-bar`
 
 An abstract Hibernation WebSocket client for application realtime services. Subclasses supply
 connection intent and one or more `{ url, protocols }` targets; the kit owns foreground/network
-suspension, all-target reconnect, exponential backoff, open and half-open detection, ping/pong,
+suspension, target-scoped reconnect that preserves healthy sockets, exponential backoff, open and half-open detection, ping/pong,
 self-echo annotation, and `reconnected$` resync signaling. Use `kitRealtimeProtocols()` to pass
 authentication and the stable `KIT_REALTIME_CLIENT_ID` through WebSocket subprotocols without
 putting credentials in the URL.
