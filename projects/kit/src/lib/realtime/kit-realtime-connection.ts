@@ -262,6 +262,32 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
     this.#reconnectAttempt = 0;
   }
 
+  /** Register lifecycle listeners and establish the currently requested targets. */
+  protected async startConnection(): Promise<void> {
+    await this.registerLifecycleListeners();
+    if (!this.shouldConnect) {
+      this.removeLifecycleListeners();
+      return;
+    }
+    await this.open();
+  }
+
+  /** End the current connection session and release all lifecycle resources. */
+  protected stopConnection(): void {
+    this.resetConnectionState();
+    this.suspend();
+    this.removeLifecycleListeners();
+  }
+
+  /** Rebuild targets while preserving the owning session's connection intent and listeners. */
+  protected async refreshConnectionTargets(): Promise<void> {
+    if (!this.shouldConnect) {
+      return;
+    }
+    this.suspend();
+    await this.open();
+  }
+
   /** Open missing targets, preserving healthy sockets when another target fails. */
   protected async open(): Promise<void> {
     const hasMissingTarget = this.#targets.size === 0 || [...this.#targets.keys()].some((key) => !this.#sockets.has(key));

@@ -100,6 +100,19 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
     this.suspend();
   }
 
+  startConnectionForTest(): Promise<void> {
+    return this.startConnection();
+  }
+
+  stopConnectionForTest(): void {
+    this.connectEnabled = false;
+    this.stopConnection();
+  }
+
+  refreshConnectionTargetsForTest(): Promise<void> {
+    return this.refreshConnectionTargets();
+  }
+
   registerLifecycleForTest(): Promise<void> {
     return this.registerLifecycleListeners();
   }
@@ -319,6 +332,23 @@ describe('KitRealtimeConnection', () => {
     await registering;
     expect(connection.removeAppListener).toHaveBeenCalledOnce();
     expect(connection.removeNetworkListener).not.toHaveBeenCalled();
+  });
+
+  it('shares start, target refresh, and stop lifecycle sequencing with subclasses', async () => {
+    const connection = new TestConnection();
+    const starting = connection.startConnectionForTest();
+    connection.appListenerResolver?.({ remove: connection.removeAppListener });
+    await starting;
+    expect(connection.sockets).toHaveLength(1);
+
+    connection.sockets[0].open();
+    await connection.refreshConnectionTargetsForTest();
+    expect(connection.sockets).toHaveLength(2);
+
+    connection.stopConnectionForTest();
+    expect(connection.sockets[1].readyState).toBe(WebSocket.CLOSED);
+    expect(connection.removeAppListener).toHaveBeenCalledOnce();
+    expect(connection.removeNetworkListener).toHaveBeenCalledOnce();
   });
 });
 
