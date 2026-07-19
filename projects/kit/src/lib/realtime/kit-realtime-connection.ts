@@ -1,6 +1,7 @@
 import { App } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { Network } from '@capacitor/network';
+import { Injectable } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { Subject } from 'rxjs';
 
@@ -97,13 +98,12 @@ export class KitRealtimeLivenessWatchdog {
  * suspension, exponential backoff, open/liveness timeouts, runtime-friendly application pings,
  * all-target atomic reconnect, and a resync signal after connectivity is restored.
  */
+@Injectable()
 export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   readonly #events$ = new Subject<KitClientRealtimeEvent<TEvent>>();
   readonly #reconnected$ = new Subject<void>();
-  readonly #options: Required<KitRealtimeConnectionOptions>;
 
   /** Client ID used to classify self echoes. */
-  readonly id: string;
   protected readonly listeners: PluginListenerHandle[] = [];
 
   #sockets = new Set<WebSocket>();
@@ -125,8 +125,14 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   /** Emits once after every fully restored connection cycle, prompting consumers to resync via REST. */
   readonly reconnected$: Observable<void> = this.#reconnected$.asObservable();
 
-  protected constructor(options: KitRealtimeConnectionOptions = {}) {
-    this.#options = {
+  /** Override timing/protocol defaults in specialized clients or tests. */
+  protected get realtimeOptions(): KitRealtimeConnectionOptions {
+    return {};
+  }
+
+  get #options(): Required<KitRealtimeConnectionOptions> {
+    const options = this.realtimeOptions;
+    return {
       clientId: options.clientId ?? KIT_REALTIME_CLIENT_ID,
       ping: options.ping ?? 'ping',
       pong: options.pong ?? 'pong',
@@ -135,7 +141,11 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
       pingIntervalMs: options.pingIntervalMs ?? 30_000,
       livenessTimeoutMs: options.livenessTimeoutMs ?? 70_000,
     };
-    this.id = this.#options.clientId;
+  }
+
+  /** Client ID used to classify self echoes. */
+  get id(): string {
+    return this.#options.clientId;
   }
 
   /** Whether every configured socket is currently open. */

@@ -1,4 +1,6 @@
 import type { PluginListenerHandle } from '@capacitor/core';
+import { Injectable } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { kitRealtimeProtocols, KitRealtimeConnection, KitRealtimeLivenessWatchdog, toKitWebSocketUrl } from './kit-realtime-connection';
 
@@ -41,8 +43,8 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   readonly removeNetworkListener = vi.fn(() => Promise.resolve());
   appListenerResolver: ((handle: PluginListenerHandle) => void) | null = null;
 
-  constructor() {
-    super({ clientId: 'self', openTimeoutMs: 15_000, pingIntervalMs: 30_000, livenessTimeoutMs: 70_000 });
+  protected override get realtimeOptions(): { clientId: string } {
+    return { clientId: 'self' };
   }
 
   protected get shouldConnect(): boolean {
@@ -103,6 +105,15 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   }
 }
 
+@Injectable()
+class InheritedConstructorConnection extends KitRealtimeConnection<TestEvent> {
+  protected readonly shouldConnect = false;
+
+  protected buildSocketTargets(): Promise<{ url: string; protocols: string[] }[]> {
+    return Promise.resolve([]);
+  }
+}
+
 describe('KitRealtimeConnection', () => {
   afterEach(() => vi.useRealTimers());
 
@@ -110,6 +121,11 @@ describe('KitRealtimeConnection', () => {
     expect(toKitWebSocketUrl('https://example.test/realtime')).toBe('wss://example.test/realtime');
     expect(toKitWebSocketUrl('wss://example.test/realtime')).toBe('wss://example.test/realtime');
     expect(kitRealtimeProtocols('app-v1', { authToken: 'token', clientId: 'client' })).toEqual(['app-v1', 'auth.token', 'client.client']);
+  });
+
+  it('can be inherited by an Angular injectable without declaring a constructor', () => {
+    TestBed.configureTestingModule({ providers: [InheritedConstructorConnection] });
+    expect(TestBed.inject(InheritedConstructorConnection)).toBeInstanceOf(InheritedConstructorConnection);
   });
 
   it('pings all targets and atomically reconnects after one closes', async () => {
