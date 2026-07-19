@@ -113,8 +113,6 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #pingTimer: ReturnType<typeof setInterval> | null = null;
   #reconnectAttempt = 0;
-  #hasOpened = false;
-  #needsResync = false;
   #isAppActive = true;
   #isNetworkConnected = true;
   #lifecycleRegistration: Promise<void> | null = null;
@@ -122,7 +120,7 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
 
   /** All parsed events received by this connection. */
   readonly events$: Observable<KitClientRealtimeEvent<TEvent>> = this.#events$.asObservable();
-  /** Emits once after every fully restored connection cycle, prompting consumers to resync via REST. */
+  /** Emits after every fully established connection cycle, including the first, prompting a REST resync. */
   readonly reconnected$: Observable<void> = this.#reconnected$.asObservable();
 
   /** Override timing/protocol defaults in specialized clients or tests. */
@@ -254,8 +252,6 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
 
   /** Reset resync and backoff history when the owning session ends. */
   protected resetConnectionState(): void {
-    this.#hasOpened = false;
-    this.#needsResync = false;
     this.#reconnectAttempt = 0;
   }
 
@@ -302,11 +298,7 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
             return;
           }
           this.#opening = false;
-          if (this.#hasOpened || this.#needsResync) {
-            this.#reconnected$.next();
-          }
-          this.#hasOpened = true;
-          this.#needsResync = false;
+          this.#reconnected$.next();
         };
         socket.onmessage = ({ data }) => {
           if (generation !== this.#generation || typeof data !== 'string') {
@@ -340,9 +332,6 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   #connectionFailed(generation: number): void {
     if (generation !== this.#generation) {
       return;
-    }
-    if ([...this.#sockets].some((socket) => socket.readyState === WebSocket.OPEN)) {
-      this.#needsResync = true;
     }
     this.#closeSockets();
     void this.handleConnectionFailure()

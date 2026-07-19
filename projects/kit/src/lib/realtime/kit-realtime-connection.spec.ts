@@ -164,6 +164,18 @@ describe('KitRealtimeConnection', () => {
     connection.stop();
   });
 
+  it('requests a REST resync when the initial socket connection is fully established', async () => {
+    const connection = new TestConnection();
+    const reconnected = vi.fn();
+    connection.reconnected$.subscribe(reconnected);
+    await connection.openForTest();
+
+    connection.sockets[0].open();
+
+    expect(reconnected).toHaveBeenCalledOnce();
+    connection.stop();
+  });
+
   it('emits resync after a partial multi-target connection failure recovers', async () => {
     vi.useFakeTimers();
     const connection = new TestConnection();
