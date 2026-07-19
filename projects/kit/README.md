@@ -6,6 +6,7 @@ A small ergonomic kit for Ionic Angular applications. It provides:
 - **KitOverlayController** — a unified presenter for Ionic Modal, Toast, and Alert
 - **Auth guards** — functional `CanActivateFn` guards for a 4-state auth model
 - **HTTP interceptor** — a fleet-canonical auth + retry + error-hook interceptor
+- **KitRealtimeConnection** — foreground/network-aware Hibernation WebSocket reconnect and resync
 - **KitAuthInputDirective** — sign-in email remember/prefill + iOS autofill workaround for `ion-input`
 - **kitClearStoragePreservingKeys** — `clear()` that restores selected keys (`KIT_LAST_AUTH_EMAIL_KEY`, `KIT_THEME_STORAGE_KEY`, …)
 
@@ -31,6 +32,7 @@ Kit shares the repo `v*` release line with the other libraries (see root README 
 | `@ionic/angular`                     | `^8.0.0`         |
 | `@ionic/storage-angular`             | `^4.0.0`         |
 | `@capacitor/core`                    | `>=6.0.0 <9.0.0` |
+| `@capacitor/app`                     | `>=6.0.0 <9.0.0` |
 | `@capacitor/haptics`                 | `>=6.0.0 <9.0.0` |
 | `@capacitor/keyboard`                | `>=6.0.0 <9.0.0` |
 | `@capacitor/network`                 | `>=6.0.0 <9.0.0` |
@@ -46,6 +48,19 @@ Feature-scoped peers are only needed by the features that use them (`status-bar`
 ---
 
 ## Features
+
+### KitRealtimeConnection
+
+An abstract Hibernation WebSocket client for application realtime services. Subclasses supply
+connection intent and one or more `{ url, protocols }` targets; the kit owns foreground/network
+suspension, all-target reconnect, exponential backoff, open and half-open detection, ping/pong,
+self-echo annotation, and `reconnected$` resync signaling. Use `kitRealtimeProtocols()` to pass
+authentication and the stable `KIT_REALTIME_CLIENT_ID` through WebSocket subprotocols without
+putting credentials in the URL.
+
+Domain event types, authorization, room selection, and REST resync behavior remain in the app.
+
+---
 
 ### KitStorageService
 
