@@ -41,7 +41,11 @@ export const KIT_REALTIME_CLIENT_ID = crypto.randomUUID();
 /** Convert an HTTP(S) endpoint to its WebSocket equivalent. */
 export function toKitWebSocketUrl(url: string): string {
   const parsed = new URL(url);
-  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (parsed.protocol === 'https:') {
+    parsed.protocol = 'wss:';
+  } else if (parsed.protocol === 'http:') {
+    parsed.protocol = 'ws:';
+  }
   return parsed.toString();
 }
 
@@ -331,7 +335,9 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
       this.#needsResync = true;
     }
     this.#closeSockets();
-    void this.handleConnectionFailure().finally(() => this.#scheduleReconnect());
+    void this.handleConnectionFailure()
+      .catch(() => undefined)
+      .finally(() => this.#scheduleReconnect());
   }
 
   #markActivity(health: SocketHealth): void {

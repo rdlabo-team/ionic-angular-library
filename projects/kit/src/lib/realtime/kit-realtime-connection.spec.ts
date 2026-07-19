@@ -34,6 +34,7 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   connectEnabled = true;
   targetCount = 1;
   failTargets = false;
+  failFailureHook = false;
   failureCalls = 0;
   readonly sockets: FakeWebSocket[] = [];
   readonly removeAppListener = vi.fn(() => Promise.resolve());
@@ -62,6 +63,9 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
 
   protected override handleConnectionFailure(): Promise<void> {
     this.failureCalls += 1;
+    if (this.failFailureHook) {
+      return Promise.reject(new Error('storage unavailable'));
+    }
     return Promise.resolve();
   }
 
@@ -104,6 +108,7 @@ describe('KitRealtimeConnection', () => {
 
   it('converts endpoints and builds auth/client subprotocols', () => {
     expect(toKitWebSocketUrl('https://example.test/realtime')).toBe('wss://example.test/realtime');
+    expect(toKitWebSocketUrl('wss://example.test/realtime')).toBe('wss://example.test/realtime');
     expect(kitRealtimeProtocols('app-v1', { authToken: 'token', clientId: 'client' })).toEqual(['app-v1', 'auth.token', 'client.client']);
   });
 
@@ -169,6 +174,18 @@ describe('KitRealtimeConnection', () => {
     connection.failTargets = false;
     await vi.advanceTimersByTimeAsync(1000);
     expect(connection.sockets).toHaveLength(1);
+    connection.stop();
+  });
+
+  it('reconnects even when the connection-failure hook rejects', async () => {
+    vi.useFakeTimers();
+    const connection = new TestConnection();
+    connection.failFailureHook = true;
+    await connection.openForTest();
+    connection.sockets[0].close();
+    await vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(connection.sockets).toHaveLength(2);
     connection.stop();
   });
 
