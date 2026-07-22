@@ -2,10 +2,7 @@ import { inject, Injectable, signal } from '@angular/core';
 import type { OfflineScope } from './offline-repository';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 
-const SESSION_ENTITY_TYPE = '__offline_session';
-const SESSION_ENTITY_ID = 'current';
-const SESSION_GROUP_ID = 0;
-
+/** Persisted identity and group boundary for one authenticated local replica. */
 export interface OfflineSessionManifest {
   userId: number;
   scopeIds: number[];
@@ -14,6 +11,7 @@ export interface OfflineSessionManifest {
   updatedAt: number;
 }
 
+/** Owns activation and cleanup of the authenticated local-replica boundary. */
 @Injectable({ providedIn: 'root' })
 export class OfflineSessionService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
@@ -28,24 +26,19 @@ export class OfflineSessionService {
     await this.#repository.initialize();
     const userId = await this.#repository.getLastUserId();
     if (userId !== null) {
-      const entity = await this.#repository.getEntity<OfflineSessionManifest>(
-        { userId, groupId: SESSION_GROUP_ID },
-        SESSION_ENTITY_TYPE,
-        SESSION_ENTITY_ID,
-      );
-      this.#activeManifest.set(entity?.value ?? { userId, scopeIds: [], authSubject: null, updatedAt: 0 });
+      const manifest = await this.#repository.getSessionManifest<OfflineSessionManifest>(userId);
+      this.#activeManifest.set(manifest ?? { userId, scopeIds: [], authSubject: null, updatedAt: 0 });
     }
     this.#initialized = true;
   }
 
   async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
     await this.initialize();
-    const normalizedScopeIds = [...new Set(scopeIds)].filter((id) => id !== SESSION_GROUP_ID).sort((a, b) => a - b);
+    const normalizedScopeIds = [...new Set(scopeIds)].filter((id) => id !== 0).sort((a, b) => a - b);
     const previousUserId = await this.#repository.getLastUserId();
-    const sessionScope = { userId, groupId: SESSION_GROUP_ID };
     let previous =
       previousUserId === userId
-        ? ((await this.#repository.getEntity<OfflineSessionManifest>(sessionScope, SESSION_ENTITY_TYPE, SESSION_ENTITY_ID))?.value ?? null)
+        ? ((await this.#repository.getSessionManifest<OfflineSessionManifest>(userId)) ?? null)
         : null;
     // A changed provider subject is a different person even when the product reuses its numeric id.
     // This deliberately also clears legacy null -> known subject and known subject -> null transitions.
@@ -67,14 +60,7 @@ export class OfflineSessionService {
       updatedAt: Date.now(),
     };
     await this.#repository.setLastUserId(userId);
-    await this.#repository.putEntity({
-      ...sessionScope,
-      entityType: SESSION_ENTITY_TYPE,
-      entityId: SESSION_ENTITY_ID,
-      value: manifest,
-      serverRevision: null,
-      fetchedAt: manifest.updatedAt,
-    });
+    await this.#repository.putSessionManifest(userId, manifest);
     this.#activeManifest.set(manifest);
     this.#activatedThisRun = true;
   }

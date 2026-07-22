@@ -5,11 +5,12 @@ import { Network } from '@capacitor/network';
 
 export type OfflineNetworkState = 'online' | 'offline' | 'unverified';
 
-/** transport不能(status=0)だけをcache fallback対象にし、HTTPエラーは隠さない。 */
+/** transport不能(status=0)だけをlocal replica fallback対象にし、HTTPエラーは隠さない。 */
 export function isOfflineFallbackError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && (error as { status?: unknown }).status === 0;
 }
 
+/** Combines operating-system connectivity with observed API reachability. */
 @Injectable({ providedIn: 'root' })
 export class OfflineNetworkService {
   readonly #osConnected = signal<boolean | null>(null);

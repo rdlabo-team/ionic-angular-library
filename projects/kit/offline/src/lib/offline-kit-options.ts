@@ -1,4 +1,5 @@
 import { InjectionToken } from '@angular/core';
+import type { OfflineReplicaSchemaBundle } from './offline-replica-schema';
 
 /** Product-independent native offline persistence settings. */
 export interface OfflineKitOptions {
@@ -6,6 +7,8 @@ export interface OfflineKitOptions {
   databaseName: string;
   /** Resolves the native database key from secure device storage. Required on iOS and Android. */
   encryptionKey?: () => Promise<string>;
+  /** Versioned product replica schema applied to native SQLite during initialization. */
+  replicaSchema: OfflineReplicaSchemaBundle;
 }
 
 /** DI token for product-independent offline persistence settings. */

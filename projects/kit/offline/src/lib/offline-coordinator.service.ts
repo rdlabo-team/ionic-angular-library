@@ -4,8 +4,10 @@ import { OFFLINE_REPOSITORY } from './offline-repository';
 import { OfflineSessionService } from './offline-session.service';
 import { OfflineSyncService } from './offline-sync.service';
 
+/** User choice when logout encounters unconfirmed local mutations. */
 export type OfflineLogoutAction = 'sync' | 'discard' | 'cancel';
 
+/** Coordinates local persistence, session boundaries, network state, and outbox synchronization. */
 @Injectable({ providedIn: 'root' })
 export class OfflineCoordinatorService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
