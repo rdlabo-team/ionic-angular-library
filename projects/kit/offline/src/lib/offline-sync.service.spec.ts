@@ -18,6 +18,7 @@ describe('OfflineSyncService', () => {
   let entities: OfflineEntity[];
   let connected: ReturnType<typeof signal<boolean>>;
   let session: { userId: number; scopes: OfflineScope[] } | null;
+  let beforePutCommand: ((command: OfflineCommand) => Promise<void>) | null;
   const execute = vi.fn(async (_command: OfflineCommand) => ({ response: null }));
 
   beforeEach(() => {
@@ -25,6 +26,7 @@ describe('OfflineSyncService', () => {
     entities = [];
     connected = signal(false);
     session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    beforePutCommand = null;
     execute.mockReset();
     execute.mockResolvedValue({ response: null });
     const repository = {
@@ -33,6 +35,7 @@ describe('OfflineSyncService', () => {
         commands.filter((item) => item.userId === scope.userId && item.groupId === scope.groupId),
       ),
       putCommand: vi.fn(async (command: OfflineCommand) => {
+        await beforePutCommand?.(command);
         commands = commands.filter((item) => item.commandId !== command.commandId);
         commands.push(structuredClone(command));
         commands.sort((left, right) => left.createdAt - right.createdAt);
@@ -198,6 +201,38 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.flush();
     expect(execute).toHaveBeenCalledTimes(2);
+    expect(service.pendingCount()).toBe(0);
+  });
+
+  it('sending書き込み中の同一session resetでも完了後にpendingへ復旧する', async () => {
+    let notifySendingStarted!: () => void;
+    const sendingStarted = new Promise<void>((resolve) => (notifySendingStarted = resolve));
+    let releaseSendingWrite!: () => void;
+    const sendingWrite = new Promise<void>((resolve) => (releaseSendingWrite = resolve));
+    beforePutCommand = async (command) => {
+      if (command.state !== 'sending') return;
+      notifySendingStarted();
+      await sendingWrite;
+    };
+    await service.enqueue(
+      { groupId: 10, aggregateType: 'documents', aggregateId: '1', operation: 'documents.upsert', payload: { seq: 1 } },
+      { flush: false },
+    );
+    connected.set(true);
+    const oldFlush = service.flush();
+    await sendingStarted;
+    connected.set(false);
+    const reset = service.resetSession();
+    releaseSendingWrite();
+    await reset;
+    beforePutCommand = null;
+    await service.refreshSession();
+    expect(service.pendingCommands()[0]?.state).toBe('pending');
+    await oldFlush;
+    expect(execute).not.toHaveBeenCalled();
+    connected.set(true);
+    await service.flush();
+    expect(execute).toHaveBeenCalledOnce();
     expect(service.pendingCount()).toBe(0);
   });
 });

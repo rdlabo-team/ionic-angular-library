@@ -38,6 +38,7 @@ export class OfflineSyncService {
   #activeUserId: number | null = null;
   #flushPromise: Promise<void> | null = null;
   #generation = 0;
+  readonly #sendingTransitions = new Set<Promise<void>>();
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #initialized = false;
 
@@ -90,6 +91,7 @@ export class OfflineSyncService {
 
   async resetSession(): Promise<void> {
     this.#invalidateFlush();
+    await this.#waitForSendingTransitions();
     await this.#restoreInterruptedCommands();
     this.#activeUserId = null;
     this.#knownScopes.clear();
@@ -132,6 +134,7 @@ export class OfflineSyncService {
     const command = (await this.#readKnownCommands()).find((item) => item.commandId === commandId);
     if (!command) return;
     this.#invalidateFlush();
+    await this.#waitForSendingTransitions();
     await this.#repository.removeCommand(command.commandId);
     await this.#hooks.onCommandRemoved?.(command);
     await this.#restoreInterruptedCommands();
@@ -142,6 +145,7 @@ export class OfflineSyncService {
   async discardAllPending(): Promise<void> {
     await this.initialize();
     this.#invalidateFlush();
+    await this.#waitForSendingTransitions();
     const commands = await this.#readKnownCommands();
     await Promise.all(
       commands.map(async (command) => {
@@ -213,7 +217,7 @@ export class OfflineSyncService {
         retryAt: null,
         lastErrorCode: null,
       };
-      await this.#repository.putCommand(sending);
+      await this.#putSendingCommand(sending);
       if (!this.#isCurrent(generation)) return;
       await this.#refreshState(generation);
       if (!this.#isCurrent(generation)) return;
@@ -364,6 +368,20 @@ export class OfflineSyncService {
         .filter((command) => command.state === 'sending')
         .map((command) => this.#repository.putCommand({ ...command, state: 'pending' })),
     );
+  }
+
+  #putSendingCommand(command: OfflineCommand): Promise<void> {
+    const transition = this.#repository.putCommand(command);
+    this.#sendingTransitions.add(transition);
+    void transition.then(
+      () => this.#sendingTransitions.delete(transition),
+      () => this.#sendingTransitions.delete(transition),
+    );
+    return transition;
+  }
+
+  async #waitForSendingTransitions(): Promise<void> {
+    await Promise.allSettled([...this.#sendingTransitions]);
   }
 
   async #payloadHash(payload: unknown): Promise<string> {
