@@ -3,6 +3,7 @@ import { HttpHeaders, HttpResponse as AngularHttpResponse } from '@angular/commo
 import { inject, Injectable } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { catchError, concatMap, defer, from, map, of, throwError } from 'rxjs';
+import { OFFLINE_ERROR_REPORTER, type OfflineErrorReporter } from './offline-error-reporter';
 import { isOfflineFallbackError } from './offline-network.service';
 import {
   OFFLINE_BYPASS,
@@ -15,17 +16,20 @@ export const offlineInterceptor: HttpInterceptorFn = (request, next) => {
   if (request.context.get(OFFLINE_BYPASS)) return next(request);
   const registry = inject(OfflineRequestPolicyRegistry);
   const fallback = inject(OfflineRequestFallbackService);
+  const errorReporter = inject(OFFLINE_ERROR_REPORTER);
   const plan = registry.resolve(request);
   if (!plan) return next(request);
   if (plan.kind === 'mutation') {
     if (plan.enqueue) return enqueueMutation(plan.enqueue, request.urlWithParams);
     if (!plan.storeFresh) return next(request);
-    return observeRemoteResponse(next(request), plan.storeFresh);
+    return observeRemoteResponse(next(request), plan.storeFresh, errorReporter, request);
   }
   if (request.method !== 'GET') return next(request);
   return observeRemoteResponse(
     defer(() => next(request)),
     plan.storeFresh,
+    errorReporter,
+    request,
   ).pipe(catchError((error: unknown) => fallback.handle(request, error, plan) ?? throwError(() => error)));
 };
 
@@ -53,13 +57,18 @@ export class OfflineRequestFallbackService {
 function observeRemoteResponse(
   source: Observable<HttpEvent<unknown>>,
   storeFresh: (response: HttpResponse<unknown>) => Promise<void>,
+  errorReporter: OfflineErrorReporter,
+  request: HttpRequest<unknown>,
 ): Observable<HttpEvent<unknown>> {
   return source.pipe(
     concatMap((event) => {
       if (!(event instanceof AngularHttpResponse) || event.headers.has(OFFLINE_RESPONSE_HEADER)) return of(event);
       return defer(() => from(storeFresh(event))).pipe(
         map(() => event),
-        catchError(() => of(event)),
+        catchError((error: unknown) => {
+          errorReporter.report(error, { operation: 'storeFresh', method: request.method, url: request.urlWithParams });
+          return of(event);
+        }),
       );
     }),
   );

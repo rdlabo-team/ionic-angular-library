@@ -8,11 +8,13 @@ import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import type { OfflineKitOptions } from './offline-kit-options';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
+import type { OfflineErrorReporter } from './offline-error-reporter';
+import { OFFLINE_ERROR_REPORTER } from './offline-error-reporter';
 import { IonicOfflineRepository, OFFLINE_REPOSITORY, selectOfflineRepository } from './offline-repository';
 import type { OfflineRequestPolicy } from './offline-request-policy';
 import { provideOfflineRequestPolicy } from './offline-request-policy';
 import { OfflineSessionService } from './offline-session.service';
-import { SqliteOfflineRepository } from './sqlite-offline-repository';
+import { CAPAWESOME_SQLITE, type CapawesomeSqlitePlugin, SqliteOfflineRepository } from './sqlite-offline-repository';
 
 /** Configuration for the standard offline repository, outbox, and request-policy runtime. */
 export interface ProvideOfflineOptions extends OfflineKitOptions {
@@ -22,22 +24,30 @@ export interface ProvideOfflineOptions extends OfflineKitOptions {
   requestPolicies: readonly Type<OfflineRequestPolicy>[];
   /** Optional product hooks for cache projection and command cleanup. */
   commandHooks?: Type<OfflineCommandHooks>;
+  /** Optional reporter for background cache persistence failures. Defaults to console.error. */
+  errorReporter?: Type<OfflineErrorReporter>;
   /** Optional additional providers required by product adapters. */
   providers?: readonly Provider[];
+  /** Capawesome `Sqlite` plugin. Required only when this runtime is selected on iOS or Android. */
+  sqlitePlugin?: CapawesomeSqlitePlugin;
 }
 
 /**
  * Provide the standard scoped offline runtime.
  *
  * @remarks
- * Web uses Ionic Storage. Native iOS/Android uses encrypted Capacitor SQLite. The application owns
+ * Web uses Ionic Storage. Native iOS/Android uses encrypted Capawesome SQLite. The application owns
  * URL/DTO policy and command execution; the kit owns persistence, ordering, retries, and session
  * isolation.
  */
 export function provideOffline(options: ProvideOfflineOptions): EnvironmentProviders {
   return makeEnvironmentProviders([
     options.commandExecutor,
-    { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: options.databaseName } },
+    {
+      provide: OFFLINE_KIT_OPTIONS,
+      useValue: { databaseName: options.databaseName, encryptionKey: options.encryptionKey },
+    },
+    { provide: CAPAWESOME_SQLITE, useValue: options.sqlitePlugin ?? null },
     {
       provide: OFFLINE_REPOSITORY,
       useFactory: () => selectOfflineRepository(Capacitor.getPlatform(), inject(IonicOfflineRepository), inject(SqliteOfflineRepository)),
@@ -45,6 +55,7 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
     { provide: OFFLINE_SYNC_CONTEXT, useExisting: OfflineSessionService },
     { provide: OFFLINE_COMMAND_EXECUTOR, useExisting: options.commandExecutor },
     ...(options.commandHooks ? [options.commandHooks, { provide: OFFLINE_COMMAND_HOOKS, useExisting: options.commandHooks }] : []),
+    ...(options.errorReporter ? [options.errorReporter, { provide: OFFLINE_ERROR_REPORTER, useExisting: options.errorReporter }] : []),
     ...options.requestPolicies.flatMap((policy) => provideOfflineRequestPolicy(policy)),
     ...(options.providers ?? []),
     provideAppInitializer(() => inject(OfflineCoordinatorService).initialize()),

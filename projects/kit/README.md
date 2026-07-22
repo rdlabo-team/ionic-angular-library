@@ -336,8 +336,24 @@ A fleet-canonical HTTP interceptor with:
 The optional `offline` entry point provides a user/group-scoped cache, durable outbox, authenticated
 session boundary, aggregate-ordered replay, retry classification, and request-policy interceptor.
 Applications provide only their URL/DTO policy and command executor through `provideOffline(...)`.
-Web storage uses Ionic Storage; iOS and Android use encrypted Capacitor SQLite. Importing the primary
-kit entry point does not pull in the SQLite peer.
+Web storage uses Ionic Storage; iOS and Android use encrypted Capawesome SQLite. Importing either the
+primary entry point or `/offline` does not pull the private plugin into existing applications.
+
+Native applications install the Insiders package in the application, then pass its `Sqlite` export
+and an encryption key loaded from secure device storage to the kit:
+
+```bash
+npm install @capawesome-team/capacitor-sqlite
+```
+
+```ts
+provideOffline({
+  // ...product policies and executor
+  sqlitePlugin: Sqlite,
+  encryptionKey: () => securePreferences.get({ key: 'offline-database-key' }).then(({ value }) => value),
+});
+```
+
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 - **Universal 60s timeout** — every request fails with a synthetic (retryable) `408` if it hangs for 60s. Deliberately generous (catches a dead server without cutting off a large upload / AI generation; `timeout({ each })` resets per emission, so streaming is unaffected). Not configurable — one fleet-wide behavior.
 - **Optional `treatAsError(response)`** — reject a 2xx (e.g. `204`/`206`) as an error when a backend uses it to signal a condition. The one genuinely app-specific bit (some apps receive a normal `204`), kept optional so class interceptors with a 2xx-as-error convention can migrate to `provideKitHttp`.

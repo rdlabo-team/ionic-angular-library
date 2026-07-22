@@ -25,13 +25,14 @@ export class OfflineCoordinatorService {
   }
 
   async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
+    await this.#sync.resetSession();
     await this.#session.activateSession(userId, scopeIds, authSubject);
     await this.#sync.refreshSession();
   }
 
   async clearActiveSession(): Promise<void> {
-    await this.#session.clearActiveSession();
     await this.#sync.resetSession();
+    await this.#session.clearActiveSession();
   }
 
   async prepareLogout(action: OfflineLogoutAction): Promise<boolean> {

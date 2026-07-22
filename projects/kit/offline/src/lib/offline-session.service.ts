@@ -42,13 +42,17 @@ export class OfflineSessionService {
     await this.initialize();
     const normalizedScopeIds = [...new Set(scopeIds)].filter((id) => id !== SESSION_GROUP_ID).sort((a, b) => a - b);
     const previousUserId = await this.#repository.getLastUserId();
-    if (previousUserId !== null && previousUserId !== userId) await this.#repository.clearUser(previousUserId);
-
     const sessionScope = { userId, groupId: SESSION_GROUP_ID };
-    const previous =
+    let previous =
       previousUserId === userId
         ? ((await this.#repository.getEntity<OfflineSessionManifest>(sessionScope, SESSION_ENTITY_TYPE, SESSION_ENTITY_ID))?.value ?? null)
         : null;
+    // A changed provider subject is a different person even when the product reuses its numeric id.
+    // This deliberately also clears legacy null -> known subject and known subject -> null transitions.
+    if (previousUserId !== null && (previousUserId !== userId || previous?.authSubject !== authSubject)) {
+      await this.#repository.clearUser(previousUserId);
+      previous = null;
+    }
     const active = new Set(normalizedScopeIds);
     await Promise.all(
       (previous?.scopeIds ?? [])

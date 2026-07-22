@@ -1,5 +1,4 @@
 import { inject, Injectable, InjectionToken } from '@angular/core';
-import { CapacitorSQLite, SQLiteConnection, type SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
   OFFLINE_SCHEMA_VERSION,
@@ -10,21 +9,33 @@ import {
   type OfflineScope,
 } from './offline-repository';
 
-export const OFFLINE_SQLITE_CONNECTION = new InjectionToken<SQLiteConnection>('OFFLINE_SQLITE_CONNECTION', {
-  factory: () => new SQLiteConnection(CapacitorSQLite),
+export interface CapawesomeSqlitePlugin {
+  open(options: { path: string; encryptionKey: string; readOnly: false }): Promise<{ databaseId: string }>;
+  execute(options: { databaseId: string; statement: string; values?: SQLiteValue[] }): Promise<unknown>;
+  query(options: { databaseId: string; statement: string; values?: SQLiteValue[] }): Promise<{
+    columns?: string[];
+    rows?: unknown[];
+  }>;
+  beginTransaction(options: { databaseId: string }): Promise<void>;
+  commitTransaction(options: { databaseId: string }): Promise<void>;
+  rollbackTransaction(options: { databaseId: string }): Promise<void>;
+}
+
+export const CAPAWESOME_SQLITE = new InjectionToken<CapawesomeSqlitePlugin | null>('CAPAWESOME_SQLITE', {
+  factory: () => null,
 });
 
 type SQLiteValue = string | number | null;
 type SQLiteRow = Record<string, unknown>;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS offline_metadata (
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS offline_metadata (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   schema_version INTEGER NOT NULL,
   last_user_id INTEGER,
   next_local_id INTEGER NOT NULL DEFAULT 2000000000000
-);
-CREATE TABLE IF NOT EXISTS offline_entities (
+)`,
+  `CREATE TABLE IF NOT EXISTS offline_entities (
   user_id INTEGER NOT NULL,
   group_id INTEGER NOT NULL,
   entity_type TEXT NOT NULL,
@@ -33,8 +44,8 @@ CREATE TABLE IF NOT EXISTS offline_entities (
   server_revision_json TEXT,
   fetched_at INTEGER NOT NULL,
   PRIMARY KEY (user_id, group_id, entity_type, entity_id)
-);
-CREATE TABLE IF NOT EXISTS offline_queries (
+)`,
+  `CREATE TABLE IF NOT EXISTS offline_queries (
   user_id INTEGER NOT NULL,
   group_id INTEGER NOT NULL,
   query_key TEXT NOT NULL,
@@ -45,8 +56,8 @@ CREATE TABLE IF NOT EXISTS offline_queries (
   fetched_at INTEGER NOT NULL,
   is_complete INTEGER NOT NULL,
   PRIMARY KEY (user_id, group_id, query_key)
-);
-CREATE TABLE IF NOT EXISTS offline_sync_commands (
+)`,
+  `CREATE TABLE IF NOT EXISTS offline_sync_commands (
   command_id TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
   group_id INTEGER NOT NULL,
@@ -61,17 +72,17 @@ CREATE TABLE IF NOT EXISTS offline_sync_commands (
   retry_at INTEGER,
   created_at INTEGER NOT NULL,
   last_error_code TEXT
-);
-CREATE INDEX IF NOT EXISTS offline_sync_commands_scope_created
-  ON offline_sync_commands (user_id, group_id, created_at);
-`;
+)`,
+  `CREATE INDEX IF NOT EXISTS offline_sync_commands_scope_created
+  ON offline_sync_commands (user_id, group_id, created_at)`,
+];
 
-/** Native iOS/AndroidはSQLCipher対応Capacitor SQLiteを利用する。 */
+/** Native iOS/Android uses the encrypted Capawesome SQLite plugin supplied by the application. */
 @Injectable({ providedIn: 'root' })
 export class SqliteOfflineRepository implements OfflineRepository {
-  readonly #sqlite = inject(OFFLINE_SQLITE_CONNECTION);
+  readonly #sqlite = inject(CAPAWESOME_SQLITE);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
-  #database: SQLiteDBConnection | null = null;
+  #databaseId: string | null = null;
   #initialization: Promise<void> | null = null;
   #writes: Promise<void> = Promise.resolve();
 
@@ -96,9 +107,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   async allocateLocalId(): Promise<number> {
     let allocated = 0;
     await this.#transaction(async (database) => {
-      await database.run('UPDATE offline_metadata SET next_local_id = next_local_id + 1 WHERE id = 1', [], false);
-      const result = await database.query('SELECT next_local_id FROM offline_metadata WHERE id = 1');
-      allocated = this.#number((result.values?.[0] as SQLiteRow | undefined)?.['next_local_id']);
+      await this.#execute(database, 'UPDATE offline_metadata SET next_local_id = next_local_id + 1 WHERE id = 1');
+      const rows = await this.#queryDatabase(database, 'SELECT next_local_id FROM offline_metadata WHERE id = 1');
+      allocated = this.#number(rows[0]?.['next_local_id']);
     });
     return allocated;
   }
@@ -233,76 +244,72 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async clearUser(userId: number): Promise<void> {
     await this.#transaction(async (database) => {
-      await database.run('DELETE FROM offline_entities WHERE user_id = ?', [userId], false);
-      await database.run('DELETE FROM offline_queries WHERE user_id = ?', [userId], false);
-      await database.run('DELETE FROM offline_sync_commands WHERE user_id = ?', [userId], false);
-      await database.run('UPDATE offline_metadata SET last_user_id = NULL WHERE id = 1 AND last_user_id = ?', [userId], false);
+      await this.#execute(database, 'DELETE FROM offline_entities WHERE user_id = ?', [userId]);
+      await this.#execute(database, 'DELETE FROM offline_queries WHERE user_id = ?', [userId]);
+      await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ?', [userId]);
+      await this.#execute(database, 'UPDATE offline_metadata SET last_user_id = NULL WHERE id = 1 AND last_user_id = ?', [userId]);
     });
   }
 
   async clearGroup(scope: OfflineScope): Promise<void> {
     await this.#transaction(async (database) => {
       const values = [scope.userId, scope.groupId];
-      await database.run('DELETE FROM offline_entities WHERE user_id = ? AND group_id = ?', values, false);
-      await database.run('DELETE FROM offline_queries WHERE user_id = ? AND group_id = ?', values, false);
-      await database.run('DELETE FROM offline_sync_commands WHERE user_id = ? AND group_id = ?', values, false);
+      await this.#execute(database, 'DELETE FROM offline_entities WHERE user_id = ? AND group_id = ?', values);
+      await this.#execute(database, 'DELETE FROM offline_queries WHERE user_id = ? AND group_id = ?', values);
+      await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ? AND group_id = ?', values);
     });
   }
 
   async #open(): Promise<void> {
-    const encryptionConfigured = await this.#sqlite.isInConfigEncryption();
-    if (!encryptionConfigured.result) {
-      throw new Error('Encrypted offline storage requires CapacitorSQLite native encryption configuration');
+    if (!this.#sqlite) throw new Error('Native offline storage requires the Capawesome Sqlite plugin');
+    const encryptionKey = await this.#options.encryptionKey?.();
+    if (!encryptionKey) throw new Error('Native offline storage requires a non-empty encryption key');
+    const { databaseId } = await this.#sqlite.open({
+      path: `${this.#options.databaseName}.sqlite3`,
+      encryptionKey,
+      readOnly: false,
+    });
+    this.#databaseId = databaseId;
+    for (const statement of SCHEMA) await this.#execute(databaseId, statement);
+    const metadataColumns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_metadata)');
+    if (!metadataColumns.some((column) => column['name'] === 'next_local_id')) {
+      await this.#execute(databaseId, 'ALTER TABLE offline_metadata ADD COLUMN next_local_id INTEGER NOT NULL DEFAULT 2000000000000');
     }
-    const secretStored = await this.#sqlite.isSecretStored();
-    if (!secretStored.result) await this.#sqlite.setEncryptionSecret(this.#createSecret());
-
-    const databaseName = this.#options.databaseName;
-    const connectionExists = await this.#sqlite.isConnection(databaseName, false);
-    this.#database = connectionExists.result
-      ? await this.#sqlite.retrieveConnection(databaseName, false)
-      : await this.#sqlite.createConnection(databaseName, true, 'secret', OFFLINE_SCHEMA_VERSION, false);
-    if (!(await this.#database.isDBOpen()).result) await this.#database.open();
-    await this.#database.execute(SCHEMA, true);
-    const metadataColumns = await this.#database.query('PRAGMA table_info(offline_metadata)');
-    if (!(metadataColumns.values ?? []).some((column) => column['name'] === 'next_local_id')) {
-      await this.#database.execute('ALTER TABLE offline_metadata ADD COLUMN next_local_id INTEGER NOT NULL DEFAULT 2000000000000', true);
-    }
-    await this.#database.run(
+    await this.#execute(
+      databaseId,
       `INSERT INTO offline_metadata (id, schema_version, last_user_id, next_local_id) VALUES (1, ?, NULL, 2000000000000)
        ON CONFLICT(id) DO UPDATE SET schema_version = excluded.schema_version`,
       [OFFLINE_SCHEMA_VERSION],
     );
   }
 
-  async #databaseConnection(): Promise<SQLiteDBConnection> {
+  async #databaseConnection(): Promise<string> {
     await this.initialize();
-    if (!this.#database) throw new Error('Offline SQLite database is not initialized');
-    return this.#database;
+    if (!this.#databaseId) throw new Error('Offline SQLite database is not initialized');
+    return this.#databaseId;
   }
 
   async #query(statement: string, values: SQLiteValue[] = []): Promise<SQLiteRow[]> {
-    const result = await (await this.#databaseConnection()).query(statement, values);
-    return (result.values ?? []) as SQLiteRow[];
+    return this.#queryDatabase(await this.#databaseConnection(), statement, values);
   }
 
   #write(statement: string, values: SQLiteValue[]): Promise<void> {
     const write = this.#writes.then(async (): Promise<void> => {
-      await (await this.#databaseConnection()).run(statement, values);
+      await this.#execute(await this.#databaseConnection(), statement, values);
     });
     this.#writes = write.catch((): void => undefined);
     return write;
   }
 
-  #transaction(run: (database: SQLiteDBConnection) => Promise<void>): Promise<void> {
+  #transaction(run: (databaseId: string) => Promise<void>): Promise<void> {
     const write = this.#writes.then(async (): Promise<void> => {
-      const database = await this.#databaseConnection();
-      await database.beginTransaction();
+      const databaseId = await this.#databaseConnection();
+      await this.#sqlite!.beginTransaction({ databaseId });
       try {
-        await run(database);
-        await database.commitTransaction();
+        await run(databaseId);
+        await this.#sqlite!.commitTransaction({ databaseId });
       } catch (error) {
-        await database.rollbackTransaction();
+        await this.#sqlite!.rollbackTransaction({ databaseId });
         throw error;
       }
     });
@@ -329,8 +336,16 @@ export class SqliteOfflineRepository implements OfflineRepository {
     };
   }
 
-  #createSecret(): string {
-    return Array.from(crypto.getRandomValues(new Uint8Array(32)), (value) => value.toString(16).padStart(2, '0')).join('');
+  async #execute(databaseId: string, statement: string, values: SQLiteValue[] = []): Promise<void> {
+    await this.#sqlite!.execute({ databaseId, statement, values });
+  }
+
+  async #queryDatabase(databaseId: string, statement: string, values: SQLiteValue[] = []): Promise<SQLiteRow[]> {
+    const result = await this.#sqlite!.query({ databaseId, statement, values });
+    return (result.rows ?? []).map((row) => {
+      if (!Array.isArray(row)) return row as SQLiteRow;
+      return Object.fromEntries(row.map((value, index) => [result.columns?.[index] ?? String(index), value]));
+    });
   }
 
   #parse<T>(value: unknown): T {

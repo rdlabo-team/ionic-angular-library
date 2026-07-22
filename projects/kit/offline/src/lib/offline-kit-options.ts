@@ -4,6 +4,8 @@ import { InjectionToken } from '@angular/core';
 export interface OfflineKitOptions {
   /** Encrypted SQLite database name used on iOS and Android. */
   databaseName: string;
+  /** Resolves the native database key from secure device storage. Required on iOS and Android. */
+  encryptionKey?: () => Promise<string>;
 }
 
 /** DI token for product-independent offline persistence settings. */

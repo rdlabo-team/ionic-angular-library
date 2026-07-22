@@ -64,4 +64,19 @@ describe('OfflineSessionService shared-device boundary', () => {
     await expect(service.getSession()).resolves.toEqual({ userId: 20, scopes: [{ userId: 20, groupId: 2 }] });
     expect(service.activeManifest()).toMatchObject({ userId: 20, authSubject: 'uid-B' });
   });
+
+  it('同じuserIdでもauthSubjectが変わると旧主体の全scopeを継承しない', async () => {
+    await service.initialize();
+    await service.activateSession(10, [2], 'uid-B');
+    expect(clearUser).toHaveBeenCalledWith(10);
+    expect(entities.some((entity) => entity.entityType === '__offline_session' && entity.value)).toBe(true);
+    expect(service.activeManifest()).toMatchObject({ userId: 10, scopeIds: [2], authSubject: 'uid-B' });
+  });
+
+  it('legacy null subjectから既知subjectへの移行時も旧cacheを削除する', async () => {
+    (entities[0]!.value as OfflineSessionManifest).authSubject = null;
+    await service.initialize();
+    await service.activateSession(10, [1], 'uid-A');
+    expect(clearUser).toHaveBeenCalledWith(10);
+  });
 });

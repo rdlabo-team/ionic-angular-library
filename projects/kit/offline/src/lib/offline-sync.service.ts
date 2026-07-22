@@ -16,6 +16,13 @@ export interface EnqueueOfflineCommand<T = unknown> {
   baseRevision?: string | number | null;
 }
 
+export class OfflinePayloadValidationError extends Error {
+  constructor(message = 'Offline command payload must contain only JSON values') {
+    super(message);
+    this.name = 'OfflinePayloadValidationError';
+  }
+}
+
 const MAX_PARALLEL_AGGREGATES = 3;
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
 
@@ -30,6 +37,7 @@ export class OfflineSyncService {
   readonly #knownScopes = new Map<string, OfflineScope>();
   #activeUserId: number | null = null;
   #flushPromise: Promise<void> | null = null;
+  #generation = 0;
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #initialized = false;
 
@@ -81,6 +89,7 @@ export class OfflineSyncService {
   }
 
   async resetSession(): Promise<void> {
+    this.#invalidateFlush();
     this.#activeUserId = null;
     this.#knownScopes.clear();
     this.#commands.set([]);
@@ -121,16 +130,20 @@ export class OfflineSyncService {
     await this.initialize();
     const command = (await this.#readKnownCommands()).find((item) => item.commandId === commandId);
     if (!command) return;
+    this.#invalidateFlush();
     await this.#repository.removeCommand(command.commandId);
     await this.#hooks.onCommandRemoved?.(command);
+    await this.#restoreInterruptedCommands();
     await this.#refreshState();
     if (options.flush !== false && this.#network.connected()) void this.flush();
   }
 
   async discardAllPending(): Promise<void> {
     await this.initialize();
+    this.#invalidateFlush();
+    const commands = await this.#readKnownCommands();
     await Promise.all(
-      this.pendingCommands().map(async (command) => {
+      commands.map(async (command) => {
         await this.#repository.removeCommand(command.commandId);
         await this.#hooks.onCommandRemoved?.(command);
       }),
@@ -139,29 +152,36 @@ export class OfflineSyncService {
   }
 
   flush(): Promise<void> {
-    this.#flushPromise ??= this.#runFlush().finally(() => (this.#flushPromise = null));
-    return this.#flushPromise;
+    if (this.#flushPromise) return this.#flushPromise;
+    const generation = this.#generation;
+    const promise = this.#runFlush(generation).finally(() => {
+      if (this.#flushPromise === promise) this.#flushPromise = null;
+    });
+    this.#flushPromise = promise;
+    return promise;
   }
 
-  async #runFlush(): Promise<void> {
+  async #runFlush(generation: number): Promise<void> {
+    if (!this.#isCurrent(generation)) return;
     if (!this.#network.connected()) {
-      await this.#refreshState();
+      await this.#refreshState(generation);
       return;
     }
-    await this.#discoverScopes();
-    while (this.#network.connected()) {
+    if (!(await this.#discoverScopes(generation))) return;
+    while (this.#network.connected() && this.#isCurrent(generation)) {
       const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands());
+      if (!this.#isCurrent(generation)) return;
       if (groups.length === 0) break;
       let cursor = 0;
       const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
         while (cursor < groups.length) {
           const group = groups[cursor++];
-          if (group) await this.#sendAggregate(group);
+          if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation);
         }
       });
       await Promise.all(workers);
     }
-    await this.#refreshState();
+    await this.#refreshState(generation);
   }
 
   #eligibleAggregateGroups(commands: OfflineCommand[]): OfflineCommand[][] {
@@ -179,8 +199,9 @@ export class OfflineSyncService {
     });
   }
 
-  async #sendAggregate(commands: OfflineCommand[]): Promise<void> {
+  async #sendAggregate(commands: OfflineCommand[], generation: number): Promise<void> {
     for (let index = 0; index < commands.length; index++) {
+      if (!this.#isCurrent(generation)) return;
       const command = commands[index]!;
       if (command.state === 'retry_wait' && (command.retryAt ?? 0) > Date.now()) break;
       if (!['pending', 'retry_wait'].includes(command.state)) break;
@@ -192,16 +213,22 @@ export class OfflineSyncService {
         lastErrorCode: null,
       };
       await this.#repository.putCommand(sending);
-      await this.#refreshState();
+      if (!this.#isCurrent(generation)) return;
+      await this.#refreshState(generation);
+      if (!this.#isCurrent(generation)) return;
       try {
         const result = await this.#executor.execute(sending);
+        if (!this.#isCurrent(generation)) return;
         const revision = result.serverRevision;
         if (this.#hooks.shouldUpdateCache(sending, result)) {
-          await this.#updateCachedEntity(sending, result);
-          if (revision !== undefined) await this.#rebaseFollowingCommands(commands, index + 1, revision);
+          await this.#updateCachedEntity(sending, result, generation);
+          if (!this.#isCurrent(generation)) return;
+          if (revision !== undefined) await this.#rebaseFollowingCommands(commands, index + 1, revision, generation);
         }
+        if (!this.#isCurrent(generation)) return;
         await this.#repository.removeCommand(sending.commandId);
       } catch (error) {
+        if (!this.#isCurrent(generation)) return;
         const failed = this.#failedCommand(sending, error);
         await this.#repository.putCommand(failed);
         if (failed.state === 'retry_wait') this.#scheduleRetry(failed.retryAt);
@@ -228,10 +255,11 @@ export class OfflineSyncService {
     return { payload, baseRevision };
   }
 
-  async #updateCachedEntity(command: OfflineCommand, result: { serverRevision?: string | number; response?: unknown }) {
+  async #updateCachedEntity(command: OfflineCommand, result: { serverRevision?: string | number; response?: unknown }, generation: number) {
     const scope = { userId: command.userId, groupId: command.groupId };
     const entityType = this.#hooks.cacheEntityType(command);
     const cached = await this.#repository.getEntity(scope, entityType, command.aggregateId);
+    if (!this.#isCurrent(generation)) return;
     if (!cached) return;
     const projected = this.#executor.projectEntity?.(command, cached, result);
     if (!projected && result.serverRevision === undefined) return;
@@ -243,8 +271,9 @@ export class OfflineSyncService {
     });
   }
 
-  async #rebaseFollowingCommands(commands: OfflineCommand[], start: number, revision: string | number) {
+  async #rebaseFollowingCommands(commands: OfflineCommand[], start: number, revision: string | number, generation: number) {
     for (let index = start; index < commands.length; index++) {
+      if (!this.#isCurrent(generation)) return;
       const rebased = this.#executor.withServerRevision(commands[index]!, revision);
       commands[index] = rebased;
       await this.#repository.replaceCommand(rebased);
@@ -268,16 +297,18 @@ export class OfflineSyncService {
     return typeof status === 'number' ? status : 0;
   }
 
-  async #discoverScopes(): Promise<void> {
+  async #discoverScopes(generation = this.#generation): Promise<boolean> {
     const session = await this.#context.getSession();
+    if (!this.#isCurrent(generation)) return false;
     if (!session) {
       this.#activeUserId = null;
       this.#knownScopes.clear();
-      return;
+      return true;
     }
     this.#setActiveUser(session.userId);
     this.#knownScopes.clear();
     for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
+    return true;
   }
 
   #setActiveUser(userId: number): void {
@@ -292,8 +323,9 @@ export class OfflineSyncService {
       .sort((left, right) => left.createdAt - right.createdAt);
   }
 
-  async #refreshState(): Promise<void> {
+  async #refreshState(generation = this.#generation): Promise<void> {
     const commands = await this.#readKnownCommands();
+    if (!this.#isCurrent(generation)) return;
     this.#commands.set(commands);
     const nextRetry = commands
       .filter((command) => command.state === 'retry_wait' && command.retryAt !== null)
@@ -314,6 +346,25 @@ export class OfflineSyncService {
     );
   }
 
+  #invalidateFlush(): void {
+    this.#generation += 1;
+    this.#flushPromise = null;
+    this.#scheduleRetry(null);
+  }
+
+  #isCurrent(generation: number): boolean {
+    return generation === this.#generation;
+  }
+
+  async #restoreInterruptedCommands(): Promise<void> {
+    const commands = await this.#readKnownCommands();
+    await Promise.all(
+      commands
+        .filter((command) => command.state === 'sending')
+        .map((command) => this.#repository.putCommand({ ...command, state: 'pending' })),
+    );
+  }
+
   async #payloadHash(payload: unknown): Promise<string> {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(this.#canonicalJson(payload)));
     return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -322,13 +373,22 @@ export class OfflineSyncService {
   #canonicalJson(value: unknown): string {
     if (Array.isArray(value)) return `[${value.map((item) => this.#canonicalJson(item)).join(',')}]`;
     if (value !== null && typeof value === 'object') {
+      if (Object.getPrototypeOf(value) !== Object.prototype) {
+        throw new OfflinePayloadValidationError();
+      }
       return `{${Object.entries(value)
-        .filter(([, item]) => item !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([key, item]) => `${JSON.stringify(key)}:${this.#canonicalJson(item)}`)
         .join(',')}}`;
     }
-    return JSON.stringify(value) ?? 'null';
+    if (typeof value === 'number' && !Number.isFinite(value)) {
+      throw new OfflinePayloadValidationError();
+    }
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== 'string') {
+      throw new OfflinePayloadValidationError();
+    }
+    return serialized;
   }
 
   #scopeKey(scope: OfflineScope): string {

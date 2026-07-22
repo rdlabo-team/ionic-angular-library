@@ -2,17 +2,32 @@ import { HttpContext, HttpErrorResponse, HttpRequest, HttpResponse } from '@angu
 import { TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { firstValueFrom, of, throwError } from 'rxjs';
+import { OFFLINE_ERROR_REPORTER } from './offline-error-reporter';
 import { offlineInterceptor } from './offline.interceptor';
 import { OFFLINE_BYPASS, OFFLINE_RESPONSE_HEADER, type OfflineRequestPlan, OfflineRequestPolicyRegistry } from './offline-request-policy';
 
 describe('offlineInterceptor', () => {
   let resolve: ReturnType<typeof vi.fn<(request: HttpRequest<unknown>) => OfflineRequestPlan | null>>;
+  let report: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     resolve = vi.fn(() => null);
+    report = vi.fn();
     TestBed.configureTestingModule({
-      providers: [{ provide: OfflineRequestPolicyRegistry, useValue: { resolve } }],
+      providers: [
+        { provide: OfflineRequestPolicyRegistry, useValue: { resolve } },
+        { provide: OFFLINE_ERROR_REPORTER, useValue: { report } },
+      ],
     });
+  });
+
+  it('保存失敗をreportしつつ成功responseは呼び出し元へ返す', async () => {
+    const error = new Error('storage unavailable');
+    resolve.mockReturnValue({ kind: 'read', storeFresh: vi.fn(async () => Promise.reject(error)), readCached: vi.fn() });
+    const request = new HttpRequest('GET', '/bootstrap?group=1');
+    const response = new HttpResponse({ status: 200 });
+    await expect(firstValueFrom(run(request, () => of(response)))).resolves.toBe(response);
+    expect(report).toHaveBeenCalledWith(error, { operation: 'storeFresh', method: 'GET', url: '/bootstrap?group=1' });
   });
 
   it('再送requestはpolicyを迂回してtransportへ渡す', async () => {
