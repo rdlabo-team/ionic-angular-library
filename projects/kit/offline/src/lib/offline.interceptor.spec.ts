@@ -30,6 +30,22 @@ describe('offlineInterceptor', () => {
     expect(report).toHaveBeenCalledWith(error, { operation: 'storeFresh', method: 'GET', url: '/bootstrap?group=1' });
   });
 
+  it('reporter自身がthrowしても成功responseを置き換えない', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    report.mockImplementationOnce(() => {
+      throw new Error('reporter unavailable');
+    });
+    resolve.mockReturnValue({
+      kind: 'read',
+      storeFresh: vi.fn(async () => Promise.reject(new Error('storage unavailable'))),
+      readCached: vi.fn(),
+    });
+    const response = new HttpResponse({ status: 200 });
+    await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), () => of(response)))).resolves.toBe(response);
+    expect(consoleError).toHaveBeenCalledOnce();
+    consoleError.mockRestore();
+  });
+
   it('再送requestはpolicyを迂回してtransportへ渡す', async () => {
     const request = new HttpRequest('POST', '/resource', null, {
       context: new HttpContext().set(OFFLINE_BYPASS, true),

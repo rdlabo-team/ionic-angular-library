@@ -90,6 +90,7 @@ export class OfflineSyncService {
 
   async resetSession(): Promise<void> {
     this.#invalidateFlush();
+    await this.#restoreInterruptedCommands();
     this.#activeUserId = null;
     this.#knownScopes.clear();
     this.#commands.set([]);

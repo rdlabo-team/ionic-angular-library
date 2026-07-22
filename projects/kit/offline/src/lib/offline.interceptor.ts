@@ -66,12 +66,27 @@ function observeRemoteResponse(
       return defer(() => from(storeFresh(event))).pipe(
         map(() => event),
         catchError((error: unknown) => {
-          errorReporter.report(error, { operation: 'storeFresh', method: request.method, url: request.urlWithParams });
-          return of(event);
+          return from(
+            reportPersistenceError(errorReporter, error, {
+              operation: 'storeFresh',
+              method: request.method,
+              url: request.urlWithParams,
+            }),
+          ).pipe(map(() => event));
         }),
       );
     }),
   );
+}
+
+function reportPersistenceError(
+  reporter: OfflineErrorReporter,
+  error: unknown,
+  context: Parameters<OfflineErrorReporter['report']>[1],
+): Promise<void> {
+  return Promise.resolve()
+    .then(() => reporter.report(error, context))
+    .catch((reporterError: unknown) => console.error('[offline] error reporter failed', context, reporterError));
 }
 
 function enqueueMutation(enqueue: NonNullable<OfflineMutationRequestPlan['enqueue']>, url: string): Observable<HttpEvent<unknown>> {

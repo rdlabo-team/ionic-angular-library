@@ -354,6 +354,12 @@ provideOffline({
 });
 ```
 
+Encrypted native builds also require the plugin's SQLCipher platform setup: enable
+`capawesomeCapacitorSqliteIncludeSqlcipher = true` on Android; select the `SQLCipher` pod when using
+CocoaPods, or enable the `SQLCipher` package trait when using Swift Package Manager on iOS. Follow
+the [Capawesome SQLite installation guide](https://capawesome.io/docs/plugins/sqlite/#installation)
+for the exact native configuration and export-compliance notes.
+
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 - **Universal 60s timeout** — every request fails with a synthetic (retryable) `408` if it hangs for 60s. Deliberately generous (catches a dead server without cutting off a large upload / AI generation; `timeout({ each })` resets per emission, so streaming is unaffected). Not configurable — one fleet-wide behavior.
 - **Optional `treatAsError(response)`** — reject a 2xx (e.g. `204`/`206`) as an error when a backend uses it to signal a condition. The one genuinely app-specific bit (some apps receive a normal `204`), kept optional so class interceptors with a 2xx-as-error convention can migrate to `provideKitHttp`.

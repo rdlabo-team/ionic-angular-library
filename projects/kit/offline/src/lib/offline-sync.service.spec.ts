@@ -178,4 +178,26 @@ describe('OfflineSyncService', () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(commands.some((command) => command.userId === 1)).toBe(false);
   });
+
+  it('flush中に同一sessionを再activateしてもsending commandをpendingへ戻す', async () => {
+    let resolveFirst!: (value: { response: null }) => void;
+    execute.mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)));
+    await service.enqueue(
+      { groupId: 10, aggregateType: 'documents', aggregateId: '1', operation: 'documents.upsert', payload: { seq: 1 } },
+      { flush: false },
+    );
+    connected.set(true);
+    const oldFlush = service.flush();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    connected.set(false);
+    await service.resetSession();
+    await service.refreshSession();
+    expect(service.pendingCommands()[0]?.state).toBe('pending');
+    resolveFirst({ response: null });
+    await oldFlush;
+    connected.set(true);
+    await service.flush();
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(service.pendingCount()).toBe(0);
+  });
 });
