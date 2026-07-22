@@ -86,6 +86,13 @@ describe('OfflineSyncService', () => {
               item.userId === scope.userId && item.groupId === scope.groupId && item.sourceKey === sourceKey && item.localId === localId,
           ) ?? null,
       ),
+      getReplicaRowByServerId: vi.fn(
+        async (scope: OfflineScope, sourceKey: string, serverId: number) =>
+          rows.find(
+            (item) =>
+              item.userId === scope.userId && item.groupId === scope.groupId && item.sourceKey === sourceKey && item.serverId === serverId,
+          ) ?? null,
+      ),
       getReplicaCursor: vi.fn(async () => null),
       transactReplica: vi.fn(async (transaction) => {
         for (const row of transaction.putRows ?? []) {
@@ -694,6 +701,161 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('Offline replica serverId is immutable');
   });
 
+  it('enqueue時のserverId採用は初回pull前にreplica rowへ永続化する', async () => {
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-adopted',
+        serverId: 38142,
+        operation: 'documents.update',
+        payload: { name: 'adopted' },
+        optimisticValue: { name: 'adopted' },
+      },
+      { flush: false },
+    );
+    expect(rows[0]).toMatchObject({
+      localId: '019d-adopted',
+      serverId: 38142,
+      confirmedValues: null,
+      syncState: 'pending',
+    });
+  });
+
+  it('採用済みserverIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-adopted',
+        serverId: 38142,
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    execute.mockResolvedValueOnce({ removeReplica: true, response: null });
+    await service.flush();
+    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: 38142 });
+  });
+
+  it.each([0, -1, 1.5])('enqueue時の不正serverId %sは永続化前にrejectする', async (serverId) => {
+    await expect(
+      service.enqueue(
+        {
+          groupId: 10,
+          aggregateType: 'documents',
+          aggregateLocalId: '019d-invalid',
+          serverId,
+          operation: 'documents.update',
+          payload: {},
+          optimisticValue: {},
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow(/invalid serverId/);
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
+  it('別localIdへ既存serverIdを割り当てようとするとrejectする', async () => {
+    rows.push({
+      userId: 1,
+      groupId: 10,
+      sourceKey: 'documents',
+      localId: '019d-existing',
+      serverId: 38142,
+      values: {},
+      confirmedValues: {},
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    });
+    await expect(
+      service.enqueue(
+        {
+          groupId: 10,
+          aggregateType: 'documents',
+          aggregateLocalId: '019d-new',
+          serverId: 38142,
+          operation: 'documents.update',
+          payload: {},
+          optimisticValue: {},
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('Offline replica serverId 38142 is already mapped to localId 019d-existing.');
+    expect(commands).toEqual([]);
+  });
+
+  it('同一localIdへのserverId再指定は許容する', async () => {
+    rows.push({
+      userId: 1,
+      groupId: 10,
+      sourceKey: 'documents',
+      localId: '019d-same',
+      serverId: 38142,
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-same',
+        serverId: 38142,
+        operation: 'documents.update',
+        payload: { name: 'draft' },
+        optimisticValue: { name: 'draft' },
+        baseRevision: 1,
+      },
+      { flush: false },
+    );
+    expect(rows[0]).toMatchObject({ localId: '019d-same', serverId: 38142, syncState: 'pending' });
+    expect(commands).toHaveLength(1);
+  });
+
+  it('採用済み未確定rowはdiscardでoutboxとreplica rowを同時に除く', async () => {
+    const commandId = await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-adopted',
+        serverId: 38142,
+        operation: 'documents.update',
+        payload: { name: 'adopted' },
+        optimisticValue: { name: 'adopted' },
+      },
+      { flush: false },
+    );
+    await service.discard(commandId, { flush: false });
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
+  it('採用済み未確定rowはdiscardAllでoutboxとreplica rowを同時に除く', async () => {
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-adopted',
+        serverId: 38142,
+        operation: 'documents.update',
+        payload: { name: 'adopted' },
+        optimisticValue: { name: 'adopted' },
+      },
+      { flush: false },
+    );
+    await service.discardAllPending();
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
   it('invalid serverRevisionはhard failする', async () => {
     execute.mockResolvedValueOnce({ serverRevision: Number.NaN, confirmedValues: {}, response: null });
     await service.enqueue(
@@ -736,7 +898,13 @@ describe('OfflineSyncService', () => {
       ],
       migrations: [],
     });
-    const multiScopeSession = { userId: 1, scopes: [{ userId: 1, groupId: 10 }, { userId: 1, groupId: 11 }] as OfflineScope[] };
+    const multiScopeSession = {
+      userId: 1,
+      scopes: [
+        { userId: 1, groupId: 10 },
+        { userId: 1, groupId: 11 },
+      ] as OfflineScope[],
+    };
     const userScopedSourceKeys = new Set(['test_items']);
 
     function compareCommands(left: OfflineCommand, right: OfflineCommand): number {
@@ -768,9 +936,7 @@ describe('OfflineSyncService', () => {
       const repository = {
         initialize: vi.fn(async () => undefined),
         getCommands: vi.fn(async (scope: OfflineScope) =>
-          commands
-            .filter((item) => item.userId === scope.userId && item.groupId === scope.groupId)
-            .sort(compareCommands),
+          commands.filter((item) => item.userId === scope.userId && item.groupId === scope.groupId).sort(compareCommands),
         ),
         getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId).sort(compareCommands)),
         putCommand: vi.fn(async (command: OfflineCommand) => {
@@ -789,6 +955,13 @@ describe('OfflineSyncService', () => {
         }),
         getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, localId: string) => {
           const row = findReplicaRow(scope, sourceKey, localId);
+          return row ? projectReplicaRow(row, scope) : null;
+        }),
+        getReplicaRowByServerId: vi.fn(async (scope: OfflineScope, sourceKey: string, serverId: number) => {
+          const row = rows.find((item) => {
+            if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.serverId !== serverId) return false;
+            return userScopedSourceKeys.has(sourceKey) ? true : item.groupId === scope.groupId;
+          });
           return row ? projectReplicaRow(row, scope) : null;
         }),
         getReplicaCursor: vi.fn(async () => null),

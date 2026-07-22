@@ -1072,6 +1072,159 @@ describe('IonicOfflineRepository', () => {
     });
   });
 
+  describe('replica serverId uniqueness', () => {
+    const scope = { userId: 1, groupId: 10 };
+    const groupRow = {
+      sourceKey: 'test_group_items' as const,
+      serverId: 55,
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed' as const,
+    };
+    const userRow = {
+      sourceKey: 'test_items' as const,
+      serverId: 42,
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed' as const,
+    };
+
+    it('group-scopedで別localIdに同じserverIdを割り当てるとrejectする', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...groupRow,
+            userId: 1,
+            groupId: 10,
+            localId: '019d-aaaa',
+            values: { id: 55, name: 'A' },
+          },
+        ],
+      });
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...groupRow,
+              userId: 1,
+              groupId: 10,
+              localId: '019d-bbbb',
+              values: { id: 55, name: 'B' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica serverId 55 is already mapped to localId 019d-aaaa.');
+    });
+
+    it('user-scopedで別localIdに同じserverIdを割り当てるとrejectする', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...userRow,
+            userId: 1,
+            groupId: 10,
+            localId: '019d-aaaa',
+            values: { id: 42, title: 'A' },
+          },
+        ],
+      });
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...userRow,
+              userId: 1,
+              groupId: 10,
+              localId: '019d-bbbb',
+              values: { id: 42, title: 'B' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica serverId 42 is already mapped to localId 019d-aaaa.');
+    });
+
+    it('同一transaction内のserverId重複は部分永続化せずrejectする', async () => {
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...groupRow,
+              userId: 1,
+              groupId: 10,
+              localId: '019d-aaaa',
+              values: { id: 55, name: 'A' },
+            },
+            {
+              ...groupRow,
+              userId: 1,
+              groupId: 10,
+              localId: '019d-bbbb',
+              values: { id: 55, name: 'B' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica serverId 55 is already mapped to localId 019d-aaaa.');
+      expect(await repository.getReplicaRow(scope, 'test_group_items', '019d-aaaa')).toBeNull();
+      expect(await repository.getReplicaRow(scope, 'test_group_items', '019d-bbbb')).toBeNull();
+    });
+
+    it('group-scopedは別groupなら同じserverIdを許容する', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...groupRow,
+            userId: 1,
+            groupId: 10,
+            localId: '019d-aaaa',
+            values: { id: 55, name: 'G10' },
+          },
+          {
+            ...groupRow,
+            userId: 1,
+            groupId: 11,
+            localId: '019d-bbbb',
+            values: { id: 55, name: 'G11' },
+          },
+        ],
+      });
+      await expect(repository.getReplicaRowByServerId(scope, 'test_group_items', 55)).resolves.toMatchObject({
+        localId: '019d-aaaa',
+      });
+      await expect(repository.getReplicaRowByServerId({ userId: 1, groupId: 11 }, 'test_group_items', 55)).resolves.toMatchObject({
+        localId: '019d-bbbb',
+      });
+    });
+
+    it('user-scopedは別groupでも同じserverIdをrejectする', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...userRow,
+            userId: 1,
+            groupId: 10,
+            localId: '019d-aaaa',
+            values: { id: 42, title: 'G10' },
+          },
+        ],
+      });
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...userRow,
+              userId: 1,
+              groupId: 11,
+              localId: '019d-bbbb',
+              values: { id: 42, title: 'G11' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica serverId 42 is already mapped to localId 019d-aaaa.');
+    });
+  });
+
   describe('getReplicaRows', () => {
     const baseRow = {
       sourceKey: 'test_items',

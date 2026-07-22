@@ -346,22 +346,48 @@ requests only, a transport failure with `status=0` may return a local replica re
 `X-Offline-Response: local`. `POST` and other write methods always go to transport unchanged; outbox replay
 requests bypass policy with `OFFLINE_BYPASS` while still using the same transport observation.
 
-Native applications install the Insiders package in the application, then pass its `Sqlite` export
-and an encryption key loaded from secure device storage to the kit:
+The native offline runtime currently requires Capacitor 8, `@capawesome-team/capacitor-sqlite` 0.3.x, and
+`@capawesome-team/capacitor-secure-preferences` 0.2.x. Configure the private Insiders registry with the license key
+before installing the SQLite and Secure Preferences packages plus the SQLite WASM runtime. Supply the license key
+through a local/CI secret; never commit it to `.npmrc`.
 
 ```bash
-npm install @capawesome-team/capacitor-sqlite
+npm config set @capawesome-team:registry https://npm.registry.capawesome.io
+npm config set //npm.registry.capawesome.io/:_authToken "$CAPAWESOME_LICENSE_KEY"
+npm install @capawesome-team/capacitor-sqlite@^0.3.0 \
+  @capawesome-team/capacitor-secure-preferences@^0.2.0 \
+  @sqlite.org/sqlite-wasm
+npx cap sync
 ```
 
+Applications on an older Capacitor major must not install those versions; upgrade to Capacitor 8 before enabling
+the standard native offline runtime. After installation, follow both plugins' platform steps. In particular, exclude
+`CAPAWESOME_SECURE_PREFERENCES.xml` from Android 11-and-lower `fullBackupContent` and Android 12+ cloud backup rules,
+so the database key is not restored independently of its device keystore material.
+
+Pass the `Sqlite` export and a database key loaded from secure device storage to the kit. Never hard-code or derive
+the database key from a user identifier or access token.
+
 ```ts
+import { SecurePreferences } from '@capawesome-team/capacitor-secure-preferences';
+import { Sqlite } from '@capawesome-team/capacitor-sqlite';
+
+const OFFLINE_DATABASE_KEY = 'product-offline-database-key';
+
+async function offlineDatabaseKey(): Promise<string> {
+  const { value } = await SecurePreferences.get({ key: OFFLINE_DATABASE_KEY });
+  if (value) return value;
+
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const generated = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  await SecurePreferences.set({ key: OFFLINE_DATABASE_KEY, value: generated });
+  return generated;
+}
+
 provideOffline({
   // ...product policies, puller, and executor
   sqlitePlugin: Sqlite,
-  encryptionKey: async () => {
-    const { value } = await securePreferences.get({ key: 'offline-database-key' });
-    if (!value) throw new Error('offline-database-key is missing');
-    return value;
-  },
+  encryptionKey: offlineDatabaseKey,
 });
 ```
 
@@ -370,6 +396,42 @@ SQLite entities use an immutable client-generated UUID as `localId` and keep the
 Immediately before each send, the executor receives the latest `{ localId, serverId }` resolved from
 SQLite; a successful create adds `serverId` without replacing `localId`. Entity projection and outbox
 append/removal are committed in one local transaction.
+
+| Identity | SQLite column | Before synchronization | After server acknowledgement |
+| --- | --- | --- | --- |
+| `localId` | `local_id` | client-generated UUID | unchanged UUID |
+| `serverId` | `server_id` | `NULL` for a new entity | positive server `AUTO_INCREMENT` id |
+
+The write lifecycle is: update the replica immediately → append an outbox command in the same transaction → render
+the optimistic value → replay in the background → validate the server revision → store the confirmed value and
+revision. The server remains authoritative; SQLite is the durable local working database, not an HTTP response cache.
+
+`serverId()` supports positive safe integers only. Products must expose an internal numeric primary key for a
+replicated entity; a human-facing string such as a public code, slip number, or SKU remains an ordinary replicated
+column. There is intentionally no text-server-id overload.
+
+When the application already knows the numeric server id but the first replica pull has not materialized the row,
+pass that identity explicitly while adopting the entity. This is required for updates and especially deletes: an
+omitted id would otherwise make the executor interpret the row as a not-yet-created local entity.
+
+```ts
+await offlineSync.enqueue({
+  groupId,
+  aggregateType: 'items',
+  aggregateLocalId: localId,
+  serverId: existingApiItem.id,
+  operation: 'items.delete',
+  payload: { method: 'DELETE' },
+  optimisticValue: existingApiItem,
+});
+```
+
+The mapping is immutable and unique inside its effective replica scope. Reassigning one `localId` to another
+`serverId`, or assigning the same `serverId` to another `localId`, rejects before persistence. Web storage enforces
+the same rule transactionally as SQLite's unique indexes: group-scoped entities are unique per user/group/source,
+and user-scoped entities are unique per user/source across groups. If an adopted row has no confirmed baseline and
+its final command is discarded, the local row is removed; the next pull may materialize the authoritative server
+row again. A row with a confirmed baseline rolls back to that baseline instead.
 
 Each synchronization cycle pulls authoritative server deltas before replaying the outbox. Every page carries the
 replica schema version/hash and advances a durable user/group cursor in the same transaction as its rows. A schema
@@ -440,9 +502,13 @@ provideOffline({
 });
 ```
 
-The schema definition must map every `ItemSelect` key exactly once as a SQLite column, `serverId()`, or
-`ignored(reason)`, with exactly one `serverId()` per replicated entity. Nullable Hono columns require
-`nullable(...)`; non-null columns reject it. Therefore adding,
+Offline replica schema consumers must compile with TypeScript `strictNullChecks: true`. This is part of the standard,
+not a compatibility option: without strict null checking, TypeScript cannot distinguish a nullable Hono property
+from a required one and the schema lock cannot prove the SQLite mapping.
+
+The schema definition must import the Hono package's exported `$inferSelect` type and map every key exactly once as
+a SQLite column, `serverId()`, or `ignored(reason)`, with exactly one numeric `serverId()` per replicated entity.
+Nullable Hono columns require `nullable(...)`; non-null columns reject it. Therefore adding,
 removing, or changing nullability of a Drizzle column breaks the app build until its replica mapping is updated.
 At runtime, `values` contains only the mapped column projection; `localId` and `serverId` remain dedicated replica
 fields and ignored server fields are never persisted.
@@ -452,6 +518,8 @@ Encrypted native builds also require the plugin's SQLCipher platform setup: enab
 CocoaPods, or enable the `SQLCipher` package trait when using Swift Package Manager on iOS. Follow
 the [Capawesome SQLite installation guide](https://capawesome.io/docs/plugins/sqlite/#installation)
 for the exact native configuration and export-compliance notes.
+Also follow the [Capawesome Secure Preferences installation guide](https://capawesome.io/docs/plugins/secure-preferences/#installation),
+including its Android backup exclusion rules.
 
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 - **Universal 60s timeout** — every request fails with a synthetic (retryable) `408` if it hangs for 60s. Deliberately generous (catches a dead server without cutting off a large upload / AI generation; `timeout({ each })` resets per emission, so streaming is unaffected). Not configurable — one fleet-wide behavior.

@@ -510,12 +510,17 @@ export class IonicOfflineRepository implements OfflineRepository {
   async #applyReplicaTransaction(transaction: OfflineReplicaTransaction, journal: boolean): Promise<void> {
     await this.#assertReplicaSchemaLocked();
     for (const row of transaction.putRows ?? []) this.#validateReplicaRow(row);
-    if (journal) await this.#storage.set(REPLICA_TRANSACTION_KEY, transaction);
     const [rows, commands, cursors] = await Promise.all([
       this.#readRecord<OfflineReplicaRow>(ROWS_KEY),
       this.#readRecord<OfflineCommand>(OUTBOX_KEY),
       this.#readRecord<string>(CURSORS_KEY),
     ]);
+    const identityCheckRows = { ...rows };
+    for (const row of transaction.putRows ?? []) {
+      this.#assertUniqueReplicaServerId(identityCheckRows, row);
+      identityCheckRows[this.#rowKey(row, row.sourceKey, row.localId)] = row;
+    }
+    if (journal) await this.#storage.set(REPLICA_TRANSACTION_KEY, transaction);
     for (const row of transaction.putRows ?? []) {
       const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
       rows[this.#rowKey(row, row.sourceKey, row.localId)] = {
@@ -596,6 +601,24 @@ export class IonicOfflineRepository implements OfflineRepository {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
     encodeOfflineReplicaValues(schema, row.values);
     if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
+  }
+
+  #assertUniqueReplicaServerId(rows: Record<string, OfflineReplicaRow>, incoming: OfflineReplicaRow): void {
+    if (incoming.serverId === null) return;
+    const schema = this.#resolveReplicaEntitySchema(incoming.sourceKey);
+    const incomingKey = this.#rowKey(incoming, incoming.sourceKey, incoming.localId);
+    const collision = Object.entries(rows).find(([key, row]) => {
+      if (key === incomingKey) return false;
+      if (row.userId !== incoming.userId || row.sourceKey !== incoming.sourceKey || row.serverId !== incoming.serverId) {
+        return false;
+      }
+      return schema.scope === 'user' || row.groupId === incoming.groupId;
+    });
+    if (collision) {
+      throw new Error(
+        `Offline replica serverId ${String(incoming.serverId)} is already mapped to localId ${collision[1].localId}.`,
+      );
+    }
   }
 
   #resolveReplicaEntitySchema(sourceKey: string): OfflineReplicaEntitySchema<Record<string, unknown>> {
