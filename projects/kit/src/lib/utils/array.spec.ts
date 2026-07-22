@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/consistent-type-definitions */
 import { arrayConcatById } from './array';
 
 interface Row {

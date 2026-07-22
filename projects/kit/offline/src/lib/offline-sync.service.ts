@@ -263,23 +263,24 @@ export class OfflineSyncService {
       if (!this.#isCurrent(generation)) return;
       await this.#refreshState(generation);
       if (!this.#isCurrent(generation)) return;
+      const row = await this.#rowForCommand(sending);
+      if (!row) throw new Error(`Offline replica row not found: ${sending.aggregateType}/${sending.aggregateLocalId}`);
+      let result: OfflineCommandResult;
       try {
-        const row = await this.#rowForCommand(sending);
-        if (!row) throw new Error(`Offline replica row not found: ${sending.aggregateType}/${sending.aggregateLocalId}`);
-        const result = await this.#executor.execute(sending, { localId: row.localId, serverId: row.serverId });
-        if (!this.#isCurrent(generation)) return;
-        await this.#completeCommand(commands, index, sending, result, generation);
+        result = await this.#executor.execute(sending, { localId: row.localId, serverId: row.serverId });
       } catch (error) {
         if (!this.#isCurrent(generation)) return;
+        if (!this.#isClassifiableTransportError(error)) throw error;
         const failed = this.#failedCommand(sending, error);
-        const row = await this.#rowForCommand(failed);
         await this.#repository.transactReplica({
-          putRows: row ? [{ ...row, syncState: this.#replicaState(failed.state) }] : undefined,
+          putRows: [{ ...row, syncState: this.#replicaState(failed.state) }],
           putCommands: [failed],
         });
         if (failed.state === 'retry_wait') this.#scheduleRetry(failed.retryAt);
         break;
       }
+      if (!this.#isCurrent(generation)) return;
+      await this.#completeCommand(commands, index, sending, result, generation);
     }
   }
 
@@ -315,22 +316,25 @@ export class OfflineSyncService {
     for (let offset = 0; offset < rebased.length; offset++) commands[index + 1 + offset] = rebased[offset]!;
     const current = await this.#rowForCommand(command);
     if (!this.#isCurrent(generation)) return;
+    if (!current) {
+      throw new Error(`Offline replica row disappeared while completing command ${command.commandId}.`);
+    }
+    this.#assertServerRevision(result.serverRevision);
     const confirmedValues = result.confirmedValues ?? command.optimisticValue;
-    const row = current
-      ? {
-          ...current,
-          values: rebased.length > 0 ? rebased.at(-1)!.optimisticValue : confirmedValues,
-          confirmedValues,
-          serverId: result.serverId ?? current.serverId,
-          serverRevision: revision ?? current.serverRevision,
-          fetchedAt: Date.now(),
-          syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
-        }
-      : undefined;
+    const serverId = this.#resolvedServerId(current.serverId, result.serverId);
+    const row = {
+      ...current,
+      values: rebased.length > 0 ? rebased.at(-1)!.optimisticValue : confirmedValues,
+      confirmedValues,
+      serverId,
+      serverRevision: revision ?? current.serverRevision,
+      fetchedAt: Date.now(),
+      syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
+    };
     if (!this.#isCurrent(generation)) return;
     await this.#repository.transactReplica({
-      putRows: result.removeReplica || !row ? undefined : [row],
-      removeRows: result.removeReplica && current ? [current] : undefined,
+      putRows: result.removeReplica ? undefined : [row],
+      removeRows: result.removeReplica ? [current] : undefined,
       putCommands: rebased,
       removeCommandIds: [command.commandId],
     });
@@ -398,6 +402,29 @@ export class OfflineSyncService {
     if (typeof error !== 'object' || error === null) return 0;
     const status = (error as { status?: unknown }).status;
     return typeof status === 'number' ? status : 0;
+  }
+
+  #isClassifiableTransportError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) return false;
+    const status = (error as { status?: unknown }).status;
+    return typeof status === 'number' && Number.isInteger(status) && status >= 0;
+  }
+
+  #assertServerRevision(revision: string | number | undefined): void {
+    if (typeof revision === 'number' && !Number.isFinite(revision)) {
+      throw new Error(`Offline command returned invalid serverRevision ${String(revision)}.`);
+    }
+  }
+
+  #resolvedServerId(current: number | null, incoming: number | undefined): number | null {
+    if (incoming === undefined) return current;
+    if (!Number.isSafeInteger(incoming) || incoming <= 0) {
+      throw new Error(`Offline command returned invalid serverId ${String(incoming)}.`);
+    }
+    if (current !== null && current !== incoming) {
+      throw new Error(`Offline replica serverId is immutable: current=${current}, incoming=${incoming}.`);
+    }
+    return incoming;
   }
 
   async #discoverScopes(generation = this.#generation): Promise<boolean> {

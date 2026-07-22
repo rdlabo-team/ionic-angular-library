@@ -377,6 +377,12 @@ mismatch, malformed row, or non-advancing cursor rejects synchronization without
 revision changed while a local command is pending, the optimistic row remains visible and both row and command move
 to `conflict`; the new server value is retained as the confirmed baseline.
 
+The command adapter must send `commandId` as the server-side idempotency key. The server persists that key with the
+mutation and returns all keys represented by a delta row as `acknowledgedCommandIds`. This correlation is required:
+if the server commits a create/update/delete but its HTTP acknowledgement is lost, the next pull reconciles the
+server result into the original `localId`, removes the acknowledged outbox prefix, and rebases later commands without
+creating a second local identity.
+
 Versioned replica schemas lock web and native storage. Web metadata stores
 `replicaSchemaVersion` and `replicaSchemaHash`; native stores the same pair in
 `offline_replica_schema_metadata`. Bump `version` for every intentional shape change and supply a
@@ -435,7 +441,8 @@ provideOffline({
 ```
 
 The schema definition must map every `ItemSelect` key exactly once as a SQLite column, `serverId()`, or
-`ignored(reason)`. Nullable Hono columns require `nullable(...)`; non-null columns reject it. Therefore adding,
+`ignored(reason)`, with exactly one `serverId()` per replicated entity. Nullable Hono columns require
+`nullable(...)`; non-null columns reject it. Therefore adding,
 removing, or changing nullability of a Drizzle column breaks the app build until its replica mapping is updated.
 At runtime, `values` contains only the mapped column projection; `localId` and `serverId` remain dedicated replica
 fields and ignored server fields are never persisted.

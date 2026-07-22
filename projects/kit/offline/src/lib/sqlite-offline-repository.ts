@@ -141,10 +141,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, localId, row);
   }
 
-  async getReplicaRows<TValues = unknown>(
-    scope: OfflineScope,
-    sourceKey: string,
-  ): Promise<OfflineReplicaRow<TValues>[]> {
+  async getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const predicates = ['_offline_user_id = ?'];
     const values: SQLiteValue[] = [scope.userId];
@@ -152,13 +149,8 @@ export class SqliteOfflineRepository implements OfflineRepository {
       predicates.push('_offline_group_id = ?');
       values.push(scope.groupId);
     }
-    const rows = await this.#query(
-      `SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY local_id ASC`,
-      values,
-    );
-    return rows.map((row) =>
-      this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row),
-    );
+    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY local_id ASC`, values);
+    return rows.map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row));
   }
 
   async getReplicaRowByServerId<TValues = unknown>(
@@ -177,20 +169,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
     const row = rows[0];
     if (!row) return null;
-    return this.#replicaRowFromSqliteRow<TValues>(
-      schema,
-      scope,
-      sourceKey,
-      this.#string(row['local_id']),
-      row,
-    );
+    return this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row);
   }
 
   async getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
-    const rows = await this.#query(
-      'SELECT cursor FROM offline_replica_cursors WHERE user_id = ? AND group_id = ?',
-      [scope.userId, scope.groupId],
-    );
+    const rows = await this.#query('SELECT cursor FROM offline_replica_cursors WHERE user_id = ? AND group_id = ?', [
+      scope.userId,
+      scope.groupId,
+    ]);
     const row = rows[0];
     if (!row) return null;
     return { ...scope, cursor: this.#string(row['cursor']) };
@@ -201,6 +187,11 @@ export class SqliteOfflineRepository implements OfflineRepository {
       scope.userId,
       scope.groupId,
     ]);
+    return rows.map((row) => this.#command(row));
+  }
+
+  async getCommandsForUser(userId: number): Promise<OfflineCommand[]> {
+    const rows = await this.#query('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC', [userId]);
     return rows.map((row) => this.#command(row));
   }
 
@@ -232,18 +223,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
     await this.#transaction(async (database) => {
       const values = [scope.userId, scope.groupId];
       await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ? AND group_id = ?', values);
-      await this.#execute(
-        database,
-        'DELETE FROM offline_replica_cursors WHERE user_id = ? AND group_id = ?',
-        values,
-      );
+      await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND group_id = ?', values);
       for (const entity of this.#options.replicaSchema.entities) {
         if (entity.scope !== 'group') continue;
-        await this.#execute(
-          database,
-          `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_group_id = ?`,
-          values,
-        );
+        await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_group_id = ?`, values);
       }
     });
   }
@@ -293,10 +276,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const bundle = this.#options.replicaSchema;
     const targetVersion = bundle.version;
     const targetHash = await sha256OfflineReplicaSchema(bundle);
-    const rows = await this.#queryDatabase(
-      databaseId,
-      'SELECT version, schema_hash FROM offline_replica_schema_metadata WHERE id = 1',
-    );
+    const rows = await this.#queryDatabase(databaseId, 'SELECT version, schema_hash FROM offline_replica_schema_metadata WHERE id = 1');
     const storedVersion = rows[0] ? this.#number(rows[0]['version']) : null;
     const storedHash = rows[0] ? this.#string(rows[0]['schema_hash']) : null;
 
@@ -459,8 +439,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
   #putReplicaRow(databaseId: string, row: OfflineReplicaRow): Promise<void> {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
     const encoded = encodeOfflineReplicaValues(schema, row.values);
-    const confirmedValues =
-      row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues);
+    const confirmedValues = row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues);
     const { sql, domainColumns } = this.#buildReplicaUpsertStatement(schema);
     const values: SQLiteValue[] = [
       row.localId,
@@ -510,12 +489,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       insertColumns.push('server_id');
       updateSets.push('server_id = excluded.server_id');
     }
-    insertColumns.push(
-      '_offline_confirmed_json',
-      '_offline_server_revision_json',
-      '_offline_sync_state',
-      '_offline_fetched_at',
-    );
+    insertColumns.push('_offline_confirmed_json', '_offline_server_revision_json', '_offline_sync_state', '_offline_fetched_at');
     updateSets.push(
       '_offline_confirmed_json = excluded._offline_confirmed_json',
       '_offline_server_revision_json = excluded._offline_server_revision_json',

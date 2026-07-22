@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/consistent-type-definitions */
 import { describe, expect, it } from 'vitest';
 import {
   booleanColumn,
@@ -159,13 +160,13 @@ describe('offline-replica-schema runtime', () => {
   });
 
   it('rejects invalid table and reserved column identifiers', () => {
-    type MinimalSelect = { title: string };
+    type MinimalSelect = { id: number; title: string };
     expect(() =>
       defineReplicaEntity<MinimalSelect>()({
         table: 'Bad-Table',
         sourceKey: 'items',
         scope: 'user',
-        fields: { title: text() },
+        fields: { id: serverId(), title: text() },
       }),
     ).toThrow('Replica table "Bad-Table" must match ^[a-z][a-z0-9_]*$.');
 
@@ -174,19 +175,22 @@ describe('offline-replica-schema runtime', () => {
         table: 'items',
         sourceKey: 'items',
         scope: 'user',
-        fields: { title: { kind: 'column', affinity: 'TEXT', storageKind: 'text', columnName: 'local_id', nullable: false } },
+        fields: {
+          id: serverId(),
+          title: { kind: 'column', affinity: 'TEXT', storageKind: 'text', columnName: 'local_id', nullable: false },
+        },
       }),
     ).toThrow('Replica column "local_id" is reserved.');
   });
 
   it('rejects ignored fields with an empty reason', () => {
-    type Select = { flag: boolean };
+    type Select = { id: number; flag: boolean };
     expect(() =>
       defineReplicaEntity<Select>()({
         table: 'items',
         sourceKey: 'items',
         scope: 'user',
-        fields: { flag: ignored('   ') },
+        fields: { id: serverId(), flag: ignored('   ') },
       }),
     ).toThrow('Replica ignored field "flag" requires a reason.');
   });
@@ -200,7 +204,19 @@ describe('offline-replica-schema runtime', () => {
         scope: 'user',
         fields: { id: serverId(), altId: serverId() },
       }),
-    ).toThrow('Replica entity cannot define more than one serverId field.');
+    ).toThrow('Replica entity must define exactly one serverId field.');
+  });
+
+  it('rejects zero serverId fields', () => {
+    type Select = { title: string };
+    expect(() =>
+      defineReplicaEntity<Select>()({
+        table: 'items',
+        sourceKey: 'items',
+        scope: 'user',
+        fields: { title: text() },
+      }),
+    ).toThrow('Replica entity must define exactly one serverId field.');
   });
 });
 
@@ -219,14 +235,7 @@ describe('encodeOfflineReplicaValues', () => {
   it('encodes column fields in deterministic descriptor order and ignores serverId/ignored source keys', () => {
     const encoded = encodeOfflineReplicaValues(sampleSchema, sampleRowValues);
 
-    expect(Object.keys(encoded)).toEqual([
-      'active',
-      'amount',
-      'notes',
-      'payload',
-      'title',
-      'updated_at',
-    ]);
+    expect(Object.keys(encoded)).toEqual(['active', 'amount', 'notes', 'payload', 'title', 'updated_at']);
     expect(encoded).toEqual({
       active: 1,
       amount: 12.5,
@@ -251,12 +260,8 @@ describe('encodeOfflineReplicaValues', () => {
   });
 
   it('rejects non-plain objects, unknown keys, and missing column fields', () => {
-    expect(() => encodeOfflineReplicaValues(sampleSchema, null)).toThrow(
-      'Replica row values must be a plain object.',
-    );
-    expect(() => encodeOfflineReplicaValues(sampleSchema, new Map())).toThrow(
-      'Replica row values must be a plain object.',
-    );
+    expect(() => encodeOfflineReplicaValues(sampleSchema, null)).toThrow('Replica row values must be a plain object.');
+    expect(() => encodeOfflineReplicaValues(sampleSchema, new Map())).toThrow('Replica row values must be a plain object.');
 
     expect(() =>
       encodeOfflineReplicaValues(sampleSchema, {
@@ -266,9 +271,7 @@ describe('encodeOfflineReplicaValues', () => {
     ).toThrow('Replica row contains unknown source key "surprise".');
 
     const { title: _title, ...missingTitle } = sampleRowValues;
-    expect(() => encodeOfflineReplicaValues(sampleSchema, missingTitle)).toThrow(
-      'Replica row is missing required source key "title".',
-    );
+    expect(() => encodeOfflineReplicaValues(sampleSchema, missingTitle)).toThrow('Replica row is missing required source key "title".');
   });
 
   it('rejects null for required columns and invalid typed values', () => {
@@ -335,31 +338,18 @@ describe('decodeOfflineReplicaValues', () => {
       _offline_fetched_at: 1_720_000_000_000,
     });
 
-    expect(Object.keys(decoded)).toEqual([
-      'active',
-      'amount',
-      'notes',
-      'payload',
-      'title',
-      'updatedAt',
-    ]);
+    expect(Object.keys(decoded)).toEqual(['active', 'amount', 'notes', 'payload', 'title', 'updatedAt']);
     expect(decoded).toEqual(sampleColumnValues);
   });
 
   it('rejects non-plain objects, missing columns, and null for required columns', () => {
     const encoded = encodeOfflineReplicaValues(sampleSchema, sampleRowValues);
 
-    expect(() => decodeOfflineReplicaValues(sampleSchema, null)).toThrow(
-      'Replica SQLite row must be a plain object.',
-    );
-    expect(() => decodeOfflineReplicaValues(sampleSchema, new Map())).toThrow(
-      'Replica SQLite row must be a plain object.',
-    );
+    expect(() => decodeOfflineReplicaValues(sampleSchema, null)).toThrow('Replica SQLite row must be a plain object.');
+    expect(() => decodeOfflineReplicaValues(sampleSchema, new Map())).toThrow('Replica SQLite row must be a plain object.');
 
     const { title: _title, ...missingTitle } = encoded;
-    expect(() => decodeOfflineReplicaValues(sampleSchema, missingTitle)).toThrow(
-      'Replica SQLite row is missing required column "title".',
-    );
+    expect(() => decodeOfflineReplicaValues(sampleSchema, missingTitle)).toThrow('Replica SQLite row is missing required column "title".');
 
     expect(() =>
       decodeOfflineReplicaValues(sampleSchema, {
@@ -417,10 +407,7 @@ describe('encodeOfflineReplicaValues round-trip', () => {
         amount: sourceRow.amount,
         active: sourceRow.active,
         payload: sourceRow.payload,
-        updatedAt:
-          sourceRow.updatedAt instanceof Date
-            ? sourceRow.updatedAt.toISOString()
-            : sourceRow.updatedAt,
+        updatedAt: sourceRow.updatedAt instanceof Date ? sourceRow.updatedAt.toISOString() : sourceRow.updatedAt,
       });
     }
   });
@@ -434,9 +421,7 @@ describe('projectOfflineReplicaValues', () => {
   });
 
   it('validates values like encodeOfflineReplicaValues before projecting', () => {
-    expect(() => projectOfflineReplicaValues(sampleSchema, null)).toThrow(
-      'Replica row values must be a plain object.',
-    );
+    expect(() => projectOfflineReplicaValues(sampleSchema, null)).toThrow('Replica row values must be a plain object.');
     expect(() =>
       projectOfflineReplicaValues(sampleSchema, {
         ...sampleRowValues,
@@ -555,9 +540,7 @@ describe('offline-replica-schema bundle runtime', () => {
     });
 
     expect(integerBundle.schemaFingerprintInput).not.toBe(booleanBundle.schemaFingerprintInput);
-    expect(await sha256OfflineReplicaSchema(integerBundle)).not.toBe(
-      await sha256OfflineReplicaSchema(booleanBundle),
-    );
+    expect(await sha256OfflineReplicaSchema(integerBundle)).not.toBe(await sha256OfflineReplicaSchema(booleanBundle));
   });
 
   it('rejects invalid bundle and migration versions', () => {
@@ -636,9 +619,7 @@ describe('offline-replica-schema bundle runtime', () => {
           { fromVersion: 3, statements: ['SELECT 2'], migrateWebRow: (row) => row },
         ],
       }),
-    ).toThrow(
-      'Replica migrations must advance consecutive schema versions; expected fromVersion 2, received 3.',
-    );
+    ).toThrow('Replica migrations must advance consecutive schema versions; expected fromVersion 2, received 3.');
 
     expect(() =>
       defineOfflineReplicaSchema({

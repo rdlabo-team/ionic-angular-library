@@ -7,13 +7,7 @@ export type OfflineReplicaSqliteAffinity = 'TEXT' | 'INTEGER' | 'REAL';
  * For example, {@link booleanColumn} and {@link datetime} both use INTEGER/TEXT affinity
  * but remain distinguishable at runtime through this marker.
  */
-export type OfflineReplicaStorageKind =
-  | 'text'
-  | 'integer'
-  | 'real'
-  | 'booleanColumn'
-  | 'json'
-  | 'datetime';
+export type OfflineReplicaStorageKind = 'text' | 'integer' | 'real' | 'booleanColumn' | 'json' | 'datetime';
 
 /** Scope partition persisted on every replica table row. */
 export type OfflineReplicaEntityScope = 'user' | 'group';
@@ -60,7 +54,9 @@ export interface OfflineReplicaEntitySchema<TSelect extends Record<string, unkno
 declare const replicaNullableBrand: unique symbol;
 
 /** Phantom nullability brand carried by column builders. */
-type ReplicaNullableBrand = { readonly [replicaNullableBrand]: 'nullable' | 'required' };
+interface ReplicaNullableBrand {
+  readonly [replicaNullableBrand]: 'nullable' | 'required';
+}
 
 /** Column builder definition with compile-time nullability tracking. */
 export interface OfflineReplicaColumnDef<
@@ -101,11 +97,7 @@ type OfflineReplicaFieldDefForKey<TSelect extends Record<string, unknown>, K ext
       : OfflineReplicaColumnDef<TSelect[K], { readonly [replicaNullableBrand]: 'required' }>);
 
 type ExactSelectKeys<TSelect extends Record<string, unknown>, TFields> =
-  Exclude<keyof TFields, keyof TSelect> extends never
-    ? Exclude<keyof TSelect, keyof TFields> extends never
-      ? TFields
-      : never
-    : never;
+  Exclude<keyof TFields, keyof TSelect> extends never ? (Exclude<keyof TSelect, keyof TFields> extends never ? TFields : never) : never;
 
 /** Configuration accepted by {@link defineReplicaEntity}. */
 export interface OfflineReplicaEntityDefinition<
@@ -181,7 +173,7 @@ export function json<T>(): OfflineReplicaColumnDef<T> {
   return requiredColumn<T>('TEXT', 'json');
 }
 
-/** Maps a non-null datetime source property to an INTEGER epoch-millis column. */
+/** Maps a non-null datetime source property to a canonical ISO-8601 TEXT column. */
 export function datetime(): OfflineReplicaColumnDef<string | Date> {
   return requiredColumn<string | Date>('TEXT', 'datetime');
 }
@@ -220,21 +212,15 @@ function buildOfflineReplicaEntitySchema<TSelect extends Record<string, unknown>
 
   const sourceKeys = Object.keys(definition.fields).sort();
   const serverIdCount = sourceKeys.filter((sourceKey) => definition.fields[sourceKey]?.kind === 'serverId').length;
-  if (serverIdCount > 1) throw new Error('Replica entity cannot define more than one serverId field.');
-  const hasServerId = serverIdCount === 1;
+  if (serverIdCount !== 1) throw new Error('Replica entity must define exactly one serverId field.');
+  const hasServerId = true;
   const fields: OfflineReplicaFieldDescriptor[] = sourceKeys.map((sourceKey) => {
     const fieldDef = definition.fields[sourceKey as keyof TSelect] as OfflineReplicaFieldDef;
     return materializeFieldDescriptor(sourceKey, fieldDef);
   });
 
   const createTableSql = buildCreateTableSql(definition.table, definition.scope, fields, hasServerId);
-  const schemaFingerprintInput = buildSchemaFingerprintInput(
-    definition.table,
-    definition.sourceKey,
-    definition.scope,
-    fields,
-    hasServerId,
-  );
+  const schemaFingerprintInput = buildSchemaFingerprintInput(definition.table, definition.sourceKey, definition.scope, fields, hasServerId);
 
   return {
     tableName: definition.table,
@@ -246,10 +232,7 @@ function buildOfflineReplicaEntitySchema<TSelect extends Record<string, unknown>
   };
 }
 
-function materializeFieldDescriptor(
-  sourceKey: string,
-  fieldDef: OfflineReplicaFieldDef,
-): OfflineReplicaFieldDescriptor {
+function materializeFieldDescriptor(sourceKey: string, fieldDef: OfflineReplicaFieldDef): OfflineReplicaFieldDescriptor {
   if (fieldDef.kind === 'ignored') {
     if (!fieldDef.reason.trim()) throw new Error(`Replica ignored field "${sourceKey}" requires a reason.`);
     return {
@@ -323,8 +306,7 @@ function buildCreateTableSql(
   const statements = [`CREATE TABLE IF NOT EXISTS ${tableName} (\n  ${columnLines.join(',\n  ')},\n  PRIMARY KEY (local_id)\n)`];
 
   if (hasServerId) {
-    const indexColumns =
-      scope === 'group' ? '_offline_user_id, _offline_group_id, server_id' : '_offline_user_id, server_id';
+    const indexColumns = scope === 'group' ? '_offline_user_id, _offline_group_id, server_id' : '_offline_user_id, server_id';
     statements.push(
       `CREATE UNIQUE INDEX IF NOT EXISTS uq_${tableName}_server_id ON ${tableName} (${indexColumns}) WHERE server_id IS NOT NULL`,
     );
@@ -504,10 +486,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
-function encodeReplicaColumnValue(
-  field: OfflineReplicaFieldDescriptor,
-  value: unknown,
-): string | number {
+function encodeReplicaColumnValue(field: OfflineReplicaFieldDescriptor, value: unknown): string | number {
   switch (field.storageKind) {
     case 'text':
       return encodeReplicaTextValue(field.sourceKey, value);
@@ -728,13 +707,11 @@ export interface OfflineReplicaSchemaDefinition {
  * Entity `tableName` and `sourceKey` values must each be unique within the bundle.
  * Migrations must advance one version at a time without duplicates or gaps.
  */
-export function defineOfflineReplicaSchema(
-  definition: OfflineReplicaSchemaDefinition,
-): OfflineReplicaSchemaBundle {
+export function defineOfflineReplicaSchema(definition: OfflineReplicaSchemaDefinition): OfflineReplicaSchemaBundle {
   assertPositiveInteger(definition.version, 'schema version');
 
   const entities = [...definition.entities].sort((left, right) =>
-    left.sourceKey.localeCompare(right.sourceKey),
+    left.sourceKey < right.sourceKey ? -1 : left.sourceKey > right.sourceKey ? 1 : 0,
   );
   const tableNames = new Set<string>();
   const sourceKeys = new Set<string>();
@@ -801,9 +778,7 @@ function normalizeOfflineReplicaMigrations(
 
     for (const [index, statement] of migration.statements.entries()) {
       if (!statement.trim()) {
-        throw new Error(
-          `Replica migration from version ${migration.fromVersion} statement ${index + 1} must not be empty.`,
-        );
+        throw new Error(`Replica migration from version ${migration.fromVersion} statement ${index + 1} must not be empty.`);
       }
     }
   }

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/consistent-type-definitions */
 import { TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
@@ -264,9 +265,7 @@ describe('SqliteOfflineRepository Capawesome adapter', () => {
       };
       const repository = createRepository(undefined, { replicaSchema: replicaSchemaV3MissingMigration });
 
-      await expect(repository.initialize()).rejects.toThrow(
-        'Missing offline replica schema migration from version 2 to 3.',
-      );
+      await expect(repository.initialize()).rejects.toThrow('Missing offline replica schema migration from version 2 to 3.');
       expect(
         plugin.execute.mock.calls.some(([options]) =>
           (options as { statement: string }).statement.startsWith('CREATE TABLE IF NOT EXISTS test_items'),
@@ -436,6 +435,21 @@ describe('SqliteOfflineRepository replica rows', () => {
             }
           }
           if (statement.startsWith(`DELETE FROM ${tableName}`)) {
+            const userId = values?.[0];
+            const groupId = values?.[1];
+            if (
+              statement.includes('_offline_user_id = ? AND _offline_group_id = ?') &&
+              typeof userId === 'number' &&
+              typeof groupId === 'number'
+            ) {
+              for (const [localId, stored] of Object.entries(storedReplicaRows)) {
+                if (stored.tableName !== tableName) continue;
+                if (stored.values[1] === userId && stored.values[2] === groupId) {
+                  delete storedReplicaRows[localId];
+                }
+              }
+              continue;
+            }
             const localId = values?.[0];
             if (typeof localId === 'string') delete storedReplicaRows[localId];
           }
@@ -453,9 +467,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           const userId = values?.[0];
           const groupId = values?.[1];
           const cursor =
-            typeof userId === 'number' && typeof groupId === 'number'
-              ? storedReplicaCursors[`${userId}:${groupId}`]
-              : undefined;
+            typeof userId === 'number' && typeof groupId === 'number' ? storedReplicaCursors[`${userId}:${groupId}`] : undefined;
           return cursor === undefined ? { rows: [] } : { columns: ['cursor'], rows: [[cursor]] };
         }
         for (const tableName of ['test_items', 'test_group_items'] as const) {
@@ -526,16 +538,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     )?.[0] as { statement: string; values?: unknown[] };
     expect(upsert?.statement).toContain('title');
     expect(upsert?.statement).not.toContain('value_json');
-    expect(upsert?.values).toEqual([
-      '019d-bbbb',
-      1,
-      null,
-      null,
-      null,
-      'pending',
-      1,
-      'Local item',
-    ]);
+    expect(upsert?.values).toEqual(['019d-bbbb', 1, null, null, null, 'pending', 1, 'Local item']);
     expect(
       plugin.execute.mock.calls.some(([options]) =>
         (options as { statement: string }).statement.startsWith('INSERT INTO offline_sync_commands'),
@@ -856,6 +859,80 @@ describe('SqliteOfflineRepository replica rows', () => {
       expect(plugin.commitTransaction).not.toHaveBeenCalled();
       expect(await repository.getReplicaCursor(scope)).toBeNull();
       expect(storedReplicaCursors['1:10']).toBeUndefined();
+    });
+  });
+
+  describe('user-scope cross-group parity', () => {
+    const scopeG10 = { userId: 1, groupId: 10 };
+    const scopeG11 = { userId: 1, groupId: 11 };
+
+    it('getReplicaRow/getReplicaRowByServerIdは別groupIdでも同一user rowを返す', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      await repository.transactReplica({
+        putRows: [
+          {
+            userId: 1,
+            groupId: 10,
+            sourceKey: 'test_items',
+            localId: '019d-cross',
+            serverId: 42,
+            values: { id: 42, title: 'Shared user row' },
+            confirmedValues: { id: 42, title: 'Shared user row' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'confirmed',
+          },
+        ],
+      });
+
+      await expect(repository.getReplicaRow(scopeG11, 'test_items', '019d-cross')).resolves.toMatchObject({
+        localId: '019d-cross',
+        groupId: 11,
+      });
+      await expect(repository.getReplicaRowByServerId(scopeG11, 'test_items', 42)).resolves.toMatchObject({
+        localId: '019d-cross',
+      });
+    });
+
+    it('clearGroupはuser-scoped rowを保持しgroup-scoped rowだけ削除する', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      await repository.transactReplica({
+        putRows: [
+          {
+            userId: 1,
+            groupId: 10,
+            sourceKey: 'test_items',
+            localId: '019d-user',
+            serverId: 42,
+            values: { id: 42, title: 'User scoped' },
+            confirmedValues: { id: 42, title: 'User scoped' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'confirmed',
+          },
+          {
+            userId: 1,
+            groupId: 10,
+            sourceKey: 'test_group_items',
+            localId: '019d-group',
+            serverId: 55,
+            values: { id: 55, name: 'Group scoped' },
+            confirmedValues: { id: 55, name: 'Group scoped' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'confirmed',
+          },
+        ],
+      });
+
+      await repository.clearGroup(scopeG10);
+
+      await expect(repository.getReplicaRow(scopeG10, 'test_items', '019d-user')).resolves.toMatchObject({
+        localId: '019d-user',
+      });
+      expect(await repository.getReplicaRow(scopeG10, 'test_group_items', '019d-group')).toBeNull();
     });
   });
 

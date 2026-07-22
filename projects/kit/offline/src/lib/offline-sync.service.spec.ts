@@ -64,6 +64,7 @@ describe('OfflineSyncService', () => {
       getCommands: vi.fn(async (scope: OfflineScope) =>
         commands.filter((item) => item.userId === scope.userId && item.groupId === scope.groupId),
       ),
+      getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId)),
       putCommand: vi.fn(async (command: OfflineCommand) => {
         await beforePutCommand?.(command);
         commands = commands.filter((item) => item.commandId !== command.commandId);
@@ -82,10 +83,7 @@ describe('OfflineSyncService', () => {
         async (scope: OfflineScope, sourceKey: string, localId: string) =>
           rows.find(
             (item) =>
-              item.userId === scope.userId &&
-              item.groupId === scope.groupId &&
-              item.sourceKey === sourceKey &&
-              item.localId === localId,
+              item.userId === scope.userId && item.groupId === scope.groupId && item.sourceKey === sourceKey && item.localId === localId,
           ) ?? null,
       ),
       getReplicaCursor: vi.fn(async () => null),
@@ -527,5 +525,159 @@ describe('OfflineSyncService', () => {
     await service.flush();
     expect(execute).toHaveBeenCalledOnce();
     expect(service.pendingCount()).toBe(0);
+  });
+
+  it('local replica row lookup failureはrejectしbackground flushはErrorHandlerへ渡す', async () => {
+    const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository;
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '1',
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    vi.mocked(repository.getReplicaRow).mockResolvedValue(null);
+    connected.set(true);
+    await service.refreshSession();
+    await vi.waitFor(() =>
+      expect(handleError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Offline replica row not found: documents/1' })),
+    );
+
+    await service.refreshSession();
+    await expect(service.flush()).rejects.toThrow('Offline replica row not found');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('transactReplica failureはrejectしbackground flushはErrorHandlerへ渡す', async () => {
+    const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository;
+    const originalTransact = vi.mocked(repository.transactReplica).getMockImplementation()!;
+    vi.mocked(repository.transactReplica).mockImplementation(async (transaction) => {
+      if ((transaction.removeCommandIds?.length ?? 0) > 0) {
+        throw new Error('transaction failed');
+      }
+      return originalTransact(transaction);
+    });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '1',
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.refreshSession();
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(expect.objectContaining({ message: 'transaction failed' })));
+
+    await service.refreshSession();
+    await expect(service.flush()).rejects.toThrow('transaction failed');
+  });
+
+  it('executor error without integer statusはclassifyせずrejectする', async () => {
+    execute.mockRejectedValueOnce(new Error('programming failure'));
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '1',
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('programming failure');
+    expect(service.pendingCommands()[0]?.state).toBe('sending');
+    expect(handleError).not.toHaveBeenCalled();
+  });
+
+  it('executor error with negative statusはclassifyせずrejectする', async () => {
+    execute.mockRejectedValueOnce({ status: -1 });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '1',
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow();
+    expect(service.pendingCommands()[0]?.state).toBe('sending');
+  });
+
+  it('invalid serverIdはhard failする', async () => {
+    execute.mockResolvedValueOnce({ serverId: 0, serverRevision: 1, confirmedValues: {}, response: null });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-invalid-id',
+        operation: 'documents.create',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('Offline command returned invalid serverId 0.');
+  });
+
+  it('reassigned serverIdはhard failする', async () => {
+    rows.push({
+      userId: 1,
+      groupId: 10,
+      sourceKey: 'documents',
+      localId: '019d-existing',
+      serverId: 38142,
+      values: {},
+      confirmedValues: {},
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    });
+    execute.mockResolvedValueOnce({ serverId: 99999, serverRevision: 2, confirmedValues: {}, response: null });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-existing',
+        operation: 'documents.update',
+        payload: {},
+        optimisticValue: {},
+        baseRevision: 1,
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('Offline replica serverId is immutable');
+  });
+
+  it('invalid serverRevisionはhard failする', async () => {
+    execute.mockResolvedValueOnce({ serverRevision: Number.NaN, confirmedValues: {}, response: null });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: '1',
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('Offline command returned invalid serverRevision NaN.');
   });
 });

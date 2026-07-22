@@ -1,6 +1,8 @@
+/* eslint-disable @typescript-eslint/consistent-type-definitions */
 import { TestBed } from '@angular/core/testing';
 import { KitStorageService } from '@rdlabo/ionic-angular-kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
@@ -10,13 +12,7 @@ import {
   type OfflineReplicaPullRequest,
 } from './offline-replica-puller';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
-import {
-  defineOfflineReplicaSchema,
-  defineReplicaEntity,
-  serverId,
-  sha256OfflineReplicaSchema,
-  text,
-} from './offline-replica-schema';
+import { defineOfflineReplicaSchema, defineReplicaEntity, serverId, sha256OfflineReplicaSchema, text } from './offline-replica-schema';
 import {
   IonicOfflineRepository,
   OFFLINE_REPOSITORY,
@@ -68,12 +64,13 @@ class MemoryStorage {
 function itemChange(
   serverIdValue: number,
   title: string,
-  options: Partial<Pick<OfflineReplicaChange, 'serverRevision' | 'deleted' | 'values'>> = {},
+  options: Partial<Pick<OfflineReplicaChange, 'serverRevision' | 'deleted' | 'values' | 'acknowledgedCommandIds'>> = {},
 ): OfflineReplicaChange {
   return {
     sourceKey: 'test_items',
     serverId: serverIdValue,
     serverRevision: options.serverRevision ?? 1,
+    acknowledgedCommandIds: options.acknowledgedCommandIds ?? [],
     values: options.deleted ? null : (options.values ?? { id: serverIdValue, title }),
     deleted: options.deleted ?? false,
   };
@@ -138,6 +135,16 @@ describe('OfflineReplicaPullService', () => {
         {
           provide: OFFLINE_COMMAND_HOOKS,
           useValue: { entityType: (command: Pick<OfflineCommand, 'operation' | 'aggregateType'>) => command.aggregateType },
+        },
+        {
+          provide: OFFLINE_COMMAND_EXECUTOR,
+          useValue: {
+            execute: vi.fn(),
+            withServerRevision: (command: OfflineCommand, revision: string | number) => ({
+              ...command,
+              baseRevision: revision,
+            }),
+          },
         },
       ],
     });
@@ -240,9 +247,7 @@ describe('OfflineReplicaPullService', () => {
         },
       ],
     });
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Updated', { serverRevision: 2 })], { nextCursor: 'cursor-v1' }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Updated', { serverRevision: 2 })], { nextCursor: 'cursor-v1' }));
 
     await service.pull(scope);
 
@@ -272,9 +277,7 @@ describe('OfflineReplicaPullService', () => {
         },
       ],
     });
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Gone', { deleted: true, serverRevision: 2 })], { nextCursor: 'cursor-v1' }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Gone', { deleted: true, serverRevision: 2 })], { nextCursor: 'cursor-v1' }));
 
     await service.pull(scope);
 
@@ -306,10 +309,7 @@ describe('OfflineReplicaPullService', () => {
 
   it('invalid valuesはrejectしcursorを進めない', async () => {
     await expectPullRejectsPreservingCursor(
-      () =>
-        pull.mockResolvedValueOnce(
-          page([itemChange(42, 'Broken', { values: { id: 42 } })], { nextCursor: 'cursor-v1' }),
-        ),
+      () => pull.mockResolvedValueOnce(page([itemChange(42, 'Broken', { values: { id: 42 } })], { nextCursor: 'cursor-v1' })),
       'Replica row is missing required source key "title".',
     );
   });
@@ -350,20 +350,14 @@ describe('OfflineReplicaPullService', () => {
 
     it('non-positive serverIdはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(
-        () =>
-          pull.mockResolvedValueOnce(
-            page([{ ...itemChange(42, 'Created'), serverId: 0 }], { nextCursor: 'cursor-v1' }),
-          ),
+        () => pull.mockResolvedValueOnce(page([{ ...itemChange(42, 'Created'), serverId: 0 }], { nextCursor: 'cursor-v1' })),
         'Offline replica pull page changes[0].serverId must be a positive integer.',
       );
     });
 
     it('non-integer serverIdはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(
-        () =>
-          pull.mockResolvedValueOnce(
-            page([{ ...itemChange(42, 'Created'), serverId: 42.5 }], { nextCursor: 'cursor-v1' }),
-          ),
+        () => pull.mockResolvedValueOnce(page([{ ...itemChange(42, 'Created'), serverId: 42.5 }], { nextCursor: 'cursor-v1' })),
         'Offline replica pull page changes[0].serverId must be a positive integer.',
       );
     });
@@ -384,10 +378,9 @@ describe('OfflineReplicaPullService', () => {
       await expectPullRejectsPreservingCursor(
         () =>
           pull.mockResolvedValueOnce(
-            page(
-              [{ ...itemChange(42, 'Gone', { deleted: true, serverRevision: 2 }), values: { id: 42, title: 'Gone' } }],
-              { nextCursor: 'cursor-v1' },
-            ),
+            page([{ ...itemChange(42, 'Gone', { deleted: true, serverRevision: 2 }), values: { id: 42, title: 'Gone' } }], {
+              nextCursor: 'cursor-v1',
+            }),
           ),
         'Offline replica pull page changes[0] with deleted=true must have null values.',
       );
@@ -398,7 +391,16 @@ describe('OfflineReplicaPullService', () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
     pull.mockResolvedValueOnce(
       page(
-        [{ sourceKey: 'unknown_items', serverId: 42, serverRevision: 1, values: { id: 42, title: 'X' }, deleted: false }],
+        [
+          {
+            sourceKey: 'unknown_items',
+            serverId: 42,
+            serverRevision: 1,
+            acknowledgedCommandIds: [],
+            values: { id: 42, title: 'X' },
+            deleted: false,
+          },
+        ],
         { nextCursor: 'cursor-v1' },
       ),
     );
@@ -410,7 +412,7 @@ describe('OfflineReplicaPullService', () => {
   it('missing valuesはrejectしcursorを進めない', async () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
     pull.mockResolvedValueOnce(
-      page([{ sourceKey: 'test_items', serverId: 42, serverRevision: 1, values: null, deleted: false }], {
+      page([{ sourceKey: 'test_items', serverId: 42, serverRevision: 1, acknowledgedCommandIds: [], values: null, deleted: false }], {
         nextCursor: 'cursor-v1',
       }),
     );
@@ -421,9 +423,7 @@ describe('OfflineReplicaPullService', () => {
 
   it('schema mismatchはrejectしcursorを進めない', async () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Created')], { nextCursor: 'cursor-v1', schemaVersion: 99, schemaHash: 'deadbeef' }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Created')], { nextCursor: 'cursor-v1', schemaVersion: 99, schemaHash: 'deadbeef' }));
 
     await expect(service.pull(scope)).rejects.toThrow('Offline replica schema mismatch');
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
@@ -473,9 +473,7 @@ describe('OfflineReplicaPullService', () => {
         },
       ],
     });
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Server truth', { serverRevision: 2 })], { nextCursor: 'cursor-v1' }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Server truth', { serverRevision: 2 })], { nextCursor: 'cursor-v1' }));
 
     await service.pull(scope);
 
@@ -485,9 +483,7 @@ describe('OfflineReplicaPullService', () => {
       serverRevision: 2,
       syncState: 'pending',
     });
-    await expect(repository.getCommands(scope)).resolves.toEqual([
-      expect.objectContaining({ commandId: 'cmd-pending', state: 'pending' }),
-    ]);
+    await expect(repository.getCommands(scope)).resolves.toEqual([expect.objectContaining({ commandId: 'cmd-pending', state: 'pending' })]);
   });
 
   it('revision conflictはreplicaとcommandをconflictへ遷移する', async () => {
@@ -524,9 +520,7 @@ describe('OfflineReplicaPullService', () => {
         },
       ],
     });
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Remote truth', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Remote truth', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
 
     await service.pull(scope);
 
@@ -579,9 +573,7 @@ describe('OfflineReplicaPullService', () => {
         },
       ],
     });
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Confirmed', { deleted: true, serverRevision: 2 })], { nextCursor: 'cursor-v1' }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Confirmed', { deleted: true, serverRevision: 2 })], { nextCursor: 'cursor-v1' }));
 
     await service.pull(scope);
 
@@ -599,5 +591,322 @@ describe('OfflineReplicaPullService', () => {
       }),
     ]);
     expect(await repository.getReplicaRowByServerId(scope, 'test_items', 42)).not.toBeNull();
+  });
+
+  describe('lost ACK correlation', () => {
+    async function seedPendingCreate(localId = '019d-create'): Promise<void> {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId,
+            serverId: null,
+            values: { id: 0, title: 'Draft create' },
+            confirmedValues: null,
+            serverRevision: null,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-create',
+            aggregateType: 'test_items',
+            aggregateLocalId: localId,
+            operation: 'test_items.create',
+            payload: { title: 'Draft create' },
+            optimisticValue: { id: 0, title: 'Draft create' },
+            payloadHash: 'hash',
+            baseRevision: null,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+        ],
+      });
+    }
+
+    it('create lost ACKは既存localId行をreconcileしserverIdを割り当ててcommandを除去する', async () => {
+      await seedPendingCreate();
+      pull.mockResolvedValueOnce(
+        page([itemChange(42, 'Created', { serverRevision: 1, acknowledgedCommandIds: ['cmd-create'] })], { nextCursor: 'cursor-v1' }),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', '019d-create')).resolves.toMatchObject({
+        localId: '019d-create',
+        serverId: 42,
+        confirmedValues: { title: 'Created' },
+        syncState: 'confirmed',
+      });
+      expect(await repository.getCommands(scope)).toEqual([]);
+      expect(await repository.getReplicaRows(scope, 'test_items')).toHaveLength(1);
+    });
+
+    it('update lost ACKはprefix commandを除去しfollowing commandをrebaseする', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-update',
+            serverId: 42,
+            values: { id: 42, title: 'Follow-up edit' },
+            confirmedValues: { id: 42, title: 'Confirmed baseline' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-update-1',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-update',
+            operation: 'test_items.update',
+            payload: { title: 'First edit' },
+            optimisticValue: { id: 42, title: 'First edit' },
+            payloadHash: 'hash-1',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+          {
+            ...scope,
+            commandId: 'cmd-update-2',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-update',
+            operation: 'test_items.update',
+            payload: { title: 'Follow-up edit' },
+            optimisticValue: { id: 42, title: 'Follow-up edit' },
+            payloadHash: 'hash-2',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 2,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      pull.mockResolvedValueOnce(
+        page([itemChange(42, 'First edit applied', { serverRevision: 2, acknowledgedCommandIds: ['cmd-update-1'] })], {
+          nextCursor: 'cursor-v1',
+        }),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', '019d-update')).resolves.toMatchObject({
+        localId: '019d-update',
+        serverId: 42,
+        values: { title: 'Follow-up edit' },
+        confirmedValues: { title: 'First edit applied' },
+        serverRevision: 2,
+        syncState: 'pending',
+      });
+      expect(await repository.getCommands(scope)).toEqual([
+        expect.objectContaining({ commandId: 'cmd-update-2', baseRevision: 2, state: 'pending' }),
+      ]);
+    });
+
+    it('delete lost ACKはfollowing commandが無ければ行を削除する', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-delete-ack',
+            serverId: 42,
+            values: { id: 42, title: 'Pending delete' },
+            confirmedValues: { id: 42, title: 'Confirmed' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-delete',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-delete-ack',
+            operation: 'test_items.delete',
+            payload: {},
+            optimisticValue: { id: 42, title: 'Pending delete' },
+            payloadHash: 'hash',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      pull.mockResolvedValueOnce(
+        page([itemChange(42, 'Confirmed', { deleted: true, serverRevision: 2, acknowledgedCommandIds: ['cmd-delete'] })], {
+          nextCursor: 'cursor-v1',
+        }),
+      );
+
+      await service.pull(scope);
+
+      expect(await repository.getReplicaRow(scope, 'test_items', '019d-delete-ack')).toBeNull();
+      expect(await repository.getReplicaRowByServerId(scope, 'test_items', 42)).toBeNull();
+      expect(await repository.getCommands(scope)).toEqual([]);
+    });
+
+    it('duplicate deltaはacknowledgedCommandIdsをマージする', async () => {
+      await seedPendingCreate();
+      pull.mockResolvedValueOnce(
+        page(
+          [
+            itemChange(42, 'Partial', { serverRevision: 1, acknowledgedCommandIds: ['cmd-create'] }),
+            itemChange(42, 'Final', { serverRevision: 2, acknowledgedCommandIds: ['cmd-create'] }),
+          ],
+          { nextCursor: 'cursor-v1' },
+        ),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', '019d-create')).resolves.toMatchObject({
+        confirmedValues: { title: 'Final' },
+        serverRevision: 2,
+        syncState: 'confirmed',
+      });
+      expect(await repository.getCommands(scope)).toEqual([]);
+    });
+
+    it('skipped-prefix acknowledgementはrejectする', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-skip',
+            serverId: 42,
+            values: { id: 42, title: 'Second edit' },
+            confirmedValues: { id: 42, title: 'Baseline' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-first',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-skip',
+            operation: 'test_items.update',
+            payload: { title: 'First edit' },
+            optimisticValue: { id: 42, title: 'First edit' },
+            payloadHash: 'hash-1',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+          {
+            ...scope,
+            commandId: 'cmd-second',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-skip',
+            operation: 'test_items.update',
+            payload: { title: 'Second edit' },
+            optimisticValue: { id: 42, title: 'Second edit' },
+            payloadHash: 'hash-2',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 2,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
+      pull.mockResolvedValueOnce(
+        page([itemChange(42, 'Only second', { serverRevision: 2, acknowledgedCommandIds: ['cmd-second'] })], { nextCursor: 'cursor-v1' }),
+      );
+
+      await expect(service.pull(scope)).rejects.toThrow('Replica acknowledgement skipped an earlier aggregate command.');
+      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
+      expect(await repository.getCommands(scope)).toHaveLength(2);
+    });
+
+    it('server id collisionはrejectする', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-local-a',
+            serverId: null,
+            values: { id: 0, title: 'Pending create A' },
+            confirmedValues: null,
+            serverRevision: null,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-local-b',
+            serverId: 99,
+            values: { id: 99, title: 'Existing remote' },
+            confirmedValues: { id: 99, title: 'Existing remote' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'confirmed',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-create-a',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-local-a',
+            operation: 'test_items.create',
+            payload: { title: 'Pending create A' },
+            optimisticValue: { id: 0, title: 'Pending create A' },
+            payloadHash: 'hash',
+            baseRevision: null,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
+      pull.mockResolvedValueOnce(
+        page([itemChange(99, 'Collision', { serverRevision: 2, acknowledgedCommandIds: ['cmd-create-a'] })], { nextCursor: 'cursor-v1' }),
+      );
+
+      await expect(service.pull(scope)).rejects.toThrow('Server id 99 is already mapped to another local replica row.');
+      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
+    });
+  });
+
+  it('non-finite numeric serverRevisionはrejectしcursorを進めない', async () => {
+    await expectPullRejectsPreservingCursor(
+      () => pull.mockResolvedValueOnce(page([{ ...itemChange(42, 'Created'), serverRevision: Number.NaN }], { nextCursor: 'cursor-v1' })),
+      'Offline replica pull page changes[0].serverRevision must be a string or number.',
+    );
   });
 });

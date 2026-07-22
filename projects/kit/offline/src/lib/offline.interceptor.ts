@@ -1,6 +1,6 @@
 import type { HttpEvent, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { HttpResponse as AngularHttpResponse } from '@angular/common/http';
-import { inject, Injectable } from '@angular/core';
+import { ErrorHandler, inject, Injectable } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { catchError, concatMap, defer, from, of, tap, throwError } from 'rxjs';
 import { isOfflineFallbackError, OfflineNetworkService } from './offline-network.service';
@@ -16,9 +16,7 @@ export const offlineInterceptor: HttpInterceptorFn = (request, next) => {
   const fallback = inject(OfflineRequestFallbackService);
   const plan = registry.resolve(request);
   if (!plan) return transport();
-  return defer(transport).pipe(
-    catchError((error: unknown) => fallback.handle(request, error, plan) ?? throwError(() => error)),
-  );
+  return defer(transport).pipe(catchError((error: unknown) => fallback.handle(request, error, plan) ?? throwError(() => error)));
 };
 
 function observeTransport(source: Observable<HttpEvent<unknown>>, network: OfflineNetworkService): Observable<HttpEvent<unknown>> {
@@ -38,6 +36,7 @@ function observeTransport(source: Observable<HttpEvent<unknown>>, network: Offli
 @Injectable({ providedIn: 'root' })
 export class OfflineRequestFallbackService {
   readonly #registry = inject(OfflineRequestPolicyRegistry);
+  readonly #errorHandler = inject(ErrorHandler);
 
   handle(
     request: HttpRequest<unknown>,
@@ -48,10 +47,13 @@ export class OfflineRequestFallbackService {
     const plan = resolvedPlan ?? this.#registry.resolve(request);
     if (!plan || plan.kind !== 'read') return null;
     return defer(() => from(plan.readLocal())).pipe(
+      catchError((localError: unknown) => {
+        this.#errorHandler.handleError(localError);
+        return throwError(() => error);
+      }),
       concatMap((cached) =>
         cached ? of(cached.clone({ headers: cached.headers.set(OFFLINE_RESPONSE_HEADER, 'local') })) : throwError(() => error),
       ),
-      catchError(() => throwError(() => error)),
     );
   }
 }

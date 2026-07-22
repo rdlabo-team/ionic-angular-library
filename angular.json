@@ -272,6 +272,12 @@
               "watch": false
             }
           }
+        },
+        "lint": {
+          "builder": "@angular-eslint/builder:lint",
+          "options": {
+            "lintFilePatterns": ["projects/kit/**/*.ts", "projects/kit/**/*.html"]
+          }
         }
       }
     }

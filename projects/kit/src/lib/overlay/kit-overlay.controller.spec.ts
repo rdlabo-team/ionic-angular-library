@@ -369,7 +369,7 @@ describe('KitOverlayController', () => {
       const assertVoid: void = result;
       expect(assertVoid).toBeUndefined();
       // @ts-expect-error — a void result carries no dismiss data.
-      result?.anything;
+      expect(result?.anything).toBeUndefined();
     });
 
     it('presents the modal', async () => {

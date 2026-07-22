@@ -87,11 +87,7 @@ export interface OfflineRepository {
   setLastUserId(userId: number): Promise<void>;
   getSessionManifest<T>(userId: number): Promise<T | null>;
   putSessionManifest<T>(userId: number, value: T): Promise<void>;
-  getReplicaRow<TValues = unknown>(
-    scope: OfflineScope,
-    sourceKey: string,
-    localId: string,
-  ): Promise<OfflineReplicaRow<TValues> | null>;
+  getReplicaRow<TValues = unknown>(scope: OfflineScope, sourceKey: string, localId: string): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
   getReplicaRowByServerId<TValues = unknown>(
     scope: OfflineScope,
@@ -100,6 +96,7 @@ export interface OfflineRepository {
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
+  getCommandsForUser(userId: number): Promise<OfflineCommand[]>;
   putCommand(command: OfflineCommand): Promise<void>;
   replaceCommand(command: OfflineCommand): Promise<void>;
   removeCommand(commandId: string): Promise<void>;
@@ -131,6 +128,7 @@ interface OfflineMetadata {
 interface OfflineReplicaSchemaMigrationJournal {
   originalRows: Record<string, OfflineReplicaRow>;
   fromVersion: number;
+  fromHash: string;
   targetVersion: number;
   targetHash: string;
 }
@@ -195,14 +193,13 @@ export class IonicOfflineRepository implements OfflineRepository {
   ): Promise<OfflineReplicaRow<TValues> | null> {
     await this.initialize();
     await this.#writes;
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
-    return rows[this.#rowKey(scope, sourceKey, localId)] ?? null;
+    const row = rows[this.#rowKey(scope, sourceKey, localId)];
+    return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
 
-  async getReplicaRows<TValues = unknown>(
-    scope: OfflineScope,
-    sourceKey: string,
-  ): Promise<OfflineReplicaRow<TValues>[]> {
+  async getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
     await this.initialize();
     await this.#writes;
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
@@ -212,6 +209,7 @@ export class IonicOfflineRepository implements OfflineRepository {
         if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
         return schema.scope === 'group' ? row.groupId === scope.groupId : true;
       })
+      .map((row) => this.#rowForScope(row, schema, scope))
       .sort((left, right) => left.localId.localeCompare(right.localId));
   }
 
@@ -225,12 +223,11 @@ export class IonicOfflineRepository implements OfflineRepository {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     if (!this.#schemaHasServerId(schema)) return null;
     const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
-    return (
-      Object.values(rows).find((row) => {
-        if (row.sourceKey !== sourceKey || row.userId !== scope.userId || row.serverId !== serverId) return false;
-        return schema.scope === 'group' ? row.groupId === scope.groupId : true;
-      }) ?? null
-    );
+    const row = Object.values(rows).find((row) => {
+      if (row.sourceKey !== sourceKey || row.userId !== scope.userId || row.serverId !== serverId) return false;
+      return schema.scope === 'group' ? row.groupId === scope.groupId : true;
+    });
+    return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
 
   async getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
@@ -247,6 +244,15 @@ export class IonicOfflineRepository implements OfflineRepository {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === scope.userId && command.groupId === scope.groupId)
+      .sort((left, right) => left.createdAt - right.createdAt);
+  }
+
+  async getCommandsForUser(userId: number): Promise<OfflineCommand[]> {
+    await this.initialize();
+    await this.#writes;
+    const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
+    return Object.values(commands)
+      .filter((command) => command.userId === userId)
       .sort((left, right) => left.createdAt - right.createdAt);
   }
 
@@ -292,7 +298,10 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.initialize();
     const belongsToGroup = (value: OfflineScope) => value.userId === scope.userId && value.groupId === scope.groupId;
     await Promise.all([
-      this.#filterRecord<OfflineReplicaRow>(ROWS_KEY, (value) => !belongsToGroup(value)),
+      this.#filterRecord<OfflineReplicaRow>(ROWS_KEY, (value) => {
+        const schema = this.#resolveReplicaEntitySchema(value.sourceKey);
+        return schema.scope === 'user' || !belongsToGroup(value);
+      }),
       this.#filterRecord<OfflineCommand>(OUTBOX_KEY, (value) => !belongsToGroup(value)),
       this.#filterRecord<string>(CURSORS_KEY, (_value, key) => key !== this.#cursorKey(scope)),
     ]);
@@ -328,18 +337,13 @@ export class IonicOfflineRepository implements OfflineRepository {
       return;
     }
 
-    const interruptedSchemaMigration = await this.#storage.get<OfflineReplicaSchemaMigrationJournal>(
-      REPLICA_SCHEMA_MIGRATION_KEY,
-    );
+    const interruptedSchemaMigration = await this.#storage.get<OfflineReplicaSchemaMigrationJournal>(REPLICA_SCHEMA_MIGRATION_KEY);
     if (interruptedSchemaMigration) {
       await this.#recoverReplicaSchemaMigration(interruptedSchemaMigration);
     }
 
     const currentMetadata = await this.#metadata();
-    await this.#initializeReplicaSchema(
-      currentMetadata.replicaSchemaVersion,
-      currentMetadata.replicaSchemaHash,
-    );
+    await this.#initializeReplicaSchema(currentMetadata.replicaSchemaVersion, currentMetadata.replicaSchemaHash);
 
     const interrupted = await this.#storage.get<OfflineReplicaTransaction>(REPLICA_TRANSACTION_KEY);
     if (interrupted) await this.#applyReplicaTransaction(interrupted, false);
@@ -376,28 +380,25 @@ export class IonicOfflineRepository implements OfflineRepository {
       );
     }
 
-    await this.#runReplicaSchemaMigration(storedVersion, targetVersion, targetHash);
+    if (storedHash === null) {
+      throw new Error(`Offline replica schema metadata at version ${storedVersion} is missing its schema hash.`);
+    }
+
+    await this.#runReplicaSchemaMigration(storedVersion, storedHash, targetVersion, targetHash);
   }
 
   async #recoverReplicaSchemaMigration(journal: OfflineReplicaSchemaMigrationJournal): Promise<void> {
-    const metadata = await this.#metadata();
-    if (
-      metadata.replicaSchemaVersion === journal.targetVersion &&
-      metadata.replicaSchemaHash === journal.targetHash
-    ) {
-      await this.#storage.remove(REPLICA_SCHEMA_MIGRATION_KEY);
-      return;
-    }
-
     await this.#storage.set(ROWS_KEY, journal.originalRows);
+    const metadata = await this.#metadata();
+    await this.#storage.set<OfflineMetadata>(METADATA_KEY, {
+      ...metadata,
+      replicaSchemaVersion: journal.fromVersion,
+      replicaSchemaHash: journal.fromHash,
+    });
     await this.#storage.remove(REPLICA_SCHEMA_MIGRATION_KEY);
   }
 
-  async #runReplicaSchemaMigration(
-    fromVersion: number,
-    targetVersion: number,
-    targetHash: string,
-  ): Promise<void> {
+  async #runReplicaSchemaMigration(fromVersion: number, fromHash: string, targetVersion: number, targetHash: string): Promise<void> {
     const bundle = this.#options.replicaSchema;
     for (let version = fromVersion; version < targetVersion; version++) {
       if (!bundle.migrations.some((migration) => migration.fromVersion === version)) {
@@ -411,13 +412,14 @@ export class IonicOfflineRepository implements OfflineRepository {
       await this.#storage.set<OfflineReplicaSchemaMigrationJournal>(REPLICA_SCHEMA_MIGRATION_KEY, {
         originalRows,
         fromVersion,
+        fromHash,
         targetVersion,
         targetHash,
       });
 
       try {
         const transformedRows: Record<string, OfflineReplicaRow> = {};
-        for (const [key, row] of Object.entries(rows)) {
+        for (const row of Object.values(rows)) {
           let current: OfflineReplicaWebMigrationRow | null = this.#toWebMigrationRow(row);
           for (let version = fromVersion; version < targetVersion; version++) {
             if (current === null) break;
@@ -438,29 +440,35 @@ export class IonicOfflineRepository implements OfflineRepository {
             encodeOfflineReplicaValues(entitySchema, current!.confirmedValues);
           }
 
-          transformedRows[key] = {
+          const transformedRow: OfflineReplicaRow = {
             ...row,
             sourceKey: current!.sourceKey,
             values: projectOfflineReplicaValues(entitySchema, current!.values),
-            confirmedValues:
-              current!.confirmedValues === null
-                ? null
-                : projectOfflineReplicaValues(entitySchema, current!.confirmedValues),
+            confirmedValues: current!.confirmedValues === null ? null : projectOfflineReplicaValues(entitySchema, current!.confirmedValues),
           };
+          const transformedKey = this.#rowKey(transformedRow, transformedRow.sourceKey, transformedRow.localId);
+          if (transformedRows[transformedKey]) {
+            throw new Error(`Replica schema migration produced duplicate row key "${transformedKey}".`);
+          }
+          transformedRows[transformedKey] = transformedRow;
         }
 
         const metadata = await this.#metadata();
-        await Promise.all([
-          this.#storage.set(ROWS_KEY, transformedRows),
-          this.#storage.set<OfflineMetadata>(METADATA_KEY, {
-            ...metadata,
-            replicaSchemaVersion: targetVersion,
-            replicaSchemaHash: targetHash,
-          }),
-        ]);
+        await this.#storage.set(ROWS_KEY, transformedRows);
+        await this.#storage.set<OfflineMetadata>(METADATA_KEY, {
+          ...metadata,
+          replicaSchemaVersion: targetVersion,
+          replicaSchemaHash: targetHash,
+        });
         await this.#storage.remove(REPLICA_SCHEMA_MIGRATION_KEY);
       } catch (error) {
-        await this.#storage.remove(REPLICA_SCHEMA_MIGRATION_KEY);
+        await this.#recoverReplicaSchemaMigration({
+          originalRows,
+          fromVersion,
+          fromHash,
+          targetVersion,
+          targetHash,
+        });
         throw error;
       }
     });
@@ -472,8 +480,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     return {
       sourceKey: row.sourceKey,
       values: structuredClone(row.values as Record<string, unknown>),
-      confirmedValues:
-        row.confirmedValues === null ? null : structuredClone(row.confirmedValues as Record<string, unknown>),
+      confirmedValues: row.confirmedValues === null ? null : structuredClone(row.confirmedValues as Record<string, unknown>),
     };
   }
 
@@ -509,9 +516,9 @@ export class IonicOfflineRepository implements OfflineRepository {
       const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
       rows[this.#rowKey(row, row.sourceKey, row.localId)] = {
         ...row,
+        groupId: schema.scope === 'user' ? 0 : row.groupId,
         values: projectOfflineReplicaValues(schema, row.values),
-        confirmedValues:
-          row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues),
+        confirmedValues: row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues),
       };
     }
     for (const row of transaction.removeRows ?? []) {
@@ -560,7 +567,17 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   #rowKey(scope: OfflineScope, sourceKey: string, localId: string): string {
-    return `${scope.userId}:${scope.groupId}:${sourceKey}:${localId}`;
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const partition = schema.scope === 'user' ? 'user' : String(scope.groupId);
+    return `${scope.userId}:${partition}:${sourceKey}:${localId}`;
+  }
+
+  #rowForScope<TValues>(
+    row: OfflineReplicaRow<TValues>,
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+    scope: OfflineScope,
+  ): OfflineReplicaRow<TValues> {
+    return schema.scope === 'user' ? { ...row, groupId: scope.groupId } : row;
   }
 
   #cursorKey(scope: OfflineScope): string {

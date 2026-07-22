@@ -22,6 +22,7 @@ export interface OfflineCommandTarget {
 /** 不透明なoperationを製品APIへ送信し、local replicaへ投影するadapter。 */
 /** Product adapter that sends commands and projects acknowledgements into entities. */
 export interface OfflineCommandExecutor {
+  /** Sends the command using `command.commandId` as its durable server-side idempotency key. */
   execute(command: OfflineCommand, target: OfflineCommandTarget): Promise<OfflineCommandResult>;
   withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
 }
