@@ -10,13 +10,13 @@ const OPTS = {
   waitUrl: 'https://api.example/public/maintenance/wait',
 };
 
-type FakeSource = {
+interface FakeSource {
   addEventListener: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   onerror: ((ev: Event) => void) | null;
   onopen: ((ev: Event) => void) | null;
   trigger: (type: string) => void;
-};
+}
 
 function fakeAlert() {
   let dismissResolve: () => void = () => undefined;
@@ -55,11 +55,7 @@ function setup(alert = fakeAlert(), source = fakeEventSource()) {
   vi.stubGlobal('EventSource', EventSourceMock);
 
   TestBed.configureTestingModule({
-    providers: [
-      provideZonelessChangeDetection(),
-      KitMaintenanceController,
-      { provide: AlertController, useValue: alertCtrl },
-    ],
+    providers: [provideZonelessChangeDetection(), KitMaintenanceController, { provide: AlertController, useValue: alertCtrl }],
   });
   return {
     controller: TestBed.inject(KitMaintenanceController),

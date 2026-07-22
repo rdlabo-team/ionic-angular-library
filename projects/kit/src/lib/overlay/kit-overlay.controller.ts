@@ -60,14 +60,12 @@ export interface ModalMetadata<R = unknown> {
  * Matched with `any` (not `unknown`): `InputSignalWithTransform`'s `TransformT` is contravariant, so
  * `InputSignal<number>` is not assignable to `InputSignalWithTransform<unknown, unknown>`.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type InputWriteType<F> = F extends InputSignalWithTransform<any, infer W> ? W : never;
 
 /** Instance type of a component constructor; `never` for non-class components (string / HTMLElement refs). */
 type InstanceOf<C> = C extends abstract new (...args: never[]) => infer I ? I : never;
 
 /** Keys of the `input()` signal fields on a component instance. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type InputFieldKeys<I> = { [K in keyof I]-?: I[K] extends InputSignalWithTransform<any, any> ? K : never }[keyof I];
 
 /**

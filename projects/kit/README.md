@@ -330,6 +330,129 @@ A fleet-canonical HTTP interceptor with:
 - Configurable bypass (CDN, S3, external URLs)
 - **Safe retry**: only idempotent methods (`GET`/`HEAD`/`OPTIONS`, or a request with an `Idempotency-Key`) are retried, and only on a transient status `[0, 408, 429, 502, 503, 504]`, up to 2 times with a short jittered backoff (honoring `Retry-After`). **Writes are never auto-retried** (no duplicate saves).
 - **Offline fast-fail**: when the device is offline the interceptor stops retrying immediately and hands off to `offlineFallback` instead of waiting out the backoff.
+
+### Scoped local replica and outbox (`@rdlabo/ionic-angular-kit/offline`)
+
+The optional `offline` entry point provides a user/group-scoped local replica, durable outbox, authenticated
+session boundary, cursor-based delta pull, aggregate-ordered replay, optimistic updates, retry classification, and a
+read-only request-policy interceptor. Applications provide URL/DTO read policies, a replica puller, and a command
+executor through `provideOffline(...)`.
+Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
+Web storage uses Ionic Storage; iOS and Android use encrypted Capawesome SQLite. Importing either the
+primary entry point or `/offline` does not pull the private plugin into existing applications.
+
+The offline interceptor observes real transport responses to update API reachability. For matched `GET`
+requests only, a transport failure with `status=0` may return a local replica response tagged
+`X-Offline-Response: local`. `POST` and other write methods always go to transport unchanged; outbox replay
+requests bypass policy with `OFFLINE_BYPASS` while still using the same transport observation.
+
+Native applications install the Insiders package in the application, then pass its `Sqlite` export
+and an encryption key loaded from secure device storage to the kit:
+
+```bash
+npm install @capawesome-team/capacitor-sqlite
+```
+
+```ts
+provideOffline({
+  // ...product policies, puller, and executor
+  sqlitePlugin: Sqlite,
+  encryptionKey: async () => {
+    const { value } = await securePreferences.get({ key: 'offline-database-key' });
+    if (!value) throw new Error('offline-database-key is missing');
+    return value;
+  },
+});
+```
+
+SQLite entities use an immutable client-generated UUID as `localId` and keep the server's
+`AUTO_INCREMENT` id separately as nullable `serverId`. The outbox references only `aggregateLocalId`.
+Immediately before each send, the executor receives the latest `{ localId, serverId }` resolved from
+SQLite; a successful create adds `serverId` without replacing `localId`. Entity projection and outbox
+append/removal are committed in one local transaction.
+
+Each synchronization cycle pulls authoritative server deltas before replaying the outbox. Every page carries the
+replica schema version/hash and advances a durable user/group cursor in the same transaction as its rows. A schema
+mismatch, malformed row, or non-advancing cursor rejects synchronization without advancing that cursor. If a remote
+revision changed while a local command is pending, the optimistic row remains visible and both row and command move
+to `conflict`; the new server value is retained as the confirmed baseline.
+
+The command adapter must send `commandId` as the server-side idempotency key. The server persists that key with the
+mutation and returns all keys represented by a delta row as `acknowledgedCommandIds`. This correlation is required:
+if the server commits a create/update/delete but its HTTP acknowledgement is lost, the next pull reconciles the
+server result into the original `localId`, removes the acknowledged outbox prefix, and rebases later commands without
+creating a second local identity.
+
+Versioned replica schemas lock web and native storage. Web metadata stores
+`replicaSchemaVersion` and `replicaSchemaHash`; native stores the same pair in
+`offline_replica_schema_metadata`. Bump `version` for every intentional shape change and supply a
+complete one-step migration chain. Native runs each step's SQL `statements`; web runs
+`migrateWebRow`, which receives only `{ sourceKey, values, confirmedValues }` and may return the same
+shape or `null` to delete a row. Identity and sync metadata (`localId`, `serverId`, scope, revision,
+`syncState`) stay outside the callback. The bundle fingerprint hashes `version`, entity layouts, and
+migration `fromVersion`/`statements` — never function bodies.
+
+```typescript
+import {
+  defineOfflineReplicaSchema,
+  defineReplicaEntity,
+  provideOffline,
+  serverId,
+  text,
+} from '@rdlabo/ionic-angular-kit/offline';
+
+// This is the Hono package's existing `typeof items.$inferSelect` export.
+import type { Items as ItemSelect } from '@product/hono/db/schema';
+
+const itemEntityV2 = defineReplicaEntity<ItemSelect>()({
+  table: 'items',
+  sourceKey: 'items',
+  scope: 'group',
+  fields: {
+    id: serverId(),
+    title: text(),
+    subtitle: text(),
+  },
+});
+
+const replicaSchema = defineOfflineReplicaSchema({
+  version: 2,
+  entities: [itemEntityV2],
+  migrations: [
+    {
+      fromVersion: 1,
+      statements: ['ALTER TABLE items ADD COLUMN subtitle TEXT NOT NULL DEFAULT ""'],
+      migrateWebRow: (row) => ({
+        sourceKey: row.sourceKey,
+        values: { ...row.values, subtitle: '' },
+        confirmedValues:
+          row.confirmedValues === null ? null : { ...row.confirmedValues, subtitle: '' },
+      }),
+    },
+  ],
+});
+
+provideOffline({
+  replicaSchema,
+  replicaPuller: ProductReplicaPuller,
+  commandExecutor: ProductCommandExecutor,
+  // ...request policies, sqlitePlugin, encryptionKey
+});
+```
+
+The schema definition must map every `ItemSelect` key exactly once as a SQLite column, `serverId()`, or
+`ignored(reason)`, with exactly one `serverId()` per replicated entity. Nullable Hono columns require
+`nullable(...)`; non-null columns reject it. Therefore adding,
+removing, or changing nullability of a Drizzle column breaks the app build until its replica mapping is updated.
+At runtime, `values` contains only the mapped column projection; `localId` and `serverId` remain dedicated replica
+fields and ignored server fields are never persisted.
+
+Encrypted native builds also require the plugin's SQLCipher platform setup: enable
+`capawesomeCapacitorSqliteIncludeSqlcipher = true` on Android; select the `SQLCipher` pod when using
+CocoaPods, or enable the `SQLCipher` package trait when using Swift Package Manager on iOS. Follow
+the [Capawesome SQLite installation guide](https://capawesome.io/docs/plugins/sqlite/#installation)
+for the exact native configuration and export-compliance notes.
+
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 - **Universal 60s timeout** — every request fails with a synthetic (retryable) `408` if it hangs for 60s. Deliberately generous (catches a dead server without cutting off a large upload / AI generation; `timeout({ each })` resets per emission, so streaming is unaffected). Not configurable — one fleet-wide behavior.
 - **Optional `treatAsError(response)`** — reject a 2xx (e.g. `204`/`206`) as an error when a backend uses it to signal a condition. The one genuinely app-specific bit (some apps receive a normal `204`), kept optional so class interceptors with a 2xx-as-error convention can migrate to `provideKitHttp`.
