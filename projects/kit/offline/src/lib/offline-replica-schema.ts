@@ -87,14 +87,29 @@ type OfflineReplicaFieldDef = OfflineReplicaColumnDef | OfflineReplicaServerIdDe
 
 type StripNullish<T> = Exclude<T, null | undefined>;
 
+type NormalizeReplicaColumnValue<T> = T extends string
+  ? string
+  : T extends number
+    ? number
+    : T extends boolean
+      ? boolean
+      : T extends Date
+        ? string | Date
+        : T;
+
 type IsNullableSelectValue<T> = null extends T ? true : undefined extends T ? true : false;
+
+type OfflineReplicaColumnDefForValue<T> = IsNullableSelectValue<T> extends true
+  ? OfflineReplicaColumnDef<
+      NormalizeReplicaColumnValue<StripNullish<T>>,
+      { readonly [replicaNullableBrand]: 'nullable' }
+    >
+  : OfflineReplicaColumnDef<NormalizeReplicaColumnValue<T>, { readonly [replicaNullableBrand]: 'required' }>;
 
 type OfflineReplicaFieldDefForKey<TSelect extends Record<string, unknown>, K extends keyof TSelect> =
   | (StripNullish<TSelect[K]> extends number ? OfflineReplicaServerIdDef : never)
   | OfflineReplicaIgnoredDef
-  | (IsNullableSelectValue<TSelect[K]> extends true
-      ? OfflineReplicaColumnDef<StripNullish<TSelect[K]>, { readonly [replicaNullableBrand]: 'nullable' }>
-      : OfflineReplicaColumnDef<TSelect[K], { readonly [replicaNullableBrand]: 'required' }>);
+  | OfflineReplicaColumnDefForValue<TSelect[K]>;
 
 type ExactSelectKeys<TSelect extends Record<string, unknown>, TFields> =
   Exclude<keyof TFields, keyof TSelect> extends never ? (Exclude<keyof TSelect, keyof TFields> extends never ? TFields : never) : never;

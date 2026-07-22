@@ -741,4 +741,44 @@ describe('offline-replica-schema types', () => {
       },
     });
   });
+
+  it('type: primitive literal unions use their SQLite builder primitive', () => {
+    type LiteralSelect = {
+      id: number;
+      kind: 0 | 1;
+      role: 'admin' | 'member';
+    };
+
+    defineReplicaEntity<LiteralSelect>()({
+      table: 'literal_items',
+      sourceKey: 'literal_items',
+      scope: 'group',
+      fields: {
+        id: serverId(),
+        kind: integer(),
+        role: text(),
+      },
+    });
+  });
+
+  it('type: literal unions reject mismatched primitive builders', () => {
+    type LiteralSelect = {
+      id: number;
+      kind: 0 | 1;
+      role: 'admin' | 'member';
+    };
+
+    defineReplicaEntity<LiteralSelect>()({
+      table: 'literal_mismatch_items',
+      sourceKey: 'literal_mismatch_items',
+      scope: 'group',
+      fields: {
+        id: serverId(),
+        // @ts-expect-error — numeric literal unions require integer().
+        kind: text(),
+        // @ts-expect-error — string literal unions require text().
+        role: integer(),
+      },
+    });
+  });
 });
