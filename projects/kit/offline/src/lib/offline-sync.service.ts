@@ -1,6 +1,7 @@
 import { computed, effect, ErrorHandler, inject, Injectable, signal } from '@angular/core';
 import { OFFLINE_COMMAND_EXECUTOR, OFFLINE_SYNC_CONTEXT, type OfflineCommandResult } from './offline-command-executor';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
+import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
 import type { OfflineCommand, OfflineReplicaSyncState, OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
@@ -41,6 +42,7 @@ export class OfflineSyncService {
   readonly #executor = inject(OFFLINE_COMMAND_EXECUTOR);
   readonly #context = inject(OFFLINE_SYNC_CONTEXT);
   readonly #hooks = inject(OFFLINE_COMMAND_HOOKS);
+  readonly #options = inject(OFFLINE_KIT_OPTIONS);
   readonly #pull = inject(OfflineReplicaPullService);
   readonly #errorHandler = inject(ErrorHandler);
   readonly #commands = signal<OfflineCommand[]>([]);
@@ -52,6 +54,7 @@ export class OfflineSyncService {
   #enqueueTail: Promise<void> = Promise.resolve();
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #initialized = false;
+  #lastCommandCreatedAt = 0;
 
   readonly pendingCommands = this.#commands.asReadonly();
   readonly pendingCount = computed(() => this.pendingCommands().length);
@@ -145,7 +148,7 @@ export class OfflineSyncService {
       state: 'pending',
       attempts: 0,
       retryAt: null,
-      createdAt: Date.now(),
+      createdAt: await this.#nextCommandCreatedAt(userId),
       lastErrorCode: null,
     };
     const entityType = this.#entityType(command);
@@ -235,7 +238,7 @@ export class OfflineSyncService {
     const now = Date.now();
     const groups = new Map<string, OfflineCommand[]>();
     for (const command of commands) {
-      const key = `${command.userId}:${command.groupId}:${command.aggregateType}:${command.aggregateLocalId}`;
+      const key = this.#aggregateKey(command);
       const group = groups.get(key) ?? [];
       group.push(command);
       groups.set(key, group);
@@ -384,7 +387,11 @@ export class OfflineSyncService {
   }
 
   #aggregateKey(command: OfflineCommand): string {
-    return `${command.userId}:${command.groupId}:${command.aggregateType}:${command.aggregateLocalId}`;
+    const sourceKey = this.#entityType(command);
+    const schema = this.#options.replicaSchema.entities.find((entity) => entity.sourceKey === sourceKey);
+    if (!schema) throw new Error(`Unknown offline replica source key "${sourceKey}".`);
+    const partition = schema.scope === 'user' ? 'user' : `group:${command.groupId}`;
+    return `${command.userId}:${partition}:${sourceKey}:${command.aggregateLocalId}`;
   }
 
   #failedCommand(command: OfflineCommand, error: unknown): OfflineCommand {
@@ -445,12 +452,29 @@ export class OfflineSyncService {
     if (this.#activeUserId === userId) return;
     this.#knownScopes.clear();
     this.#activeUserId = userId;
+    this.#lastCommandCreatedAt = 0;
   }
 
   async #readKnownCommands(): Promise<OfflineCommand[]> {
-    return (await Promise.all([...this.#knownScopes.values()].map((scope) => this.#repository.getCommands(scope))))
+    const commands = (await Promise.all([...this.#knownScopes.values()].map((scope) => this.#repository.getCommands(scope))))
       .flat()
-      .sort((left, right) => left.createdAt - right.createdAt);
+      .sort(compareOfflineCommands);
+    this.#rememberCreatedAt(commands);
+    return commands;
+  }
+
+  async #nextCommandCreatedAt(userId: number): Promise<number> {
+    const commands = this.#repository.getCommandsForUser
+      ? await this.#repository.getCommandsForUser(userId)
+      : await this.#readKnownCommands();
+    this.#rememberCreatedAt(commands);
+    const createdAt = Math.max(Date.now(), this.#lastCommandCreatedAt + 1);
+    this.#lastCommandCreatedAt = createdAt;
+    return createdAt;
+  }
+
+  #rememberCreatedAt(commands: readonly OfflineCommand[]): void {
+    for (const command of commands) this.#lastCommandCreatedAt = Math.max(this.#lastCommandCreatedAt, command.createdAt);
   }
 
   async #refreshState(generation = this.#generation): Promise<void> {
@@ -538,4 +562,8 @@ export class OfflineSyncService {
   #scopeKey(scope: OfflineScope): string {
     return `${scope.userId}:${scope.groupId}`;
   }
+}
+
+function compareOfflineCommands(left: OfflineCommand, right: OfflineCommand): number {
+  return left.createdAt - right.createdAt || (left.commandId < right.commandId ? -1 : left.commandId > right.commandId ? 1 : 0);
 }

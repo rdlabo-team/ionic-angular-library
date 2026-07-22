@@ -15,7 +15,7 @@ export interface OfflineReplicaChange {
   serverId: number;
   serverRevision: string | number;
   /** Idempotency command ids durably recorded by the server and reflected in this final row state. */
-  acknowledgedCommandIds: readonly string[];
+  acknowledgedCommandIds?: readonly string[];
   values: unknown | null;
   deleted: boolean;
 }

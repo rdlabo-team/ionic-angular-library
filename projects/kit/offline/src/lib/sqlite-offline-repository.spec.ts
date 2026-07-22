@@ -147,6 +147,64 @@ describe('SqliteOfflineRepository Capawesome adapter', () => {
     expect(plugin.rollbackTransaction).not.toHaveBeenCalled();
   });
 
+  it('getCommandsはcreated_atとcommand_id昇順でSQL ORDER BYする', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    await repository.putCommand({
+      userId: 1,
+      groupId: 10,
+      commandId: 'cmd-z',
+      aggregateType: 'test_items',
+      aggregateLocalId: '019d-aaaa',
+      operation: 'test_items.update',
+      payload: {},
+      optimisticValue: {},
+      payloadHash: 'hash',
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 10,
+      lastErrorCode: null,
+    });
+    await repository.putCommand({
+      userId: 1,
+      groupId: 10,
+      commandId: 'cmd-a',
+      aggregateType: 'test_items',
+      aggregateLocalId: '019d-aaaa',
+      operation: 'test_items.update',
+      payload: {},
+      optimisticValue: {},
+      payloadHash: 'hash',
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 10,
+      lastErrorCode: null,
+    });
+
+    await repository.getCommands({ userId: 1, groupId: 10 });
+    await repository.getCommandsForUser(1);
+
+    const scopeQuery = plugin.query.mock.calls.find(([options]) => {
+      const statement = (options as { statement: string }).statement;
+      return (
+        statement ===
+        'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC'
+      );
+    })?.[0] as { statement: string } | undefined;
+    const userQuery = plugin.query.mock.calls.find(([options]) => {
+      const statement = (options as { statement: string }).statement;
+      return statement === 'SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC';
+    })?.[0] as { statement: string } | undefined;
+    expect(scopeQuery?.statement).toBe(
+      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC',
+    );
+    expect(userQuery?.statement).toBe('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC');
+  });
+
   it('replicaとoutboxを単一transactionで更新する', async () => {
     const repository = createRepository();
     await repository.initialize();

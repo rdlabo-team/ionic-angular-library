@@ -903,6 +903,85 @@ describe('OfflineReplicaPullService', () => {
     });
   });
 
+  it('acknowledgedCommandIds欠落changeは外部変更として受理する', async () => {
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          localId: '019d-external',
+          serverId: 42,
+          values: { id: 42, title: 'Local baseline' },
+          confirmedValues: { id: 42, title: 'Local baseline' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+    });
+    pull.mockResolvedValueOnce(
+      page(
+        [
+          {
+            sourceKey: 'test_items',
+            serverId: 42,
+            serverRevision: 2,
+            values: { id: 42, title: 'Remote edit' },
+            deleted: false,
+          },
+        ],
+        { nextCursor: 'cursor-v1' },
+      ),
+    );
+
+    await service.pull(scope);
+
+    await expect(repository.getReplicaRow(scope, 'test_items', '019d-external')).resolves.toMatchObject({
+      values: { title: 'Remote edit' },
+      confirmedValues: { title: 'Remote edit' },
+      serverRevision: 2,
+      syncState: 'confirmed',
+    });
+  });
+
+  it('optional getCommandsForUser未実装repositoryでもpullがthrowしない', async () => {
+    TestBed.resetTestingModule();
+    pull = vi.fn(async () => page([]));
+    TestBed.configureTestingModule({
+      providers: [
+        OfflineReplicaPullService,
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
+        {
+          provide: OFFLINE_COMMAND_HOOKS,
+          useValue: { entityType: (command: Pick<OfflineCommand, 'operation' | 'aggregateType'>) => command.aggregateType },
+        },
+        {
+          provide: OFFLINE_COMMAND_EXECUTOR,
+          useValue: {
+            execute: vi.fn(),
+            withServerRevision: (command: OfflineCommand, revision: string | number) => ({
+              ...command,
+              baseRevision: revision,
+            }),
+          },
+        },
+        {
+          provide: OFFLINE_REPOSITORY,
+          useValue: {
+            getReplicaCursor: vi.fn(async () => null),
+            getCommands: vi.fn(async () => []),
+            transactReplica: vi.fn(async () => undefined),
+            getReplicaRow: vi.fn(async () => null),
+            getReplicaRowByServerId: vi.fn(async () => null),
+          },
+        },
+      ],
+    });
+    service = TestBed.inject(OfflineReplicaPullService);
+    await expect(service.pull(scope)).resolves.toBeUndefined();
+  });
+
   it('non-finite numeric serverRevisionはrejectしcursorを進めない', async () => {
     await expectPullRejectsPreservingCursor(
       () => pull.mockResolvedValueOnce(page([{ ...itemChange(42, 'Created'), serverRevision: Number.NaN }], { nextCursor: 'cursor-v1' })),

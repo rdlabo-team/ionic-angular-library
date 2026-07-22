@@ -96,7 +96,7 @@ export interface OfflineRepository {
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
-  getCommandsForUser(userId: number): Promise<OfflineCommand[]>;
+  getCommandsForUser?(userId: number): Promise<OfflineCommand[]>;
   putCommand(command: OfflineCommand): Promise<void>;
   replaceCommand(command: OfflineCommand): Promise<void>;
   removeCommand(commandId: string): Promise<void>;
@@ -142,6 +142,10 @@ const LEGACY_QUERIES_KEY = 'offline:business_cache:queries';
 const OUTBOX_KEY = 'offline:outbox:commands';
 const REPLICA_TRANSACTION_KEY = 'offline:replica:transaction';
 const REPLICA_SCHEMA_MIGRATION_KEY = 'offline:replica:schema-migration';
+
+function compareOfflineCommands(left: OfflineCommand, right: OfflineCommand): number {
+  return left.createdAt - right.createdAt || (left.commandId < right.commandId ? -1 : left.commandId > right.commandId ? 1 : 0);
+}
 
 /** WebはIonic StorageのIndexedDB driverを利用する。 */
 @Injectable({ providedIn: 'root' })
@@ -244,7 +248,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === scope.userId && command.groupId === scope.groupId)
-      .sort((left, right) => left.createdAt - right.createdAt);
+      .sort(compareOfflineCommands);
   }
 
   async getCommandsForUser(userId: number): Promise<OfflineCommand[]> {
@@ -253,7 +257,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === userId)
-      .sort((left, right) => left.createdAt - right.createdAt);
+      .sort(compareOfflineCommands);
   }
 
   async putCommand(command: OfflineCommand): Promise<void> {

@@ -708,6 +708,28 @@ describe('IonicOfflineRepository', () => {
     });
   });
 
+  it('同一createdAtはcommandId昇順で決定的に並べる', async () => {
+    const base: Omit<OfflineCommand, 'groupId' | 'commandId' | 'createdAt'> = {
+      userId: 1,
+      aggregateType: 'test_items',
+      aggregateLocalId: '019d-aaaa',
+      operation: 'test_items.update',
+      payload: {},
+      optimisticValue: {},
+      payloadHash: 'hash',
+      baseRevision: null,
+      state: 'pending' as const,
+      attempts: 0,
+      retryAt: null,
+      lastErrorCode: null,
+    };
+    await repository.putCommand({ ...base, groupId: 10, commandId: 'cmd-z', createdAt: 10 });
+    await repository.putCommand({ ...base, groupId: 10, commandId: 'cmd-a', createdAt: 10 });
+    await repository.putCommand({ ...base, groupId: 11, commandId: 'cmd-m', createdAt: 10 });
+    expect((await repository.getCommands({ userId: 1, groupId: 10 })).map((item) => item.commandId)).toEqual(['cmd-a', 'cmd-z']);
+    expect((await repository.getCommandsForUser!(1)).map((item) => item.commandId)).toEqual(['cmd-a', 'cmd-m', 'cmd-z']);
+  });
+
   it('outboxを作成順で保持し、group削除時はそのscopeだけを消す', async () => {
     const base: Omit<OfflineCommand, 'groupId' | 'commandId' | 'createdAt'> = {
       userId: 1,

@@ -40,7 +40,7 @@ export class OfflineReplicaPullService {
       }
 
       const scopeCommands = await this.#repository.getCommands(scope);
-      const userCommands = await this.#repository.getCommandsForUser(scope.userId);
+      const userCommands = this.#repository.getCommandsForUser ? await this.#repository.getCommandsForUser(scope.userId) : scopeCommands;
       const changes = this.#collapseChanges(page.changes);
       const putRows: OfflineReplicaRow[] = [];
       const removeRows: OfflineReplicaRowKey[] = [];
@@ -50,7 +50,7 @@ export class OfflineReplicaPullService {
       for (const change of changes) {
         const schema = this.#entitySchema(change.sourceKey);
         const commands = schema.scope === 'user' ? userCommands : scopeCommands;
-        const acknowledged = change.acknowledgedCommandIds
+        const acknowledged = (change.acknowledgedCommandIds ?? [])
           .map((commandId) => {
             const command = commands.find((candidate) => candidate.commandId === commandId);
             if (!command) return null;
@@ -189,8 +189,9 @@ export class OfflineReplicaPullService {
     }
     const acknowledgedCommandIds = change['acknowledgedCommandIds'];
     if (
-      !Array.isArray(acknowledgedCommandIds) ||
-      acknowledgedCommandIds.some((commandId) => typeof commandId !== 'string' || commandId.length === 0)
+      (acknowledgedCommandIds !== undefined && !Array.isArray(acknowledgedCommandIds)) ||
+      (Array.isArray(acknowledgedCommandIds) &&
+        acknowledgedCommandIds.some((commandId) => typeof commandId !== 'string' || commandId.length === 0))
     ) {
       throw new Error(`${label}.acknowledgedCommandIds must be an array of non-empty strings.`);
     }
@@ -229,7 +230,7 @@ export class OfflineReplicaPullService {
       const previous = collapsed.get(key);
       collapsed.set(key, {
         ...change,
-        acknowledgedCommandIds: [...new Set([...(previous?.acknowledgedCommandIds ?? []), ...change.acknowledgedCommandIds])],
+        acknowledgedCommandIds: [...new Set([...(previous?.acknowledgedCommandIds ?? []), ...(change.acknowledgedCommandIds ?? [])])],
       });
     }
     return [...collapsed.values()];
@@ -244,7 +245,7 @@ export class OfflineReplicaPullService {
     putCommands: Map<string, OfflineCommand>,
     removeCommandIds: Set<string>,
   ): void {
-    const acknowledgedIds = new Set(change.acknowledgedCommandIds);
+    const acknowledgedIds = new Set(change.acknowledgedCommandIds ?? []);
     const lastAcknowledgedIndex = related.reduce((last, command, index) => (acknowledgedIds.has(command.commandId) ? index : last), -1);
     if (lastAcknowledgedIndex < 0) {
       throw new Error(`Replica acknowledgement does not match the local aggregate outbox.`);

@@ -183,15 +183,17 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
-    const rows = await this.#query('SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC', [
-      scope.userId,
-      scope.groupId,
-    ]);
+    const rows = await this.#query(
+      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC',
+      [scope.userId, scope.groupId],
+    );
     return rows.map((row) => this.#command(row));
   }
 
   async getCommandsForUser(userId: number): Promise<OfflineCommand[]> {
-    const rows = await this.#query('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+    const rows = await this.#query('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC', [
+      userId,
+    ]);
     return rows.map((row) => this.#command(row));
   }
 
