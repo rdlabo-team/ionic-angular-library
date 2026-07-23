@@ -204,19 +204,27 @@ describe('offline-replica-schema runtime', () => {
         scope: 'user',
         fields: { id: serverId(), altId: serverId() },
       }),
-    ).toThrow('Replica entity must define exactly one serverId field.');
+    ).toThrow('Replica entity must define at most one serverId field.');
   });
 
-  it('rejects zero serverId fields', () => {
+  it('supports a local-only projection without a serverId field', () => {
     type Select = { title: string };
-    expect(() =>
-      defineReplicaEntity<Select>()({
-        table: 'items',
-        sourceKey: 'items',
-        scope: 'user',
-        fields: { title: text() },
+    const schema = defineReplicaEntity<Select>()({
+      table: 'items',
+      sourceKey: 'items',
+      scope: 'user',
+      fields: { title: text() },
+    });
+
+    expect(schema.fields).toEqual([
+      expect.objectContaining({
+        sourceKey: 'title',
+        policy: 'column',
+        sqliteColumnName: 'title',
       }),
-    ).toThrow('Replica entity must define exactly one serverId field.');
+    ]);
+    expect(schema.createTableSql[0]).not.toContain('server_id');
+    expect(schema.schemaFingerprintInput).toContain('hasServerId=0');
   });
 });
 
