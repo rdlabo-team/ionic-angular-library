@@ -338,56 +338,51 @@ session boundary, cursor-based delta pull, aggregate-ordered replay, optimistic 
 read-only request-policy interceptor. Applications provide URL/DTO read policies, a replica puller, and a command
 executor through `provideOffline(...)`.
 Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
-Web storage uses Ionic Storage; iOS and Android use encrypted Capawesome SQLite. Importing either the
-primary entry point or `/offline` does not pull the private plugin into existing applications.
+Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
+primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
 
 The offline interceptor observes real transport responses to update API reachability. For matched `GET`
 requests only, a transport failure with `status=0` may return a local replica response tagged
 `X-Offline-Response: local`. `POST` and other write methods always go to transport unchanged; outbox replay
 requests bypass policy with `OFFLINE_BYPASS` while still using the same transport observation.
 
-The native offline runtime currently requires Capacitor 8, `@capawesome-team/capacitor-sqlite` 0.3.x, and
-`@capawesome-team/capacitor-secure-preferences` 0.2.x. Configure the private Insiders registry with the license key
-before installing the SQLite and Secure Preferences packages plus the SQLite WASM runtime. Supply the license key
-through a local/CI secret; never commit it to `.npmrc`.
+The native offline runtime uses `@capacitor-community/sqlite` on iOS and Android. Install the plugin in the app and
+sync native projects:
 
 ```bash
-npm config set @capawesome-team:registry https://npm.registry.capawesome.io
-npm config set //npm.registry.capawesome.io/:_authToken "$CAPAWESOME_LICENSE_KEY"
-npm install @capawesome-team/capacitor-sqlite@^0.3.0 \
-  @capawesome-team/capacitor-secure-preferences@^0.2.0 \
-  @sqlite.org/sqlite-wasm
+npm install @capacitor-community/sqlite
 npx cap sync
 ```
 
-Applications on an older Capacitor major must not install those versions; upgrade to Capacitor 8 before enabling
-the standard native offline runtime. After installation, follow both plugins' platform steps. In particular, exclude
-`CAPAWESOME_SECURE_PREFERENCES.xml` from Android 11-and-lower `fullBackupContent` and Android 12+ cloud backup rules,
-so the database key is not restored independently of its device keystore material.
-
-Pass the `Sqlite` export and a database key loaded from secure device storage to the kit. Never hard-code or derive
-the database key from a user identifier or access token.
+Add the required `CapacitorSQLite` plugin block to `capacitor.config.ts`. Encryption must be enabled — the kit opens
+databases in encrypted mode and relies on the plugin's built-in secure secret storage (`setEncryptionSecret` /
+`checkEncryptionSecret` in the device keychain / Android keystore):
 
 ```ts
-import { SecurePreferences } from '@capawesome-team/capacitor-secure-preferences';
-import { Sqlite } from '@capawesome-team/capacitor-sqlite';
+// capacitor.config.ts
+plugins: {
+  CapacitorSQLite: {
+    iosDatabaseLocation: 'Library/CapacitorDatabase',
+    iosIsEncryption: true,
+    iosKeychainPrefix: '<your-app-prefix>',
+    androidIsEncryption: true,
+  },
+},
+```
 
-const OFFLINE_DATABASE_KEY = 'product-offline-database-key';
+Follow the [@capacitor-community/sqlite installation guide](https://github.com/capacitor-community/sqlite#installation)
+for platform-specific steps and SQLCipher export-compliance notes.
 
-async function offlineDatabaseKey(): Promise<string> {
-  const { value } = await SecurePreferences.get({ key: OFFLINE_DATABASE_KEY });
-  if (value) return value;
+Pass a stable `databaseName` and an `encryptionKey` generator to `provideOffline`. The kit invokes the generator only
+when the plugin has no secret yet, then stores the result in the plugin's Keychain / Android keystore. Later opens use
+that stored secret without invoking the generator. Never hard-code or derive the key from a user identifier, device
+identifier, or access token; generate a cryptographically random value for the first installation.
 
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const generated = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  await SecurePreferences.set({ key: OFFLINE_DATABASE_KEY, value: generated });
-  return generated;
-}
-
+```ts
 provideOffline({
+  databaseName: 'product-offline',
+  encryptionKey: loadOfflineEncryptionKey,
   // ...product policies, puller, and executor
-  sqlitePlugin: Sqlite,
-  encryptionKey: offlineDatabaseKey,
 });
 ```
 
@@ -397,10 +392,10 @@ Immediately before each send, the executor receives the latest `{ localId, serve
 SQLite; a successful create adds `serverId` without replacing `localId`. Entity projection and outbox
 append/removal are committed in one local transaction.
 
-| Identity | SQLite column | Before synchronization | After server acknowledgement |
-| --- | --- | --- | --- |
-| `localId` | `local_id` | client-generated UUID | unchanged UUID |
-| `serverId` | `server_id` | `NULL` for a new entity | positive server `AUTO_INCREMENT` id |
+| Identity   | SQLite column | Before synchronization  | After server acknowledgement        |
+| ---------- | ------------- | ----------------------- | ----------------------------------- |
+| `localId`  | `local_id`    | client-generated UUID   | unchanged UUID                      |
+| `serverId` | `server_id`   | `NULL` for a new entity | positive server `AUTO_INCREMENT` id |
 
 The write lifecycle is: update the replica immediately → append an outbox command in the same transaction → render
 the optimistic value → replay in the background → validate the server revision → store the confirmed value and
@@ -455,13 +450,7 @@ shape or `null` to delete a row. Identity and sync metadata (`localId`, `serverI
 migration `fromVersion`/`statements` — never function bodies.
 
 ```typescript
-import {
-  defineOfflineReplicaSchema,
-  defineReplicaEntity,
-  provideOffline,
-  serverId,
-  text,
-} from '@rdlabo/ionic-angular-kit/offline';
+import { defineOfflineReplicaSchema, defineReplicaEntity, provideOffline, serverId, text } from '@rdlabo/ionic-angular-kit/offline';
 
 // This is the Hono package's existing `typeof items.$inferSelect` export.
 import type { Items as ItemSelect } from '@product/hono/db/schema';
@@ -487,8 +476,7 @@ const replicaSchema = defineOfflineReplicaSchema({
       migrateWebRow: (row) => ({
         sourceKey: row.sourceKey,
         values: { ...row.values, subtitle: '' },
-        confirmedValues:
-          row.confirmedValues === null ? null : { ...row.confirmedValues, subtitle: '' },
+        confirmedValues: row.confirmedValues === null ? null : { ...row.confirmedValues, subtitle: '' },
       }),
     },
   ],
@@ -498,7 +486,7 @@ provideOffline({
   replicaSchema,
   replicaPuller: ProductReplicaPuller,
   commandExecutor: ProductCommandExecutor,
-  // ...request policies, sqlitePlugin, encryptionKey
+  // ...request policies, databaseName, encryptionKey
 });
 ```
 
@@ -512,14 +500,6 @@ Nullable Hono columns require `nullable(...)`; non-null columns reject it. There
 removing, or changing nullability of a Drizzle column breaks the app build until its replica mapping is updated.
 At runtime, `values` contains only the mapped column projection; `localId` and `serverId` remain dedicated replica
 fields and ignored server fields are never persisted.
-
-Encrypted native builds also require the plugin's SQLCipher platform setup: enable
-`capawesomeCapacitorSqliteIncludeSqlcipher = true` on Android; select the `SQLCipher` pod when using
-CocoaPods, or enable the `SQLCipher` package trait when using Swift Package Manager on iOS. Follow
-the [Capawesome SQLite installation guide](https://capawesome.io/docs/plugins/sqlite/#installation)
-for the exact native configuration and export-compliance notes.
-Also follow the [Capawesome Secure Preferences installation guide](https://capawesome.io/docs/plugins/secure-preferences/#installation),
-including its Android backup exclusion rules.
 
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 - **Universal 60s timeout** — every request fails with a synthetic (retryable) `408` if it hangs for 60s. Deliberately generous (catches a dead server without cutting off a large upload / AI generation; `timeout({ each })` resets per emission, so streaming is unaffected). Not configurable — one fleet-wide behavior.
