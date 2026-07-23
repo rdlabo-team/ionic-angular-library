@@ -14,7 +14,12 @@ import { provideOfflineRequestPolicy } from './offline-request-policy';
 import type { OfflineReplicaPuller } from './offline-replica-puller';
 import { OFFLINE_REPLICA_PULLER } from './offline-replica-puller';
 import { OfflineSessionService } from './offline-session.service';
-import { SqliteOfflineRepository } from './sqlite-offline-repository';
+import {
+  COMMUNITY_SQLITE,
+  type CommunitySqliteConnection,
+  createCommunitySqliteDriver,
+  SqliteOfflineRepository,
+} from './sqlite-offline-repository';
 
 /** Configuration for the standard offline repository, outbox, and request-policy runtime. */
 export interface ProvideOfflineOptions extends OfflineKitOptions {
@@ -28,6 +33,8 @@ export interface ProvideOfflineOptions extends OfflineKitOptions {
   commandHooks?: Type<OfflineCommandHooks>;
   /** Optional additional providers required by product adapters. */
   providers?: readonly Provider[];
+  /** Application-installed `@capacitor-community/sqlite` connection. Required only on iOS and Android. */
+  sqliteConnection?: CommunitySqliteConnection;
 }
 
 /**
@@ -46,9 +53,13 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
       provide: OFFLINE_KIT_OPTIONS,
       useValue: {
         databaseName: options.databaseName,
-        encryptionKey: options.encryptionKey,
+        createEncryptionKey: options.createEncryptionKey,
         replicaSchema: options.replicaSchema,
       },
+    },
+    {
+      provide: COMMUNITY_SQLITE,
+      useValue: options.sqliteConnection ? createCommunitySqliteDriver(options.sqliteConnection) : null,
     },
     {
       provide: OFFLINE_REPOSITORY,

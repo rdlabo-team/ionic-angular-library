@@ -350,13 +350,17 @@ The native offline runtime uses `@capacitor-community/sqlite` on iOS and Android
 sync native projects:
 
 ```bash
-npm install @capacitor-community/sqlite
+# Capacitor 8
+npm install @capacitor-community/sqlite@^8.1.0
 npx cap sync
 ```
 
+Use the plugin major matching the application's Capacitor major (`^6` for Capacitor 6, `^7` for Capacitor 7,
+`^8.1.0` for Capacitor 8).
+
 Add the required `CapacitorSQLite` plugin block to `capacitor.config.ts`. Encryption must be enabled — the kit opens
-databases in encrypted mode and relies on the plugin's built-in secure secret storage (`setEncryptionSecret` /
-`checkEncryptionSecret` in the device keychain / Android keystore):
+databases in encrypted mode and relies on the plugin's built-in secure secret storage (`isSecretStored` /
+`setEncryptionSecret` in the device keychain / Android keystore):
 
 ```ts
 // capacitor.config.ts
@@ -373,15 +377,29 @@ plugins: {
 Follow the [@capacitor-community/sqlite installation guide](https://github.com/capacitor-community/sqlite#installation)
 for platform-specific steps and SQLCipher export-compliance notes.
 
-Pass a stable `databaseName` and an `encryptionKey` generator to `provideOffline`. The kit invokes the generator only
+Android must not back up or transfer the encrypted database independently from its keystore secret. Set
+`android:allowBackup="false"`, `android:fullBackupContent="false"`, and
+`android:dataExtractionRules="@xml/data_extraction_rules"` on `<application>`. The referenced Android 12+ rules must
+exclude at least the `database`, `sharedpref`, `root`, and `external` domains from both `cloud-backup` and
+`device-transfer`, as shown in the plugin installation guide.
+
+Create the community plugin connection in the application, then pass it with a stable `databaseName` and a
+`createEncryptionKey` generator to `provideOffline`. Keeping the runtime object application-supplied prevents the optional
+native plugin from entering web-only `/offline` bundles. The kit invokes the generator only
 when the plugin has no secret yet, then stores the result in the plugin's Keychain / Android keystore. Later opens use
 that stored secret without invoking the generator. Never hard-code or derive the key from a user identifier, device
 identifier, or access token; generate a cryptographically random value for the first installation.
 
 ```ts
+import { CapacitorSQLite, SQLiteConnection } from '@capacitor-community/sqlite';
+
+const createRandomOfflineEncryptionKey = async () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+
 provideOffline({
   databaseName: 'product-offline',
-  encryptionKey: loadOfflineEncryptionKey,
+  sqliteConnection: new SQLiteConnection(CapacitorSQLite),
+  createEncryptionKey: createRandomOfflineEncryptionKey,
   // ...product policies, puller, and executor
 });
 ```
@@ -486,7 +504,7 @@ provideOffline({
   replicaSchema,
   replicaPuller: ProductReplicaPuller,
   commandExecutor: ProductCommandExecutor,
-  // ...request policies, databaseName, encryptionKey
+  // ...request policies, databaseName, createEncryptionKey
 });
 ```
 

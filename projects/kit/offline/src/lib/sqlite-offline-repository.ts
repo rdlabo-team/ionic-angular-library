@@ -1,5 +1,4 @@
 import { inject, Injectable, InjectionToken } from '@angular/core';
-import { CapacitorSQLite, SQLiteConnection } from '@capacitor-community/sqlite';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
   decodeOfflineReplicaValues,
@@ -57,14 +56,12 @@ export interface CommunitySqliteConnection {
 }
 
 /** DI token for the native community SQLite driver. */
-export const COMMUNITY_SQLITE = new InjectionToken<CommunitySqliteDriver>('COMMUNITY_SQLITE', {
-  factory: createCommunitySqliteDriver,
+export const COMMUNITY_SQLITE = new InjectionToken<CommunitySqliteDriver | null>('COMMUNITY_SQLITE', {
+  factory: () => null,
 });
 
 /** Create the standard encrypted `@capacitor-community/sqlite` driver. */
-export function createCommunitySqliteDriver(
-  connection: CommunitySqliteConnection = new SQLiteConnection(CapacitorSQLite),
-): CommunitySqliteDriver {
+export function createCommunitySqliteDriver(connection: CommunitySqliteConnection): CommunitySqliteDriver {
   const databases = new Map<string, CommunitySqliteDatabase>();
   const database = (databaseId: string): CommunitySqliteDatabase => {
     const value = databases.get(databaseId);
@@ -312,9 +309,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async #open(): Promise<void> {
+    if (!this.#sqlite) throw new Error('Native offline storage requires a community SQLite connection');
     const { databaseId } = await this.#sqlite.open({
       databaseName: this.#options.databaseName,
-      createEncryptionKey: this.#options.encryptionKey,
+      createEncryptionKey: this.#options.createEncryptionKey,
     });
     this.#databaseId = databaseId;
     for (const statement of SCHEMA) await this.#execute(databaseId, statement);

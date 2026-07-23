@@ -199,8 +199,8 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
   });
 
   it('暗号鍵の生成関数をcommunity driverへ渡す', async () => {
-    const encryptionKey = vi.fn(async () => 'first-install-secret');
-    const repository = createRepository(encryptionKey);
+    const createEncryptionKey = vi.fn(async () => 'first-install-secret');
+    const repository = createRepository(createEncryptionKey);
     await repository.initialize();
     const options = plugin.open.mock.calls[0]?.[0] as { createEncryptionKey?: () => Promise<string> };
     await expect(options.createEncryptionKey?.()).resolves.toBe('first-install-secret');
@@ -428,7 +428,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
   });
 
   function createRepository(
-    encryptionKey: () => Promise<string> = async () => 'secret',
+    createEncryptionKey: () => Promise<string> = async () => 'secret',
     options: { replicaSchema?: OfflineReplicaSchemaBundle } = {},
   ): SqliteOfflineRepository {
     TestBed.configureTestingModule({
@@ -439,7 +439,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
-            encryptionKey,
+            createEncryptionKey,
             replicaSchema: options.replicaSchema ?? replicaSchemaV1,
           },
         },
@@ -1074,7 +1074,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
-            encryptionKey: async () => 'secret',
+            createEncryptionKey: async () => 'secret',
             replicaSchema: replicaSchemaV1WithGroup,
           },
         },
