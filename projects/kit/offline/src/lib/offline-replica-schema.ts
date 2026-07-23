@@ -147,7 +147,8 @@ const RESERVED_COLUMN_NAMES = new Set([
  * Begins a type-safe replica entity schema definition for the given select shape.
  *
  * Every key in `TSelect` must appear exactly once in `fields`, and column nullability
- * must match the select property nullability.
+ * must match the select property nullability. An entity may map at most one field with
+ * {@link serverId}; omit it for local-only projections that have no remote row identity.
  */
 export function defineReplicaEntity<TSelect extends Record<string, unknown>>() {
   return function defineReplicaEntityConfig<
@@ -233,8 +234,8 @@ function buildOfflineReplicaEntitySchema<TSelect extends Record<string, unknown>
 
   const sourceKeys = Object.keys(definition.fields).sort();
   const serverIdCount = sourceKeys.filter((sourceKey) => definition.fields[sourceKey]?.kind === 'serverId').length;
-  if (serverIdCount !== 1) throw new Error('Replica entity must define exactly one serverId field.');
-  const hasServerId = true;
+  if (serverIdCount > 1) throw new Error('Replica entity must define at most one serverId field.');
+  const hasServerId = serverIdCount === 1;
   const fields: OfflineReplicaFieldDescriptor[] = sourceKeys.map((sourceKey) => {
     const fieldDef = definition.fields[sourceKey as keyof TSelect] as OfflineReplicaFieldDef;
     return materializeFieldDescriptor(sourceKey, fieldDef);
