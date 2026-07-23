@@ -10,7 +10,14 @@ import {
   text,
   type OfflineReplicaSchemaBundle,
 } from './offline-replica-schema';
-import { CAPAWESOME_SQLITE, type CapawesomeSqlitePlugin, SqliteOfflineRepository } from './sqlite-offline-repository';
+import {
+  COMMUNITY_SQLITE,
+  type CommunitySqliteConnection,
+  type CommunitySqliteDatabase,
+  type CommunitySqliteDriver,
+  createCommunitySqliteDriver,
+  SqliteOfflineRepository,
+} from './sqlite-offline-repository';
 
 type TestItemSelect = { id: number; title: string };
 type TestItemWithSubtitleSelect = { id: number; title: string; subtitle: string };
@@ -82,9 +89,71 @@ const replicaSchemaV1HashDrift = defineOfflineReplicaSchema({
   migrations: [],
 });
 
-describe('SqliteOfflineRepository Capawesome adapter', () => {
+describe('createCommunitySqliteDriver', () => {
+  const createDatabase = (): CommunitySqliteDatabase => ({
+    open: vi.fn(async () => undefined),
+    run: vi.fn(async () => ({})),
+    query: vi.fn(async () => ({ values: [{ id: 1 }] })),
+    beginTransaction: vi.fn(async () => ({})),
+    commitTransaction: vi.fn(async () => ({})),
+    rollbackTransaction: vi.fn(async () => ({})),
+  });
+
+  it('first open stores a generated secret and opens an encrypted connection', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: false })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => database),
+    };
+    const createEncryptionKey = vi.fn(async () => 'random-install-secret');
+    const driver = createCommunitySqliteDriver(connection);
+
+    await expect(driver.open({ databaseName: 'product-offline', createEncryptionKey })).resolves.toEqual({
+      databaseId: 'product-offline',
+    });
+    expect(createEncryptionKey).toHaveBeenCalledOnce();
+    expect(connection.setEncryptionSecret).toHaveBeenCalledWith('random-install-secret');
+    expect(connection.createConnection).toHaveBeenCalledWith('product-offline', true, 'secret', 1, false);
+    expect(database.open).toHaveBeenCalledOnce();
+  });
+
+  it('later opens use the plugin secret without generating or receiving it again', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => database),
+    };
+    const createEncryptionKey = vi.fn(async () => 'must-not-be-read');
+
+    await createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline', createEncryptionKey });
+
+    expect(createEncryptionKey).not.toHaveBeenCalled();
+    expect(connection.setEncryptionSecret).not.toHaveBeenCalled();
+  });
+
+  it('rejects first open when the generator returns an empty key', async () => {
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: false })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => createDatabase()),
+    };
+
+    await expect(
+      createCommunitySqliteDriver(connection).open({
+        databaseName: 'product-offline',
+        createEncryptionKey: async () => '',
+      }),
+    ).rejects.toThrow('non-empty encryption key on first open');
+    expect(connection.setEncryptionSecret).not.toHaveBeenCalled();
+    expect(connection.createConnection).not.toHaveBeenCalled();
+  });
+});
+
+describe('SqliteOfflineRepository community sqlite driver', () => {
   let plugin: {
-    [K in keyof CapawesomeSqlitePlugin]: ReturnType<typeof vi.fn>;
+    [K in keyof CommunitySqliteDriver]: ReturnType<typeof vi.fn>;
   };
   let storedReplicaMetadata: { version: number; schemaHash: string } | null;
   let replicaSchemaV1Hash: string;
@@ -123,13 +192,18 @@ describe('SqliteOfflineRepository Capawesome adapter', () => {
     plugin.open.mockRejectedValueOnce(error);
     const repository = createRepository();
     await expect(repository.initialize()).rejects.toBe(error);
-    expect(plugin.open).toHaveBeenCalledWith({ path: 'test-offline.sqlite3', encryptionKey: 'secret', readOnly: false });
+    expect(plugin.open).toHaveBeenCalledWith({
+      databaseName: 'test-offline',
+      createEncryptionKey: expect.any(Function),
+    });
   });
 
-  it('暗号鍵が無い場合はdatabaseを開かない', async () => {
-    const repository = createRepository(async () => '');
-    await expect(repository.initialize()).rejects.toThrow('non-empty encryption key');
-    expect(plugin.open).not.toHaveBeenCalled();
+  it('暗号鍵の生成関数をcommunity driverへ渡す', async () => {
+    const createEncryptionKey = vi.fn(async () => 'first-install-secret');
+    const repository = createRepository(createEncryptionKey);
+    await repository.initialize();
+    const options = plugin.open.mock.calls[0]?.[0] as { createEncryptionKey?: () => Promise<string> };
+    await expect(options.createEncryptionKey?.()).resolves.toBe('first-install-secret');
   });
 
   it('group scopeのoutboxを単一transactionで削除する', async () => {
@@ -190,10 +264,7 @@ describe('SqliteOfflineRepository Capawesome adapter', () => {
 
     const scopeQuery = plugin.query.mock.calls.find(([options]) => {
       const statement = (options as { statement: string }).statement;
-      return (
-        statement ===
-        'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC'
-      );
+      return statement === 'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC';
     })?.[0] as { statement: string } | undefined;
     const userQuery = plugin.query.mock.calls.find(([options]) => {
       const statement = (options as { statement: string }).statement;
@@ -357,18 +428,18 @@ describe('SqliteOfflineRepository Capawesome adapter', () => {
   });
 
   function createRepository(
-    encryptionKey: () => Promise<string> = async () => 'secret',
+    createEncryptionKey: () => Promise<string> = async () => 'secret',
     options: { replicaSchema?: OfflineReplicaSchemaBundle } = {},
   ): SqliteOfflineRepository {
     TestBed.configureTestingModule({
       providers: [
         SqliteOfflineRepository,
-        { provide: CAPAWESOME_SQLITE, useValue: plugin },
+        { provide: COMMUNITY_SQLITE, useValue: plugin },
         {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
-            encryptionKey,
+            createEncryptionKey,
             replicaSchema: options.replicaSchema ?? replicaSchemaV1,
           },
         },
@@ -380,7 +451,7 @@ describe('SqliteOfflineRepository Capawesome adapter', () => {
 
 describe('SqliteOfflineRepository replica rows', () => {
   let plugin: {
-    [K in keyof CapawesomeSqlitePlugin]: ReturnType<typeof vi.fn>;
+    [K in keyof CommunitySqliteDriver]: ReturnType<typeof vi.fn>;
   };
   let storedReplicaMetadata: { version: number; schemaHash: string } | null;
   let replicaSchemaV1Hash: string;
@@ -998,12 +1069,12 @@ describe('SqliteOfflineRepository replica rows', () => {
     TestBed.configureTestingModule({
       providers: [
         SqliteOfflineRepository,
-        { provide: CAPAWESOME_SQLITE, useValue: plugin },
+        { provide: COMMUNITY_SQLITE, useValue: plugin },
         {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
-            encryptionKey: async () => 'secret',
+            createEncryptionKey: async () => 'secret',
             replicaSchema: replicaSchemaV1WithGroup,
           },
         },

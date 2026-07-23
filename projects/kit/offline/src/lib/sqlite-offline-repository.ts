@@ -19,9 +19,9 @@ import {
   type OfflineScope,
 } from './offline-repository';
 
-/** Minimal Capawesome SQLite surface required by the offline repository. */
-export interface CapawesomeSqlitePlugin {
-  open(options: { path: string; encryptionKey: string; readOnly: false }): Promise<{ databaseId: string }>;
+/** Minimal native SQLite driver surface required by the offline repository. */
+export interface CommunitySqliteDriver {
+  open(options: { databaseName: string; createEncryptionKey?: () => Promise<string> }): Promise<{ databaseId: string }>;
   execute(options: { databaseId: string; statement: string; values?: SQLiteValue[] }): Promise<unknown>;
   query(options: { databaseId: string; statement: string; values?: SQLiteValue[] }): Promise<{
     columns?: string[];
@@ -32,10 +32,73 @@ export interface CapawesomeSqlitePlugin {
   rollbackTransaction(options: { databaseId: string }): Promise<void>;
 }
 
-/** DI token for the optional application-installed Capawesome SQLite plugin. */
-export const CAPAWESOME_SQLITE = new InjectionToken<CapawesomeSqlitePlugin | null>('CAPAWESOME_SQLITE', {
+/** Open community SQLite database surface used by the standard driver. */
+export interface CommunitySqliteDatabase {
+  open(): Promise<void>;
+  run(statement: string, values?: unknown[], transaction?: boolean): Promise<unknown>;
+  query(statement: string, values?: unknown[]): Promise<{ values?: unknown[] }>;
+  beginTransaction(): Promise<unknown>;
+  commitTransaction(): Promise<unknown>;
+  rollbackTransaction(): Promise<unknown>;
+}
+
+/** Community SQLite connection surface used to provision encrypted databases. */
+export interface CommunitySqliteConnection {
+  isSecretStored(): Promise<{ result?: boolean }>;
+  setEncryptionSecret(passphrase: string): Promise<void>;
+  createConnection(
+    database: string,
+    encrypted: boolean,
+    mode: string,
+    version: number,
+    readonly: boolean,
+  ): Promise<CommunitySqliteDatabase>;
+}
+
+/** DI token for the native community SQLite driver. */
+export const COMMUNITY_SQLITE = new InjectionToken<CommunitySqliteDriver | null>('COMMUNITY_SQLITE', {
   factory: () => null,
 });
+
+/** Create the standard encrypted `@capacitor-community/sqlite` driver. */
+export function createCommunitySqliteDriver(connection: CommunitySqliteConnection): CommunitySqliteDriver {
+  const databases = new Map<string, CommunitySqliteDatabase>();
+  const database = (databaseId: string): CommunitySqliteDatabase => {
+    const value = databases.get(databaseId);
+    if (!value) throw new Error(`Offline SQLite database "${databaseId}" is not open`);
+    return value;
+  };
+  return {
+    async open({ databaseName, createEncryptionKey }) {
+      const stored = await connection.isSecretStored();
+      if (!stored.result) {
+        const encryptionKey = await createEncryptionKey?.();
+        if (!encryptionKey) throw new Error('Native offline storage requires a non-empty encryption key on first open');
+        await connection.setEncryptionSecret(encryptionKey);
+      }
+      const value = await connection.createConnection(databaseName, true, 'secret', 1, false);
+      await value.open();
+      databases.set(databaseName, value);
+      return { databaseId: databaseName };
+    },
+    async execute({ databaseId, statement, values = [] }) {
+      await database(databaseId).run(statement, values, false);
+    },
+    async query({ databaseId, statement, values = [] }) {
+      const result = await database(databaseId).query(statement, values);
+      return { rows: result.values ?? [] };
+    },
+    async beginTransaction({ databaseId }) {
+      await database(databaseId).beginTransaction();
+    },
+    async commitTransaction({ databaseId }) {
+      await database(databaseId).commitTransaction();
+    },
+    async rollbackTransaction({ databaseId }) {
+      await database(databaseId).rollbackTransaction();
+    },
+  };
+}
 
 type SQLiteValue = string | number | null;
 type SQLiteRow = Record<string, unknown>;
@@ -82,10 +145,10 @@ const SCHEMA = [
 )`,
 ];
 
-/** Native iOS/Android uses the encrypted Capawesome SQLite plugin supplied by the application. */
+/** Native iOS/Android repository backed by encrypted `@capacitor-community/sqlite`. */
 @Injectable({ providedIn: 'root' })
 export class SqliteOfflineRepository implements OfflineRepository {
-  readonly #sqlite = inject(CAPAWESOME_SQLITE);
+  readonly #sqlite = inject(COMMUNITY_SQLITE);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   #databaseId: string | null = null;
   #initialization: Promise<void> | null = null;
@@ -246,13 +309,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async #open(): Promise<void> {
-    if (!this.#sqlite) throw new Error('Native offline storage requires the Capawesome SQLite plugin');
-    const encryptionKey = await this.#options.encryptionKey?.();
-    if (!encryptionKey) throw new Error('Native offline storage requires a non-empty encryption key');
+    if (!this.#sqlite) throw new Error('Native offline storage requires a community SQLite connection');
     const { databaseId } = await this.#sqlite.open({
-      path: `${this.#options.databaseName}.sqlite3`,
-      encryptionKey,
-      readOnly: false,
+      databaseName: this.#options.databaseName,
+      createEncryptionKey: this.#options.createEncryptionKey,
     });
     this.#databaseId = databaseId;
     for (const statement of SCHEMA) await this.#execute(databaseId, statement);

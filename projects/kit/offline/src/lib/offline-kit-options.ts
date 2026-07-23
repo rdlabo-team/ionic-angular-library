@@ -5,8 +5,8 @@ import type { OfflineReplicaSchemaBundle } from './offline-replica-schema';
 export interface OfflineKitOptions {
   /** Encrypted SQLite database name used on iOS and Android. */
   databaseName: string;
-  /** Resolves the native database key from secure device storage. Required on iOS and Android. */
-  encryptionKey?: () => Promise<string>;
+  /** Creates the native database encryption key on first install. Required on iOS and Android. */
+  createEncryptionKey?: () => Promise<string>;
   /** Versioned product replica schema applied to native SQLite during initialization. */
   replicaSchema: OfflineReplicaSchemaBundle;
 }
