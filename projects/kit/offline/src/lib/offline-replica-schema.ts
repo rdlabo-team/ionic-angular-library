@@ -98,13 +98,14 @@ type NormalizeReplicaColumnValue<T> = T extends string
         : T;
 
 type IsNullableSelectValue<T> = null extends T ? true : undefined extends T ? true : false;
+type StrictNullChecksDisabled = null extends string ? true : false;
+type ReplicaColumnNullability = { readonly [replicaNullableBrand]: 'required' } | { readonly [replicaNullableBrand]: 'nullable' };
 
-type OfflineReplicaColumnDefForValue<T> = IsNullableSelectValue<T> extends true
-  ? OfflineReplicaColumnDef<
-      NormalizeReplicaColumnValue<StripNullish<T>>,
-      { readonly [replicaNullableBrand]: 'nullable' }
-    >
-  : OfflineReplicaColumnDef<NormalizeReplicaColumnValue<T>, { readonly [replicaNullableBrand]: 'required' }>;
+type OfflineReplicaColumnDefForValue<T> = StrictNullChecksDisabled extends true
+  ? OfflineReplicaColumnDef<NormalizeReplicaColumnValue<StripNullish<T>>, ReplicaColumnNullability>
+  : IsNullableSelectValue<T> extends true
+    ? OfflineReplicaColumnDef<NormalizeReplicaColumnValue<StripNullish<T>>, { readonly [replicaNullableBrand]: 'nullable' }>
+    : OfflineReplicaColumnDef<NormalizeReplicaColumnValue<T>, { readonly [replicaNullableBrand]: 'required' }>;
 
 type OfflineReplicaFieldDefForKey<TSelect extends Record<string, unknown>, K extends keyof TSelect> =
   | (StripNullish<TSelect[K]> extends number ? OfflineReplicaServerIdDef : never)
@@ -141,7 +142,8 @@ const RESERVED_COLUMN_NAMES = new Set([
  * Begins a type-safe replica entity schema definition for the given select shape.
  *
  * Every key in `TSelect` must appear exactly once in `fields`, and column nullability
- * must match the select property nullability.
+ * must match the select property nullability. An entity may map at most one field with
+ * {@link serverId}; omit it for local-only projections that have no remote row identity.
  */
 export function defineReplicaEntity<TSelect extends Record<string, unknown>>() {
   return function defineReplicaEntityConfig<
@@ -227,8 +229,8 @@ function buildOfflineReplicaEntitySchema<TSelect extends Record<string, unknown>
 
   const sourceKeys = Object.keys(definition.fields).sort();
   const serverIdCount = sourceKeys.filter((sourceKey) => definition.fields[sourceKey]?.kind === 'serverId').length;
-  if (serverIdCount !== 1) throw new Error('Replica entity must define exactly one serverId field.');
-  const hasServerId = true;
+  if (serverIdCount > 1) throw new Error('Replica entity must define at most one serverId field.');
+  const hasServerId = serverIdCount === 1;
   const fields: OfflineReplicaFieldDescriptor[] = sourceKeys.map((sourceKey) => {
     const fieldDef = definition.fields[sourceKey as keyof TSelect] as OfflineReplicaFieldDef;
     return materializeFieldDescriptor(sourceKey, fieldDef);
