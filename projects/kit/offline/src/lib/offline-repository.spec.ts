@@ -24,6 +24,7 @@ import {
 
 type TestItemSelect = { id: number; title: string };
 type TestItemWithSubtitleSelect = { id: number; title: string; subtitle: string };
+type LocalProjectionSelect = { feedKey: string };
 
 const testItemEntity = defineReplicaEntity<TestItemSelect>()({
   table: 'test_items',
@@ -54,6 +55,21 @@ const testGroupItemEntity = defineReplicaEntity<{ id: number; name: string }>()(
     id: serverId(),
     name: text(),
   },
+});
+
+const localProjectionEntity = defineReplicaEntity<LocalProjectionSelect>()({
+  table: 'local_projections',
+  sourceKey: 'local_projections',
+  scope: 'user',
+  fields: {
+    feedKey: text(),
+  },
+});
+
+const localProjectionSchema = defineOfflineReplicaSchema({
+  version: 1,
+  entities: [localProjectionEntity],
+  migrations: [],
 });
 
 const replicaSchemaV1 = defineOfflineReplicaSchema({
@@ -818,6 +834,60 @@ describe('IonicOfflineRepository', () => {
       serverId: 38142,
     });
     expect(await repository.getCommands(scope)).toEqual([]);
+  });
+
+  it('local-only projectionをserverIdなしでround-tripしserverId lookupは常にnullを返す', async () => {
+    repository = createRepository(localProjectionSchema);
+    await repository.initialize();
+    const scope = { userId: 1, groupId: 10 };
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'local_projections',
+          localId: 'feed-home',
+          serverId: null,
+          values: { feedKey: 'home' },
+          confirmedValues: { feedKey: 'home' },
+          serverRevision: null,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+    });
+
+    await expect(repository.getReplicaRows(scope, 'local_projections')).resolves.toEqual([
+      expect.objectContaining({
+        localId: 'feed-home',
+        serverId: null,
+        values: { feedKey: 'home' },
+      }),
+    ]);
+    await expect(repository.getReplicaRowByServerId(scope, 'local_projections', 1)).resolves.toBeNull();
+  });
+
+  it('local-only projectionへ非null serverIdを渡すと永続化前にrejectする', async () => {
+    repository = createRepository(localProjectionSchema);
+    await repository.initialize();
+    await expect(
+      repository.transactReplica({
+        putRows: [
+          {
+            userId: 1,
+            groupId: 10,
+            sourceKey: 'local_projections',
+            localId: 'feed-home',
+            serverId: 1,
+            values: { feedKey: 'home' },
+            confirmedValues: null,
+            serverRevision: null,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+      }),
+    ).rejects.toThrow('Offline replica source "local_projections" does not define a serverId field.');
+    await expect(repository.getReplicaRows({ userId: 1, groupId: 10 }, 'local_projections')).resolves.toEqual([]);
   });
 
   it('未知schemaではoffline領域だけ初期化し他のstorage keyを保持する', async () => {

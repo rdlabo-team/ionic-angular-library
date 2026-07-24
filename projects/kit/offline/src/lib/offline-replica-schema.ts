@@ -218,6 +218,14 @@ export function serverId(): OfflineReplicaServerIdDef {
   return { kind: 'serverId' };
 }
 
+/** Rejects a remote identity on a local-only projection before it reaches platform storage. */
+export function assertOfflineReplicaServerId(schema: OfflineReplicaEntitySchema<Record<string, unknown>>, value: number | null): void {
+  const hasServerId = schema.fields.some((field) => field.policy === 'serverId');
+  if (!hasServerId && value !== null) {
+    throw new Error(`Offline replica source "${schema.sourceKey}" does not define a serverId field.`);
+  }
+}
+
 /** Excludes a source property from SQLite while retaining it in the select shape. */
 export function ignored(reason: string): OfflineReplicaIgnoredDef {
   return { kind: 'ignored', reason };
