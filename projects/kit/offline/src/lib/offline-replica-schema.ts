@@ -97,14 +97,20 @@ type NormalizeReplicaColumnValue<T> = T extends string
         ? string | Date
         : T;
 
-type IsNullableSelectValue<T> = null extends T ? true : undefined extends T ? true : false;
+type StrictNullChecksEnabled = undefined extends null ? false : true;
 
-type OfflineReplicaColumnDefForValue<T> = IsNullableSelectValue<T> extends true
-  ? OfflineReplicaColumnDef<
-      NormalizeReplicaColumnValue<StripNullish<T>>,
-      { readonly [replicaNullableBrand]: 'nullable' }
-    >
-  : OfflineReplicaColumnDef<NormalizeReplicaColumnValue<T>, { readonly [replicaNullableBrand]: 'required' }>;
+type ReplicaColumnNullabilityForSelect<T> = StrictNullChecksEnabled extends true
+  ? null extends T
+    ? ReplicaNullableBrand & { readonly [replicaNullableBrand]: 'nullable' }
+    : undefined extends T
+      ? ReplicaNullableBrand & { readonly [replicaNullableBrand]: 'nullable' }
+      : ReplicaNullableBrand & { readonly [replicaNullableBrand]: 'required' }
+  : ReplicaNullableBrand;
+
+type OfflineReplicaColumnDefForValue<T> = OfflineReplicaColumnDef<
+  NormalizeReplicaColumnValue<StripNullish<T>>,
+  ReplicaColumnNullabilityForSelect<T>
+>;
 
 type OfflineReplicaFieldDefForKey<TSelect extends Record<string, unknown>, K extends keyof TSelect> =
   | (StripNullish<TSelect[K]> extends number ? OfflineReplicaServerIdDef : never)
