@@ -46,3 +46,29 @@ defineReplicaEntity<NonStrictSelect>()({
     sortOrder: integer(),
   },
 });
+
+defineReplicaEntity<NonStrictSelect>()({
+  table: 'nonstrict_missing_items',
+  sourceKey: 'nonstrict_missing_items',
+  scope: 'user',
+  // @ts-expect-error Exact-key validation still rejects a missing select property.
+  fields: {
+    id: serverId(),
+    title: text(),
+    subtitle: nullable(text()),
+  },
+});
+
+defineReplicaEntity<NonStrictSelect>()({
+  table: 'nonstrict_extra_items',
+  sourceKey: 'nonstrict_extra_items',
+  scope: 'user',
+  // @ts-expect-error Exact-key validation still rejects an unknown property.
+  fields: {
+    id: serverId(),
+    title: text(),
+    subtitle: nullable(text()),
+    sortOrder: integer(),
+    extra: text(),
+  },
+});
