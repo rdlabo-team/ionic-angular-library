@@ -1,6 +1,7 @@
 import { inject, Injectable, InjectionToken } from '@angular/core';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
+  assertOfflineReplicaServerId,
   decodeOfflineReplicaValues,
   encodeOfflineReplicaValues,
   projectOfflineReplicaValues,
@@ -500,6 +501,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   #putReplicaRow(databaseId: string, row: OfflineReplicaRow): Promise<void> {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
+    assertOfflineReplicaServerId(schema, row.serverId);
     const encoded = encodeOfflineReplicaValues(schema, row.values);
     const confirmedValues = row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues);
     const { sql, domainColumns } = this.#buildReplicaUpsertStatement(schema);

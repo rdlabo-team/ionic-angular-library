@@ -21,6 +21,7 @@ import {
 
 type TestItemSelect = { id: number; title: string };
 type TestItemWithSubtitleSelect = { id: number; title: string; subtitle: string };
+type LocalProjectionSelect = { feedKey: string };
 
 const testItemEntity = defineReplicaEntity<TestItemSelect>()({
   table: 'test_items',
@@ -51,6 +52,21 @@ const testGroupItemEntity = defineReplicaEntity<{ id: number; name: string }>()(
     id: serverId(),
     name: text(),
   },
+});
+
+const localProjectionEntity = defineReplicaEntity<LocalProjectionSelect>()({
+  table: 'local_projections',
+  sourceKey: 'local_projections',
+  scope: 'user',
+  fields: {
+    feedKey: text(),
+  },
+});
+
+const localProjectionSchema = defineOfflineReplicaSchema({
+  version: 1,
+  entities: [localProjectionEntity],
+  migrations: [],
 });
 
 const replicaSchemaV1 = defineOfflineReplicaSchema({
@@ -482,12 +498,27 @@ describe('SqliteOfflineRepository replica rows', () => {
     'name',
   ];
 
+  const localProjectionColumns = [
+    'local_id',
+    '_offline_user_id',
+    '_offline_confirmed_json',
+    '_offline_server_revision_json',
+    '_offline_sync_state',
+    '_offline_fetched_at',
+    'feed_key',
+  ];
+
   function replicaRowMatrix(tableName: string, stored: { values: unknown[] }): unknown[] {
     return tableName === 'test_group_items' ? [...stored.values] : [...stored.values];
   }
 
   function queryStoredReplicaRows(tableName: string, statement: string, values?: unknown[]) {
-    const columns = tableName === 'test_group_items' ? testGroupItemColumns : testItemColumns;
+    const columns =
+      tableName === 'test_group_items'
+        ? testGroupItemColumns
+        : tableName === 'local_projections'
+          ? localProjectionColumns
+          : testItemColumns;
     const entries = Object.entries(storedReplicaRows).filter(([, stored]) => stored.tableName === tableName);
     if (statement.includes('server_id = ?')) {
       const serverId = values?.[0];
@@ -556,7 +587,7 @@ describe('SqliteOfflineRepository replica rows', () => {
             delete storedReplicaCursors[`${userId}:${groupId}`];
           }
         }
-        for (const tableName of ['test_items', 'test_group_items'] as const) {
+        for (const tableName of ['test_items', 'test_group_items', 'local_projections'] as const) {
           if (statement.startsWith(`INSERT INTO ${tableName}`)) {
             const localId = values?.[0];
             if (typeof localId === 'string') {
@@ -599,7 +630,7 @@ describe('SqliteOfflineRepository replica rows', () => {
             typeof userId === 'number' && typeof groupId === 'number' ? storedReplicaCursors[`${userId}:${groupId}`] : undefined;
           return cursor === undefined ? { rows: [] } : { columns: ['cursor'], rows: [[cursor]] };
         }
-        for (const tableName of ['test_items', 'test_group_items'] as const) {
+        for (const tableName of ['test_items', 'test_group_items', 'local_projections'] as const) {
           if (statement.startsWith(`SELECT * FROM ${tableName}`)) {
             return queryStoredReplicaRows(tableName, statement, values);
           }
@@ -673,6 +704,81 @@ describe('SqliteOfflineRepository replica rows', () => {
         (options as { statement: string }).statement.startsWith('INSERT INTO offline_sync_commands'),
       ),
     ).toBe(true);
+  });
+
+  it('local-only projectionをserver_idなしのDDL/SQLでround-tripしserverId lookupはnullを返す', async () => {
+    storedReplicaMetadata = null;
+    const repository = createRepository(localProjectionSchema);
+    await repository.initialize();
+    const createTable = plugin.execute.mock.calls.find(([options]) =>
+      (options as { statement: string }).statement.startsWith('CREATE TABLE IF NOT EXISTS local_projections'),
+    )?.[0] as { statement: string } | undefined;
+    expect(createTable?.statement).not.toContain('server_id');
+
+    const scope = { userId: 1, groupId: 10 };
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'local_projections',
+          localId: 'feed-home',
+          serverId: null,
+          values: { feedKey: 'home' },
+          confirmedValues: { feedKey: 'home' },
+          serverRevision: null,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+    });
+
+    const upsert = plugin.execute.mock.calls.find(([options]) =>
+      (options as { statement: string }).statement.startsWith('INSERT INTO local_projections'),
+    )?.[0] as { statement: string } | undefined;
+    expect(upsert?.statement).not.toContain('server_id');
+    await expect(repository.getReplicaRows(scope, 'local_projections')).resolves.toEqual([
+      expect.objectContaining({
+        localId: 'feed-home',
+        serverId: null,
+        values: { feedKey: 'home' },
+      }),
+    ]);
+    await expect(repository.getReplicaRowByServerId(scope, 'local_projections', 1)).resolves.toBeNull();
+    expect(
+      plugin.query.mock.calls.some(
+        ([options]) =>
+          (options as { statement: string }).statement.includes('FROM local_projections') &&
+          (options as { statement: string }).statement.includes('server_id = ?'),
+      ),
+    ).toBe(false);
+  });
+
+  it('local-only projectionへ非null serverIdを渡すと同じ契約でrejectする', async () => {
+    storedReplicaMetadata = {
+      version: localProjectionSchema.version,
+      schemaHash: await sha256OfflineReplicaSchema(localProjectionSchema),
+    };
+    const repository = createRepository(localProjectionSchema);
+    await repository.initialize();
+    await expect(
+      repository.transactReplica({
+        putRows: [
+          {
+            userId: 1,
+            groupId: 10,
+            sourceKey: 'local_projections',
+            localId: 'feed-home',
+            serverId: 1,
+            values: { feedKey: 'home' },
+            confirmedValues: null,
+            serverRevision: null,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+      }),
+    ).rejects.toThrow('Offline replica source "local_projections" does not define a serverId field.');
+    expect(storedReplicaRows['feed-home']).toBeUndefined();
   });
 
   it('confirmed JSONはserverId列を投影したdomain valuesだけを永続化する', async () => {
@@ -1065,7 +1171,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     });
   });
 
-  function createRepository(): SqliteOfflineRepository {
+  function createRepository(replicaSchema: OfflineReplicaSchemaBundle = replicaSchemaV1WithGroup): SqliteOfflineRepository {
     TestBed.configureTestingModule({
       providers: [
         SqliteOfflineRepository,
@@ -1075,7 +1181,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           useValue: {
             databaseName: 'test-offline',
             createEncryptionKey: async () => 'secret',
-            replicaSchema: replicaSchemaV1WithGroup,
+            replicaSchema,
           },
         },
       ],

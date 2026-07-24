@@ -2,6 +2,7 @@ import { inject, Injectable, InjectionToken } from '@angular/core';
 import { KitStorageService } from '@rdlabo/ionic-angular-kit';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
+  assertOfflineReplicaServerId,
   encodeOfflineReplicaValues,
   projectOfflineReplicaValues,
   sha256OfflineReplicaSchema,
@@ -599,6 +600,7 @@ export class IonicOfflineRepository implements OfflineRepository {
 
   #validateReplicaRow(row: OfflineReplicaRow): void {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
+    assertOfflineReplicaServerId(schema, row.serverId);
     encodeOfflineReplicaValues(schema, row.values);
     if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
   }
@@ -615,9 +617,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       return schema.scope === 'user' || row.groupId === incoming.groupId;
     });
     if (collision) {
-      throw new Error(
-        `Offline replica serverId ${String(incoming.serverId)} is already mapped to localId ${collision[1].localId}.`,
-      );
+      throw new Error(`Offline replica serverId ${String(incoming.serverId)} is already mapped to localId ${collision[1].localId}.`);
     }
   }
 
