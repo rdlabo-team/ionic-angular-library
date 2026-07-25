@@ -49,6 +49,7 @@ export class OfflineReplicaPullService {
 
       for (const change of changes) {
         const schema = this.#entitySchema(change.sourceKey);
+        this.#assertServerIdentity(schema, change);
         const commands = schema.scope === 'user' ? userCommands : scopeCommands;
         const acknowledged = (change.acknowledgedCommandIds ?? [])
           .map((commandId) => {
@@ -221,6 +222,21 @@ export class OfflineReplicaPullService {
       throw new Error(`Offline replica change "${change.sourceKey}"/${change.serverId} is missing values.`);
     }
     return projectOfflineReplicaValues(schema, change.values);
+  }
+
+  #assertServerIdentity(schema: OfflineReplicaEntitySchema<Record<string, unknown>>, change: OfflineReplicaChange): void {
+    if (change.deleted || change.values === null) return;
+    const serverIdField = schema.fields.find((field) => field.policy === 'serverId');
+    if (!serverIdField) {
+      throw new Error(`Offline replica source "${change.sourceKey}" does not define a serverId field.`);
+    }
+    if (!isPlainObject(change.values)) return;
+    const value = change.values[serverIdField.sourceKey];
+    if (value !== change.serverId) {
+      throw new Error(
+        `Offline replica server id mismatch for "${change.sourceKey}": metadata=${change.serverId}, values=${String(value)}.`,
+      );
+    }
   }
 
   #collapseChanges(changes: readonly OfflineReplicaChange[]): OfflineReplicaChange[] {

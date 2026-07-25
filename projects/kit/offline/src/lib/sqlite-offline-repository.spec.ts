@@ -676,6 +676,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           aggregateType: 'test_items',
           aggregateLocalId: '019d-bbbb',
           operation: 'test_items.create',
+          effect: 'delete',
           payload: { title: 'Local item' },
           optimisticValue: { id: 0, title: 'Local item' },
           payloadHash: 'hash',
@@ -699,11 +700,11 @@ describe('SqliteOfflineRepository replica rows', () => {
     expect(upsert?.statement).toContain('title');
     expect(upsert?.statement).not.toContain('value_json');
     expect(upsert?.values).toEqual(['019d-bbbb', 1, null, null, null, 'pending', 1, 'Local item']);
-    expect(
-      plugin.execute.mock.calls.some(([options]) =>
-        (options as { statement: string }).statement.startsWith('INSERT INTO offline_sync_commands'),
-      ),
-    ).toBe(true);
+    const commandUpsert = plugin.execute.mock.calls.find(([options]) =>
+      (options as { statement: string }).statement.startsWith('INSERT INTO offline_sync_commands'),
+    )?.[0] as { statement: string; values?: unknown[] };
+    expect(commandUpsert.statement).toContain('effect');
+    expect(commandUpsert.values).toContain('delete');
   });
 
   it('local-only projectionをserver_idなしのDDL/SQLでround-tripしserverId lookupはnullを返す', async () => {

@@ -1,4 +1,5 @@
 import { computed, effect, ErrorHandler, inject, Injectable, signal } from '@angular/core';
+import { OfflineCapabilityError, OFFLINE_RUNTIME_CAPABILITIES } from './offline-capabilities';
 import {
   OFFLINE_COMMAND_EXECUTOR,
   OFFLINE_SYNC_CONTEXT,
@@ -9,7 +10,14 @@ import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
-import type { OfflineCommand, OfflineReplicaSyncState, OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
+import type {
+  OfflineCommand,
+  OfflineCommandEffect,
+  OfflineReplicaSyncState,
+  OfflineReplicaRow,
+  OfflineReplicaRowKey,
+  OfflineScope,
+} from './offline-repository';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 
 /** Aggregate synchronization state exposed to application UI. */
@@ -24,6 +32,8 @@ export interface EnqueueOfflineCommand<T = unknown> {
   /** Known immutable server identity when adopting an entity before its first replica pull. */
   serverId?: number | null;
   operation: string;
+  /** Whether the optimistic row remains visible or acts as a local tombstone until confirmation. */
+  effect?: OfflineCommandEffect;
   payload: T;
   /** Full local entity value committed to the replica before the command is exposed to the UI. */
   optimisticValue: unknown;
@@ -50,6 +60,7 @@ export class OfflineSyncService {
   readonly #context = inject(OFFLINE_SYNC_CONTEXT);
   readonly #hooks = inject(OFFLINE_COMMAND_HOOKS);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
+  readonly #capabilities = inject(OFFLINE_RUNTIME_CAPABILITIES);
   readonly #pull = inject(OfflineReplicaPullService);
   readonly #errorHandler = inject(ErrorHandler);
   readonly #commands = signal<OfflineCommand[]>([]);
@@ -147,6 +158,9 @@ export class OfflineSyncService {
   }
 
   async #enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean }, generation: number): Promise<string> {
+    if (!this.#capabilities.outbox) {
+      throw new OfflineCapabilityError('Cannot enqueue offline commands without the outbox capability.');
+    }
     await this.initialize();
     const session = await this.#getLocalSession();
     if (!session) throw new Error('Cannot enqueue an offline command without an authenticated user');
@@ -164,6 +178,7 @@ export class OfflineSyncService {
       aggregateType: request.aggregateType,
       aggregateLocalId,
       operation: request.operation,
+      effect: request.effect ?? 'upsert',
       payload: normalized.payload,
       optimisticValue,
       payloadHash: await this.#payloadHash(normalized.payload),
@@ -249,22 +264,26 @@ export class OfflineSyncService {
       return;
     }
     if (!(await this.#discoverScopes(generation))) return;
-    for (const scope of this.#knownScopes.values()) {
-      if (!this.#isCurrent(generation) || !this.#network.connected()) return;
-      await this.#pull.pull(scope);
+    if (this.#capabilities.replicaPull) {
+      for (const scope of this.#knownScopes.values()) {
+        if (!this.#isCurrent(generation) || !this.#network.connected()) return;
+        await this.#pull.pull(scope);
+      }
     }
-    while (this.#network.connected() && this.#isCurrent(generation)) {
-      const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands());
-      if (!this.#isCurrent(generation)) return;
-      if (groups.length === 0) break;
-      let cursor = 0;
-      const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
-        while (cursor < groups.length) {
-          const group = groups[cursor++];
-          if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation);
-        }
-      });
-      await Promise.all(workers);
+    if (this.#capabilities.outbox) {
+      while (this.#network.connected() && this.#isCurrent(generation)) {
+        const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands());
+        if (!this.#isCurrent(generation)) return;
+        if (groups.length === 0) break;
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
+          while (cursor < groups.length) {
+            const group = groups[cursor++];
+            if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation);
+          }
+        });
+        await Promise.all(workers);
+      }
     }
     await this.#refreshState(generation);
   }
@@ -370,9 +389,10 @@ export class OfflineSyncService {
       syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
     };
     if (!this.#isCurrent(generation)) return;
+    const removeReplica = result.removeReplica ?? command.effect === 'delete';
     await this.#repository.transactReplica({
-      putRows: result.removeReplica ? undefined : [row],
-      removeRows: result.removeReplica ? [current] : undefined,
+      putRows: removeReplica ? undefined : [row],
+      removeRows: removeReplica ? [current] : undefined,
       putCommands: rebased,
       removeCommandIds: [command.commandId],
     });

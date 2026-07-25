@@ -121,6 +121,7 @@ const SCHEMA = [
   aggregate_type TEXT NOT NULL,
   aggregate_local_id TEXT NOT NULL,
   operation TEXT NOT NULL,
+  effect TEXT NOT NULL DEFAULT 'upsert',
   payload_json TEXT NOT NULL,
   optimistic_value_json TEXT NOT NULL,
   payload_hash TEXT NOT NULL,
@@ -326,6 +327,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_value_json TEXT');
       await this.#execute(databaseId, 'UPDATE offline_sync_commands SET optimistic_value_json = payload_json');
     }
+    if (!commandColumns.some((column) => column['name'] === 'effect')) {
+      await this.#execute(databaseId, "ALTER TABLE offline_sync_commands ADD COLUMN effect TEXT NOT NULL DEFAULT 'upsert'");
+    }
     await this.#execute(
       databaseId,
       `INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)
@@ -454,6 +458,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       aggregateType: this.#string(row['aggregate_type']),
       aggregateLocalId: this.#string(row['aggregate_local_id']),
       operation: this.#string(row['operation']),
+      effect: this.#commandEffect(row['effect']),
       payload: this.#parse(row['payload_json']),
       optimisticValue: this.#parse(row['optimistic_value_json']),
       payloadHash: this.#string(row['payload_hash']),
@@ -470,13 +475,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#execute(
       databaseId,
       `INSERT INTO offline_sync_commands
-        (command_id, user_id, group_id, aggregate_type, aggregate_local_id, operation, payload_json, optimistic_value_json,
-         payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (command_id, user_id, group_id, aggregate_type, aggregate_local_id, operation, effect, payload_json,
+         optimistic_value_json, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
         user_id = excluded.user_id, group_id = excluded.group_id, aggregate_type = excluded.aggregate_type,
-        aggregate_local_id = excluded.aggregate_local_id, operation = excluded.operation, payload_json = excluded.payload_json,
-        optimistic_value_json = excluded.optimistic_value_json, payload_hash = excluded.payload_hash,
+        aggregate_local_id = excluded.aggregate_local_id, operation = excluded.operation, effect = excluded.effect,
+        payload_json = excluded.payload_json, optimistic_value_json = excluded.optimistic_value_json,
+        payload_hash = excluded.payload_hash,
         base_revision_json = excluded.base_revision_json, state = excluded.state, attempts = excluded.attempts,
         retry_at = excluded.retry_at, created_at = excluded.created_at, last_error_code = excluded.last_error_code`,
       [
@@ -486,6 +492,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         command.aggregateType,
         command.aggregateLocalId,
         command.operation,
+        command.effect ?? 'upsert',
         JSON.stringify(command.payload),
         JSON.stringify(command.optimisticValue),
         command.payloadHash,
@@ -497,6 +504,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
         command.lastErrorCode,
       ],
     );
+  }
+
+  #commandEffect(value: unknown): OfflineCommand['effect'] {
+    return value === 'delete' ? 'delete' : 'upsert';
   }
 
   #putReplicaRow(databaseId: string, row: OfflineReplicaRow): Promise<void> {
