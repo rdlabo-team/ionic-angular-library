@@ -11,6 +11,11 @@ export interface OfflineSessionManifest {
   updatedAt: number;
 }
 
+/** Structural lease used to reject stale asynchronous session commits. */
+export interface OfflineSessionTransitionLease {
+  isCurrent(): boolean;
+}
+
 /** Owns activation and cleanup of the authenticated local-replica boundary. */
 @Injectable({ providedIn: 'root' })
 export class OfflineSessionService {
@@ -33,15 +38,31 @@ export class OfflineSessionService {
     this.#initialized = true;
   }
 
-  async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
+  async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void>;
+  async activateSession(
+    userId: number,
+    scopeIds: readonly number[],
+    authSubject: string | null,
+    lease: OfflineSessionTransitionLease,
+  ): Promise<boolean>;
+  async activateSession(
+    userId: number,
+    scopeIds: readonly number[],
+    authSubject: string | null,
+    lease?: OfflineSessionTransitionLease,
+  ): Promise<void | boolean> {
     await this.initialize();
+    if (lease && !lease.isCurrent()) return false;
     const normalizedScopeIds = [...new Set(scopeIds)].filter((id) => id !== 0).sort((a, b) => a - b);
     const previousUserId = await this.#repository.getLastUserId();
+    if (lease && !lease.isCurrent()) return false;
     let previous = previousUserId === userId ? ((await this.#repository.getSessionManifest<OfflineSessionManifest>(userId)) ?? null) : null;
+    if (lease && !lease.isCurrent()) return false;
     // A changed provider subject is a different person even when the product reuses its numeric id.
     // This deliberately also clears legacy null -> known subject and known subject -> null transitions.
     if (previousUserId !== null && (previousUserId !== userId || previous?.authSubject !== authSubject)) {
       await this.#repository.clearUser(previousUserId);
+      if (lease && !lease.isCurrent()) return false;
       previous = null;
     }
     const active = new Set(normalizedScopeIds);
@@ -50,6 +71,7 @@ export class OfflineSessionService {
         .filter((groupId) => !active.has(groupId))
         .map((groupId) => this.#repository.clearGroup({ userId, groupId })),
     );
+    if (lease && !lease.isCurrent()) return false;
 
     const manifest: OfflineSessionManifest = {
       userId,
@@ -58,10 +80,13 @@ export class OfflineSessionService {
       updatedAt: Date.now(),
     };
     await this.#repository.setLastUserId(userId);
+    if (lease && !lease.isCurrent()) return false;
     await this.#repository.putSessionManifest(userId, manifest);
+    if (lease && !lease.isCurrent()) return false;
     this.#activeManifest.set(manifest);
     this.#localAccessThisRun = true;
     this.#remoteActivatedThisRun = true;
+    return lease ? true : undefined;
   }
 
   async clearActiveSession(): Promise<void> {
@@ -70,6 +95,12 @@ export class OfflineSessionService {
     if (userId !== null) await this.#repository.clearUser(userId);
     this.#activeManifest.set(null);
     this.#localAccessThisRun = false;
+    this.#remoteActivatedThisRun = false;
+  }
+
+  /** Disable remote pull/replay eligibility while retaining the verified local manifest. */
+  async suspendRemoteSession(): Promise<void> {
+    await this.initialize();
     this.#remoteActivatedThisRun = false;
   }
 
@@ -103,8 +134,12 @@ export class OfflineSessionService {
    * @param authSubject - A currently known provider subject. When supplied, it must match the
    * persisted subject.
    */
-  async activateOfflineSession(authSubject?: string | null): Promise<OfflineSessionManifest | null> {
+  async activateOfflineSession(
+    authSubject?: string | null,
+    lease?: OfflineSessionTransitionLease,
+  ): Promise<OfflineSessionManifest | null> {
     const manifest = await this.getOfflineAccessManifest(authSubject);
+    if (lease && !lease.isCurrent()) return null;
     this.#localAccessThisRun = manifest !== null;
     this.#remoteActivatedThisRun = false;
     return manifest;

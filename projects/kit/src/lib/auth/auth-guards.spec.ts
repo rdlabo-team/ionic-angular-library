@@ -16,7 +16,7 @@ import {
   kitRequireConfirmingGuard,
   kitRequireAuthorizedGuard,
 } from './auth-guards';
-import { KitAuthAccessService, type KitRemoteAccessRecovery } from './auth-access.service';
+import { KitAuthAccessService, type KitAuthAccessLease, type KitRemoteAccessRecovery } from './auth-access.service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -168,7 +168,7 @@ describe('kitRequireAuthorizedGuard', () => {
     setup('user', { onAuthorized });
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
-    expect(onAuthorized).toHaveBeenCalledWith(stateStub);
+    expect(onAuthorized).toHaveBeenCalledWith(stateStub, expect.objectContaining({ isCurrent: expect.any(Function) }));
     expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
   });
 
@@ -183,7 +183,10 @@ describe('kitRequireAuthorizedGuard', () => {
   it("'user' → publishes remote access between phased activation and transport resume", async () => {
     const order: string[] = [];
     const onAuthorized = vi.fn(async () => ({
-      activate: async () => void order.push('activate'),
+      activate: async () => {
+        order.push('activate');
+        return true;
+      },
       resume: async () => void order.push(`resume:${TestBed.inject(KitAuthAccessService).mode}`),
     }));
     setup('user', { onAuthorized });
@@ -198,7 +201,7 @@ describe('kitRequireAuthorizedGuard', () => {
   it("'user' → keeps verified remote access when only phased resume loses transport", async () => {
     const networkError = { status: 0 };
     const onAuthorized = vi.fn(async () => ({
-      activate: async () => undefined,
+      activate: async () => true,
       resume: async () => Promise.reject(networkError),
     }));
     setup('user', { onAuthorized, isUnavailableError: (error) => error === networkError });
@@ -259,9 +262,24 @@ describe('kitRequireAuthorizedGuard', () => {
     const { onUnauthenticated } = setup('unavailable', { onUnavailable });
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
-    expect(onUnavailable).toHaveBeenCalledWith(stateStub, undefined);
+    expect(onUnavailable).toHaveBeenCalledWith(
+      stateStub,
+      undefined,
+      expect.objectContaining({ isCurrent: expect.any(Function) }),
+    );
     expect(onUnauthenticated).not.toHaveBeenCalled();
     expect(TestBed.inject(KitAuthAccessService).mode).toBe('local');
+  });
+
+  it("'unavailable' + rejected local restore redirects without granting access", async () => {
+    const onUnavailable = vi.fn().mockResolvedValue(false);
+    const { navigate } = setup('unavailable', { onUnavailable });
+
+    await expect(
+      runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub))),
+    ).resolves.toBe(false);
+    expect(navigate).toHaveBeenCalledWith([REDIRECTS.whenUnauthorized]);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('none');
   });
 
   it("'required' never invokes the unavailable fallback", async () => {
@@ -290,7 +308,11 @@ describe('kitRequireAuthorizedGuard', () => {
     });
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
-    expect(onUnavailable).toHaveBeenCalledWith(stateStub, networkError);
+    expect(onUnavailable).toHaveBeenCalledWith(
+      stateStub,
+      networkError,
+      expect.objectContaining({ isCurrent: expect.any(Function) }),
+    );
   });
 
   it('unclassified onAuthorized error propagates without local fallback', async () => {
@@ -318,6 +340,75 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(onUnavailable).not.toHaveBeenCalled();
     expect(TestBed.inject(KitAuthAccessService).mode).toBe('none');
   });
+
+  it('does not grant remote access when logout supersedes a pending onAuthorized hook', async () => {
+    let resolveAuthorized: ((value: true) => void) | undefined;
+    const onAuthorized = vi.fn(
+      () =>
+        new Promise<true>((resolve) => {
+          resolveAuthorized = resolve;
+        }),
+    );
+    setup('user', { onAuthorized });
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    const access = TestBed.inject(KitAuthAccessService);
+    access.clear();
+    resolveAuthorized?.(true);
+
+    await expect(pending).resolves.toBe(false);
+    expect(access.mode).toBe('none');
+  });
+
+  it('does not grant remote access when logout supersedes phased activation', async () => {
+    let releaseActivation: (() => void) | undefined;
+    let activationStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      activationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseActivation = resolve;
+    });
+    const resume = vi.fn(async () => undefined);
+    const onAuthorized = vi.fn(async () => ({
+      activate: async (lease: KitAuthAccessLease) => {
+        activationStarted?.();
+        await gate;
+        return lease.isCurrent();
+      },
+      resume,
+    }));
+    setup('user', { onAuthorized });
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    await started;
+    const access = TestBed.inject(KitAuthAccessService);
+    access.clear();
+    releaseActivation?.();
+
+    await expect(pending).resolves.toBe(false);
+    expect(access.mode).toBe('none');
+    expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('does not grant local access when logout supersedes a pending unavailable fallback', async () => {
+    let resolveUnavailable: ((value: true) => void) | undefined;
+    const onUnavailable = vi.fn(
+      () =>
+        new Promise<true>((resolve) => {
+          resolveUnavailable = resolve;
+        }),
+    );
+    setup('unavailable', { onUnavailable });
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    const access = TestBed.inject(KitAuthAccessService);
+    access.clear();
+    resolveUnavailable?.(true);
+
+    await expect(pending).resolves.toBe(false);
+    expect(access.mode).toBe('none');
+  });
 });
 
 describe('kitRequireAuthorizedGuard — auth state source errors', () => {
@@ -342,7 +433,11 @@ describe('kitRequireAuthorizedGuard — auth state source errors', () => {
 
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
-    expect(onUnavailable).toHaveBeenCalledWith(stateStub, networkError);
+    expect(onUnavailable).toHaveBeenCalledWith(
+      stateStub,
+      networkError,
+      expect.objectContaining({ isCurrent: expect.any(Function) }),
+    );
   });
 
   it('does not classify an error from onUnavailable a second time', async () => {

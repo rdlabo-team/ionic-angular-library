@@ -12,6 +12,7 @@ describe('OfflineCoordinatorService', () => {
 
   function setup(manifest: OfflineSessionManifest | null = null) {
     const order: string[] = [];
+    const sessionState: { userId: number | null } = { userId: null };
     const repository = {
       initialize: vi.fn(async () => undefined),
     };
@@ -21,12 +22,21 @@ describe('OfflineCoordinatorService', () => {
     };
     const session = {
       initialize: vi.fn(async () => undefined),
-      activateSession: vi.fn(async () => void order.push('activate-remote')),
+      activateSession: vi.fn(async (userId: number, _scopeIds: readonly number[], _authSubject: string | null, lease: { isCurrent(): boolean }) => {
+        order.push('activate-remote');
+        if (!lease.isCurrent()) return false;
+        sessionState.userId = userId;
+        return true;
+      }),
+      suspendRemoteSession: vi.fn(async () => void order.push('suspend-remote')),
       activateOfflineSession: vi.fn(async () => {
         order.push('activate-local');
         return manifest;
       }),
-      clearActiveSession: vi.fn(async () => undefined),
+      clearActiveSession: vi.fn(async () => {
+        order.push('clear');
+        sessionState.userId = null;
+      }),
     };
     const sync = {
       syncState: signal('idle'),
@@ -48,7 +58,7 @@ describe('OfflineCoordinatorService', () => {
         { provide: OfflineSyncService, useValue: sync },
       ],
     });
-    return { coordinator: TestBed.inject(OfflineCoordinatorService), order, session, sync };
+    return { coordinator: TestBed.inject(OfflineCoordinatorService), order, session, sessionState, sync };
   }
 
   it('restores local visibility without starting remote synchronization', async () => {
@@ -74,9 +84,68 @@ describe('OfflineCoordinatorService', () => {
     const { coordinator, order } = setup();
 
     await coordinator.prepareRemoteSession(1, [2], 'subject');
-    expect(order).toEqual(['reset', 'activate-remote']);
+    expect(order).toEqual(['reset', 'suspend-remote', 'activate-remote']);
 
     await coordinator.resumeRemoteSession();
-    expect(order).toEqual(['reset', 'activate-remote', 'resume-remote']);
+    expect(order).toEqual(['reset', 'suspend-remote', 'activate-remote', 'resume-remote']);
+  });
+
+  it('serializes logout after an in-flight activation so the old identity cannot reappear', async () => {
+    const { coordinator, session, sessionState } = setup();
+    let releaseActivation: (() => void) | undefined;
+    let activationStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      activationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseActivation = resolve;
+    });
+    session.activateSession.mockImplementationOnce(
+      async (userId: number, _scopeIds: readonly number[], _subject: string | null, lease: { isCurrent(): boolean }) => {
+        activationStarted?.();
+        await gate;
+        if (!lease.isCurrent()) return false;
+        sessionState.userId = userId;
+        return true;
+      },
+    );
+
+    const activation = coordinator.prepareRemoteSession(1, [2], 'old-subject');
+    await started;
+    const logout = coordinator.clearActiveSession();
+    releaseActivation?.();
+    await Promise.all([activation, logout]);
+
+    expect(sessionState.userId).toBeNull();
+  });
+
+  it('keeps a newer identity when an older activation completes late', async () => {
+    const { coordinator, session, sessionState } = setup();
+    let releaseOld: (() => void) | undefined;
+    let oldStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      oldStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    session.activateSession.mockImplementationOnce(
+      async (userId: number, _scopeIds: readonly number[], _subject: string | null, lease: { isCurrent(): boolean }) => {
+        oldStarted?.();
+        await gate;
+        if (!lease.isCurrent()) return false;
+        sessionState.userId = userId;
+        return true;
+      },
+    );
+
+    const oldActivation = coordinator.prepareRemoteSession(1, [2], 'old-subject');
+    await started;
+    const newActivation = coordinator.prepareRemoteSession(9, [10], 'new-subject');
+    releaseOld?.();
+
+    await expect(oldActivation).resolves.toBe(false);
+    await expect(newActivation).resolves.toBe(true);
+    expect(sessionState.userId).toBe(9);
   });
 });

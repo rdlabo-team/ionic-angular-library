@@ -8,6 +8,7 @@ import { of, throwError } from 'rxjs';
 import { catchError, map, mergeMap } from 'rxjs/operators';
 import {
   isExplicitAuthDenial,
+  type KitAuthAccessLease,
   type KitAuthRecoveryConfig,
   type KitRemoteAccessRecovery,
   KitAuthAccessService,
@@ -83,10 +84,11 @@ export interface KitAuthConfig extends KitAuthRecoveryConfig {
    * or restoring a previously requested redirect. Optional; defaults to `true` (allow activation).
    *
    * @param state - The router state snapshot of the route being activated.
+   * @param lease - Transition lease that product persistence must verify immediately before commit.
    * @returns `true` to allow activation, a `UrlTree` to perform a custom redirect, or a phased
    * remote activation that installs the session before transport work resumes.
    */
-  onAuthorized?(state: RouterStateSnapshot): Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
+  onAuthorized?(state: RouterStateSnapshot, lease: KitAuthAccessLease): Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
   /**
    * Fallback that runs in {@link kitRequireAuthorizedGuard} when the state is `required` (not authenticated).
    *
@@ -95,10 +97,11 @@ export interface KitAuthConfig extends KitAuthRecoveryConfig {
    * (fall through to the default `whenUnauthorized` redirect).
    *
    * @param state - The router state snapshot of the route being activated.
+   * @param lease - Transition lease that product persistence must verify immediately before commit.
    * @returns `true` to allow activation, a `UrlTree` for a custom redirect, a phased remote
    * activation, or `false` to use the default redirect.
    */
-  onUnauthenticated?(state: RouterStateSnapshot): Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
+  onUnauthenticated?(state: RouterStateSnapshot, lease: KitAuthAccessLease): Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
   /**
    * Fallback that runs only when authentication is unavailable, never for an explicit
    * unauthenticated result.
@@ -111,10 +114,11 @@ export interface KitAuthConfig extends KitAuthRecoveryConfig {
    * @param state - The router state snapshot of the route being activated.
    * @param error - The classified transport error, or `undefined` when `authState` emitted
    * `unavailable`.
+   * @param lease - Transition lease that local-session activation must verify before commit.
    * @returns `true` to allow local route activation, a `UrlTree` for a custom redirect, or `false`
    * to use the default redirect.
    */
-  onUnavailable?(state: RouterStateSnapshot, error?: unknown): Promise<boolean | UrlTree>;
+  onUnavailable?(state: RouterStateSnapshot, error: unknown | undefined, lease: KitAuthAccessLease): Promise<boolean | UrlTree>;
   /** Redirect targets used by the guards. */
   redirects: KitAuthRedirects;
 }
@@ -250,8 +254,10 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   const router = inject(Router);
   const navCtrl = inject(NavController);
   const access = inject(KitAuthAccessService);
+  const lease = access.beginTransition();
 
   const redirectUnauthorized = (): false => {
+    if (!lease.isCurrent()) return false;
     access.clear();
     navCtrl.setDirection('root');
     router.navigate([redirects.whenUnauthorized]);
@@ -259,14 +265,17 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   };
   const resolveUnavailable = async (error?: unknown): Promise<boolean | UrlTree> => {
     try {
-      const fallback = onUnavailable ? await onUnavailable(state, error) : false;
+      const fallback = onUnavailable ? await onUnavailable(state, error, lease) : false;
+      if (!lease.isCurrent()) return false;
       if (fallback === true) {
         access.grantLocal();
         return true;
       }
+      if (fallback === false) return redirectUnauthorized();
       access.clear();
-      return fallback === false ? redirectUnauthorized() : fallback;
+      return fallback;
     } catch (fallbackError) {
+      if (!lease.isCurrent()) return false;
       access.clear();
       throw fallbackError;
     }
@@ -274,19 +283,22 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   const resolveRemote = async (
     result: boolean | UrlTree | KitRemoteAccessRecovery,
   ): Promise<boolean | UrlTree> => {
+    if (!lease.isCurrent()) return false;
     if (isRemoteAccessActivation(result)) {
-      await result.activate();
+      if (!(await result.activate(lease)) || !lease.isCurrent()) return false;
       access.grantRemote();
+      const remoteRevision = access.revision;
       try {
         await result.resume();
       } catch (error) {
+        if (access.revision !== remoteRevision) return false;
         if (isExplicitAuthDenial(error)) {
           access.clear();
           throw error;
         }
         if (!isUnavailableError?.(error)) throw error;
       }
-      return true;
+      return access.revision === remoteRevision;
     }
     if (result === true) access.grantRemote();
     else access.clear();
@@ -300,6 +312,7 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   return authState().pipe(
     map((authState): AuthEmission => ({ authState })),
     catchError((error): Observable<AuthEmission> => {
+      if (!lease.isCurrent()) return of({ authState: 'required' });
       if (isExplicitAuthDenial(error)) {
         access.clear();
         return throwError(() => error);
@@ -307,15 +320,20 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
       return isUnavailableError?.(error) ? of({ authState: 'unavailable', error }) : throwError(() => error);
     }),
     mergeMap(async ({ authState: data, error: authStateError }) => {
+      if (!lease.isCurrent()) return false;
       if (data === 'user') {
         // 既定は「許可」。tokenLogin / 権限確認等が必要なアプリだけ onAuthorized を渡す。
         if (!onAuthorized) {
+          if (!lease.isCurrent()) return false;
           access.grantRemote();
           return true;
         }
         try {
-          return await resolveRemote(await onAuthorized(state));
+          const result = await onAuthorized(state, lease);
+          if (!lease.isCurrent()) return false;
+          return await resolveRemote(result);
         } catch (error) {
+          if (!lease.isCurrent()) return false;
           if (isExplicitAuthDenial(error)) {
             access.clear();
             throw error;
@@ -325,6 +343,7 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
         }
       }
       if (data === 'anonymous') {
+        if (!lease.isCurrent()) return false;
         access.grantRemote();
         return true;
       }
@@ -332,7 +351,8 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
         return resolveUnavailable(authStateError);
       }
       // 既定は false（whenUnauthorized へ）。匿名ログイン等のフォールバックが要るアプリだけ渡す。
-      const fallback = onUnauthenticated ? await onUnauthenticated(state) : false;
+      const fallback = onUnauthenticated ? await onUnauthenticated(state, lease) : false;
+      if (!lease.isCurrent()) return false;
       if (fallback !== false) {
         return resolveRemote(fallback);
       }

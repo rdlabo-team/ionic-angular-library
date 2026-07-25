@@ -2,7 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { OfflineNetworkService } from './offline-network.service';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 import { OfflineSessionService } from './offline-session.service';
-import type { OfflineSessionManifest } from './offline-session.service';
+import type { OfflineSessionManifest, OfflineSessionTransitionLease } from './offline-session.service';
 import { OfflineSyncService } from './offline-sync.service';
 
 /** User choice when logout encounters unconfirmed local mutations. */
@@ -15,6 +15,8 @@ export class OfflineCoordinatorService {
   readonly #network = inject(OfflineNetworkService);
   readonly #sync = inject(OfflineSyncService);
   readonly #session = inject(OfflineSessionService);
+  #transitionRevision = 0;
+  #transitionTail: Promise<void> = Promise.resolve();
 
   readonly networkState = this.#network.state;
   readonly syncState = this.#sync.syncState;
@@ -28,14 +30,25 @@ export class OfflineCoordinatorService {
   }
 
   async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
-    await this.prepareRemoteSession(userId, scopeIds, authSubject);
+    if (!(await this.prepareRemoteSession(userId, scopeIds, authSubject))) return;
     await this.resumeRemoteSession();
   }
 
   /** Installs a remotely verified identity without starting pull or outbox replay. */
-  async prepareRemoteSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
-    await this.#sync.resetSession();
-    await this.#session.activateSession(userId, scopeIds, authSubject);
+  prepareRemoteSession(
+    userId: number,
+    scopeIds: readonly number[],
+    authSubject: string | null,
+    authLease?: OfflineSessionTransitionLease,
+  ): Promise<boolean> {
+    const revision = ++this.#transitionRevision;
+    const lease = this.#lease(revision, authLease);
+    return this.#enqueueTransition(async () => {
+      await this.#sync.resetSession();
+      await this.#session.suspendRemoteSession();
+      if (!lease.isCurrent()) return false;
+      return this.#session.activateSession(userId, scopeIds, authSubject, lease);
+    });
   }
 
   /** Starts pull and outbox replay after the caller has published remote access. */
@@ -46,16 +59,27 @@ export class OfflineCoordinatorService {
   /**
    * Activates a restored identity for local replica/outbox use without enabling transport sync.
    */
-  async activateOfflineSession(authSubject?: string | null): Promise<OfflineSessionManifest | null> {
-    await this.#sync.resetSession();
-    const manifest = await this.#session.activateOfflineSession(authSubject);
-    if (manifest) await this.#sync.refreshLocalSession();
-    return manifest;
+  activateOfflineSession(
+    authSubject?: string | null,
+    authLease?: OfflineSessionTransitionLease,
+  ): Promise<OfflineSessionManifest | null> {
+    const revision = ++this.#transitionRevision;
+    const lease = this.#lease(revision, authLease);
+    return this.#enqueueTransition(async () => {
+      await this.#sync.resetSession();
+      if (!lease.isCurrent()) return null;
+      const manifest = await this.#session.activateOfflineSession(authSubject, lease);
+      if (manifest && lease.isCurrent()) await this.#sync.refreshLocalSession();
+      return lease.isCurrent() ? manifest : null;
+    });
   }
 
-  async clearActiveSession(): Promise<void> {
-    await this.#sync.resetSession();
-    await this.#session.clearActiveSession();
+  clearActiveSession(): Promise<void> {
+    ++this.#transitionRevision;
+    return this.#enqueueTransition(async () => {
+      await this.#sync.resetSession();
+      await this.#session.clearActiveSession();
+    });
   }
 
   async prepareLogout(action: OfflineLogoutAction): Promise<boolean> {
@@ -70,5 +94,18 @@ export class OfflineCoordinatorService {
 
   flush(): Promise<void> {
     return this.#sync.flush();
+  }
+
+  #lease(revision: number, authLease?: OfflineSessionTransitionLease): OfflineSessionTransitionLease {
+    return { isCurrent: () => revision === this.#transitionRevision && (authLease?.isCurrent() ?? true) };
+  }
+
+  #enqueueTransition<T>(operation: () => Promise<T>): Promise<T> {
+    const transition = this.#transitionTail.then(operation, operation);
+    this.#transitionTail = transition.then(
+      () => undefined,
+      () => undefined,
+    );
+    return transition;
   }
 }

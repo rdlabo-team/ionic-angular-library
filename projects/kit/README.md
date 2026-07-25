@@ -286,8 +286,8 @@ export const appConfig: ApplicationConfig = {
         // onAuthorized: async () => {
         //   const session = await auth.exchangeCredential();
         //   return {
-        //     activate: () => offline.prepareRemoteSession(
-        //       session.userId, session.groupIds, session.subject,
+        //     activate: (lease) => offline.prepareRemoteSession(
+        //       session.userId, session.groupIds, session.subject, lease,
         //     ),
         //     resume: () => offline.resumeRemoteSession(),
         //   };
@@ -295,8 +295,8 @@ export const appConfig: ApplicationConfig = {
         // Supply onUnauthenticated only for a fallback such as anonymous sign-in:
         // onUnauthenticated: async () => { await auth.signInAnonymously(); return true; },
         // Supply onUnavailable only for a previously verified local replica:
-        // onUnavailable: async () =>
-        //   (await offline.activateOfflineSession(auth.currentSubject())) !== null,
+        // onUnavailable: async (_state, _error, lease) =>
+        //   (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
         // isUnavailableError: (error) => isOfflineFallbackError(error),
         // Optionally recover automatically after the authority is reachable again:
         // remoteRecovery: {
@@ -305,8 +305,8 @@ export const appConfig: ApplicationConfig = {
         //     const session = await auth.tryExchangeCredential();
         //     return session
         //       ? {
-        //           activate: () => offline.prepareRemoteSession(
-        //             session.userId, session.groupIds, session.subject,
+        //           activate: (lease) => offline.prepareRemoteSession(
+        //             session.userId, session.groupIds, session.subject, lease,
         //           ),
         //           resume: () => offline.resumeRemoteSession(),
         //         }
@@ -398,9 +398,10 @@ that is bound to a non-null authentication-provider subject. Supplying a current
 different user on a shared device. It activates local replica writes and durable outbox enqueue, but remote pull and
 command replay remain disabled until online authentication completes the ordered
 `prepareRemoteSession(...)` → publish `remote` → `resumeRemoteSession()` transition. `activateSession(...)` remains
-available as a backward-compatible one-step API for callers that do not enforce shared access mode. Explicit sign-out must call
-`clearActiveSession()`, which removes the manifest and local user replica before the auth guard can grant offline
-access again.
+available as a backward-compatible one-step API for callers that do not enforce shared access mode.
+Explicit sign-out must first call `KitAuthAccessService.clear()` and then await `clearActiveSession()`. The first
+step immediately invalidates every in-flight auth lease; the second serializes cleanup after local persistence
+already in progress and removes the manifest and user replica.
 
 ```ts
 provideKitAuth(() => {
@@ -410,11 +411,12 @@ provideKitAuth(() => {
     onAuthorized: async () => {
       const session = await auth.exchangeCredential();
       return {
-        activate: () => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject),
+        activate: (lease) => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
         resume: () => offline.resumeRemoteSession(),
       };
     },
-    onUnavailable: async () => (await offline.activateOfflineSession(auth.currentSubject())) !== null,
+    onUnavailable: async (_state, _error, lease) =>
+      (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
     isUnavailableError: isOfflineFallbackError,
     remoteRecovery: {
       availability: () => auth.authorityAvailable$,
@@ -422,7 +424,8 @@ provideKitAuth(() => {
         const session = await auth.tryExchangeCredential();
         return session
           ? {
-              activate: () => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject),
+              activate: (lease) =>
+                offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
               resume: () => offline.resumeRemoteSession(),
             }
           : false;

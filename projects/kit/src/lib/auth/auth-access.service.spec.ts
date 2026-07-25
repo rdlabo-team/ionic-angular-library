@@ -36,7 +36,10 @@ describe('KitAuthRecoveryService', () => {
     const reauthenticate = vi.fn(async () => {
       order.push('reauthenticate');
       return {
-        activate: async () => void order.push('activate'),
+        activate: async () => {
+          order.push('activate');
+          return true;
+        },
         resume: async () => {
           order.push(`resume:${TestBed.inject(KitAuthAccessService).mode}`);
         },
@@ -98,7 +101,7 @@ describe('KitAuthRecoveryService', () => {
 
   it('does not restore remote access after a newer access transition invalidates recovery', async () => {
     let resolveReauthentication: ((value: KitRemoteAccessRecovery) => void) | undefined;
-    const activate = vi.fn(async () => undefined);
+    const activate = vi.fn(async () => true);
     const resume = vi.fn(async () => undefined);
     const { access, recovery } = setup({
       remoteRecovery: {
@@ -119,5 +122,88 @@ describe('KitAuthRecoveryService', () => {
     expect(access.mode).toBe('none');
     expect(activate).not.toHaveBeenCalled();
     expect(resume).not.toHaveBeenCalled();
+  });
+
+  it('does not commit an identity when logout completes while activation is waiting', async () => {
+    let releaseActivation: (() => void) | undefined;
+    let activationStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      activationStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseActivation = resolve;
+    });
+    let manifest: string | null = null;
+    let localSession: string | null = null;
+    let remoteSession: string | null = null;
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        reauthenticate: async () => ({
+          activate: async (lease) => {
+            activationStarted?.();
+            await gate;
+            if (!lease.isCurrent()) return false;
+            manifest = localSession = remoteSession = 'old-user';
+            return true;
+          },
+          resume: async () => undefined,
+        }),
+      },
+    });
+    access.grantLocal();
+
+    const pending = recovery.recover();
+    await started;
+    access.clear();
+    manifest = localSession = remoteSession = null;
+    releaseActivation?.();
+    await pending;
+
+    expect(access.mode).toBe('none');
+    expect(manifest).toBeNull();
+    expect(localSession).toBeNull();
+    expect(remoteSession).toBeNull();
+  });
+
+  it('preserves a newer identity when an older activation is released afterward', async () => {
+    let releaseOld: (() => void) | undefined;
+    let oldStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      oldStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    let manifest: string | null = null;
+    const oldResume = vi.fn(async () => undefined);
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        reauthenticate: async () => ({
+          activate: async (lease) => {
+            oldStarted?.();
+            await gate;
+            if (!lease.isCurrent()) return false;
+            manifest = 'old-user';
+            return true;
+          },
+          resume: oldResume,
+        }),
+      },
+    });
+    access.grantLocal();
+
+    const oldRecovery = recovery.recover();
+    await started;
+    access.beginTransition();
+    manifest = 'new-user';
+    access.grantRemote();
+    releaseOld?.();
+    await oldRecovery;
+
+    expect(manifest).toBe('new-user');
+    expect(access.mode).toBe('remote');
+    expect(oldResume).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,12 @@ import { BehaviorSubject } from 'rxjs';
 /** Access level currently granted to the application runtime. */
 export type KitAuthAccessMode = 'none' | 'local' | 'remote';
 
+/** Generation lease that becomes stale as soon as a newer access transition starts. */
+export interface KitAuthAccessLease {
+  /** Whether work owned by this transition may still publish or persist access. */
+  isCurrent(): boolean;
+}
+
 /**
  * Result of remote reauthentication, split into ordered activation and resume phases.
  *
@@ -14,7 +20,12 @@ export type KitAuthAccessMode = 'none' | 'local' | 'remote';
  * work.
  */
 export interface KitRemoteAccessRecovery {
-  activate(): Promise<void>;
+  /**
+   * Install the remotely verified identity, checking the lease again immediately before commit.
+   *
+   * @returns `false` when a newer logout or identity transition superseded this activation.
+   */
+  activate(lease: KitAuthAccessLease): Promise<boolean>;
   resume(): Promise<void>;
 }
 
@@ -25,7 +36,7 @@ export interface KitAuthRecoveryConfig {
   /** Optional online-recovery lifecycle used after local-only route access. */
   remoteRecovery?: {
     availability(): Observable<boolean>;
-    reauthenticate(): Promise<KitRemoteAccessRecovery | false>;
+    reauthenticate(lease: KitAuthAccessLease): Promise<KitRemoteAccessRecovery | false>;
   };
 }
 
@@ -53,6 +64,13 @@ export class KitAuthAccessService {
    */
   get revision(): number {
     return this.#revision;
+  }
+
+  /** Start a transition and invalidate every older asynchronous access decision. */
+  beginTransition(): KitAuthAccessLease {
+    this.#revision += 1;
+    const revision = this.#revision;
+    return { isCurrent: () => this.#revision === revision };
   }
 
   /** Publish a verified local-replica-only session. */
@@ -110,22 +128,23 @@ export class KitAuthRecoveryService {
   async #runRecovery(): Promise<void> {
     const recovery = this.#config.remoteRecovery;
     if (!recovery || this.#access.mode !== 'local') return;
+    const lease = this.#access.beginTransition();
     let expectedRevision = this.#access.revision;
     const isCurrent = (): boolean => this.#access.revision === expectedRevision;
     try {
-      const result = await recovery.reauthenticate();
+      const result = await recovery.reauthenticate(lease);
       if (!isCurrent() || this.#access.mode !== 'local') return;
       if (result === false) {
         this.#access.clear();
         return;
       }
-      await result.activate();
-      if (!isCurrent() || this.#access.mode !== 'local') return;
+      if (!(await result.activate(lease)) || !isCurrent() || this.#access.mode !== 'local') return;
       this.#access.grantRemote();
       expectedRevision = this.#access.revision;
       await result.resume();
     } catch (error) {
-      if (isExplicitAuthDenial(error) && isCurrent()) {
+      if (!isCurrent()) return;
+      if (isExplicitAuthDenial(error)) {
         this.#access.clear();
       } else if (!this.#config.isUnavailableError?.(error)) {
         this.#errorHandler.handleError(error);
