@@ -234,6 +234,59 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
   });
 
+  it("'user' → invalidates the post-grant resume lease before stale user-visible effects", async () => {
+    let markResumeStarted!: () => void;
+    let releaseResume!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      markResumeStarted = resolve;
+    });
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const navigateAfterResume = vi.fn();
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => true,
+      resume: async (lease?: KitAuthAccessLease) => {
+        markResumeStarted();
+        await resumeGate;
+        if (lease?.isCurrent()) navigateAfterResume();
+      },
+    }));
+    setup('user', { onAuthorized });
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    await resumeStarted;
+    TestBed.inject(KitAuthAccessService).clear();
+    releaseResume();
+
+    await expect(pending).resolves.toBe(false);
+    expect(navigateAfterResume).not.toHaveBeenCalled();
+  });
+
+  it("'user' → does not reclaim a transition started by a synchronous remote-mode subscriber", async () => {
+    const navigateAfterResume = vi.fn();
+    const resume = vi.fn(async (lease?: KitAuthAccessLease) => {
+      if (lease?.isCurrent()) navigateAfterResume();
+    });
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => true,
+      resume,
+    }));
+    setup('user', { onAuthorized });
+    const access = TestBed.inject(KitAuthAccessService);
+    const subscription = access.mode$.subscribe((mode) => {
+      if (mode === 'remote') access.clear();
+    });
+
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    subscription.unsubscribe();
+
+    expect(result).toBe(false);
+    expect(resume).not.toHaveBeenCalled();
+    expect(navigateAfterResume).not.toHaveBeenCalled();
+    expect(access.mode).toBe('none');
+  });
+
   it("'user' → keeps verified remote access when only phased resume loses transport", async () => {
     const networkError = { status: 0 };
     const onAuthorized = vi.fn(async () => ({

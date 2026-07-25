@@ -6,6 +6,7 @@ import {
   KIT_AUTH_RECOVERY_CONFIG,
   KitAuthAccessService,
   KitAuthRecoveryService,
+  type KitAuthAccessLease,
   type KitAuthRecoveryConfig,
   type KitRemoteAccessRecovery,
 } from './auth-access.service';
@@ -59,6 +60,68 @@ describe('KitAuthRecoveryService', () => {
     expect(order).toEqual(['reauthenticate', 'activate', 'resume:remote']);
     expect(access.mode).toBe('remote');
     expect(reauthenticate).toHaveBeenCalledOnce();
+  });
+
+  it('invalidates the post-grant resume lease when access is revoked during recovery', async () => {
+    let markResumeStarted!: () => void;
+    let releaseResume!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      markResumeStarted = resolve;
+    });
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const userVisibleEffect = vi.fn();
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        reauthenticate: async () => ({
+          activate: async () => true,
+          resume: async (lease) => {
+            markResumeStarted();
+            await resumeGate;
+            if (lease?.isCurrent()) userVisibleEffect();
+          },
+        }),
+      },
+    });
+    access.grantLocal();
+
+    const pending = recovery.recover();
+    await resumeStarted;
+    access.clear();
+    releaseResume();
+    await pending;
+
+    expect(userVisibleEffect).not.toHaveBeenCalled();
+    expect(access.mode).toBe('none');
+  });
+
+  it('does not reclaim a transition started by a synchronous remote-mode subscriber', async () => {
+    const userVisibleEffect = vi.fn();
+    const resume = vi.fn(async (lease?: KitAuthAccessLease) => {
+      if (lease?.isCurrent()) userVisibleEffect();
+    });
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        reauthenticate: async () => ({
+          activate: async () => true,
+          resume,
+        }),
+      },
+    });
+    access.grantLocal();
+    const subscription = access.mode$.subscribe((mode) => {
+      if (mode === 'remote') access.clear();
+    });
+
+    await recovery.recover();
+    subscription.unsubscribe();
+
+    expect(resume).not.toHaveBeenCalled();
+    expect(userVisibleEffect).not.toHaveBeenCalled();
+    expect(access.mode).toBe('none');
   });
 
   it('coalesces concurrent recovery attempts into one flight', async () => {

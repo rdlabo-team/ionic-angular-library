@@ -162,4 +162,59 @@ describe('OfflineCoordinatorService', () => {
     await expect(newActivation).resolves.toBe(true);
     expect(sessionState.userId).toBe(9);
   });
+
+  it('preserves user scope 0 from remote activation through the first pull', async () => {
+    let lastUserId: number | null = null;
+    let manifest: OfflineSessionManifest | null = null;
+    const pull = vi.fn(async (_scope: { userId: number; groupId: number }) => undefined);
+    const repository = {
+      initialize: vi.fn(async () => undefined),
+      getLastUserId: vi.fn(async () => lastUserId),
+      setLastUserId: vi.fn(async (userId: number) => {
+        lastUserId = userId;
+      }),
+      getSessionManifest: vi.fn(async () => manifest),
+      putSessionManifest: vi.fn(async (_userId: number, value: OfflineSessionManifest) => {
+        manifest = structuredClone(value);
+      }),
+      clearUser: vi.fn(async () => undefined),
+      clearGroup: vi.fn(async () => undefined),
+    };
+    const network = {
+      state: signal('connected'),
+      initialize: vi.fn(async () => undefined),
+    };
+    const sync = {
+      syncState: signal('idle'),
+      pendingCount: signal(0),
+      conflicts: signal([]),
+      initialize: vi.fn(async () => undefined),
+      resetSession: vi.fn(async () => undefined),
+      revokeSession: vi.fn(),
+      refreshSession: vi.fn(async () => {
+        const remote = await TestBed.inject(OfflineSessionService).getSession();
+        await Promise.all((remote?.scopes ?? []).map((scope) => pull(scope)));
+      }),
+      refreshLocalSession: vi.fn(async () => undefined),
+      discardAllPending: vi.fn(async () => undefined),
+      flush: vi.fn(async () => undefined),
+    };
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [
+        OfflineCoordinatorService,
+        OfflineSessionService,
+        { provide: OFFLINE_REPOSITORY, useValue: repository },
+        { provide: OfflineNetworkService, useValue: network },
+        { provide: OfflineSyncService, useValue: sync },
+      ],
+    });
+    const coordinator = TestBed.inject(OfflineCoordinatorService);
+
+    await expect(coordinator.prepareRemoteSession(7, [0], 'subject')).resolves.toBe(true);
+    await coordinator.resumeRemoteSession();
+
+    expect(manifest).toMatchObject({ userId: 7, scopeIds: [0], authSubject: 'subject' });
+    expect(pull).toHaveBeenCalledWith({ userId: 7, groupId: 0 });
+  });
 });
