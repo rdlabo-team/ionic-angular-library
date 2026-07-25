@@ -23,7 +23,12 @@ function observeTransport(source: Observable<HttpEvent<unknown>>, network: Offli
   return source.pipe(
     tap({
       next: (event) => {
-        if (event instanceof AngularHttpResponse) network.markApiSuccess();
+        if (!(event instanceof AngularHttpResponse)) return;
+        if (event.headers.get(OFFLINE_RESPONSE_HEADER) === 'local') {
+          network.markApiFailure();
+          return;
+        }
+        network.markApiSuccess();
       },
       error: (error: unknown) => {
         if (isOfflineFallbackError(error)) network.markApiFailure();
