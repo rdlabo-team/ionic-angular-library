@@ -263,6 +263,28 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(navigateAfterResume).not.toHaveBeenCalled();
   });
 
+  it("'user' → does not reclaim a transition started by a synchronous remote-mode subscriber", async () => {
+    const navigateAfterResume = vi.fn();
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => true,
+      resume: async (lease?: KitAuthAccessLease) => {
+        if (lease?.isCurrent()) navigateAfterResume();
+      },
+    }));
+    setup('user', { onAuthorized });
+    const access = TestBed.inject(KitAuthAccessService);
+    const subscription = access.mode$.subscribe((mode) => {
+      if (mode === 'remote') access.clear();
+    });
+
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    subscription.unsubscribe();
+
+    expect(result).toBe(false);
+    expect(navigateAfterResume).not.toHaveBeenCalled();
+    expect(access.mode).toBe('none');
+  });
+
   it("'user' → keeps verified remote access when only phased resume loses transport", async () => {
     const networkError = { status: 0 };
     const onAuthorized = vi.fn(async () => ({

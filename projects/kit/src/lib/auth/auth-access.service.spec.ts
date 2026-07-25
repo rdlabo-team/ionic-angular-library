@@ -96,6 +96,31 @@ describe('KitAuthRecoveryService', () => {
     expect(access.mode).toBe('none');
   });
 
+  it('does not reclaim a transition started by a synchronous remote-mode subscriber', async () => {
+    const userVisibleEffect = vi.fn();
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        reauthenticate: async () => ({
+          activate: async () => true,
+          resume: async (lease) => {
+            if (lease?.isCurrent()) userVisibleEffect();
+          },
+        }),
+      },
+    });
+    access.grantLocal();
+    const subscription = access.mode$.subscribe((mode) => {
+      if (mode === 'remote') access.clear();
+    });
+
+    await recovery.recover();
+    subscription.unsubscribe();
+
+    expect(userVisibleEffect).not.toHaveBeenCalled();
+    expect(access.mode).toBe('none');
+  });
+
   it('coalesces concurrent recovery attempts into one flight', async () => {
     let resolveRecovery: ((value: false) => void) | undefined;
     const reauthenticate = vi.fn(

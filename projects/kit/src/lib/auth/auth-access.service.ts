@@ -107,9 +107,14 @@ export class KitAuthAccessService {
     this.#publish('local');
   }
 
-  /** Publish a remotely authenticated session. */
-  grantRemote(): void {
-    this.#publish('remote');
+  /**
+   * Publish a remotely authenticated session and return the lease that owns that publication.
+   *
+   * The revision is fixed before synchronous `mode$` subscribers run. A subscriber that starts a
+   * newer logout or identity transition therefore makes the returned lease stale.
+   */
+  grantRemote(): KitAuthAccessLease {
+    return this.#publish('remote');
   }
 
   /** Revoke both local and remote access. */
@@ -117,9 +122,11 @@ export class KitAuthAccessService {
     this.#publish('none');
   }
 
-  #publish(mode: KitAuthAccessMode): void {
+  #publish(mode: KitAuthAccessMode): KitAuthAccessLease {
     this.#revision += 1;
+    const revision = this.#revision;
     this.#mode.next(mode);
+    return { isCurrent: () => this.#revision === revision };
   }
 }
 
@@ -219,8 +226,8 @@ export class KitAuthRecoveryService {
     const recovery = this.#config.remoteRecovery;
     if (this.#destroyed || !recovery || this.#access.mode !== 'local') return;
     const lease = this.#access.beginTransition();
-    let expectedRevision = this.#access.revision;
-    const isCurrent = (): boolean => this.#access.revision === expectedRevision;
+    let currentLease = lease;
+    const isCurrent = (): boolean => currentLease.isCurrent();
     try {
       const result = await recovery.reauthenticate(lease);
       if (this.#destroyed || !isCurrent() || this.#access.mode !== 'local') return;
@@ -238,10 +245,8 @@ export class KitAuthRecoveryService {
         return;
       }
       this.#clearRetry();
-      this.#access.grantRemote();
-      const resumeLease = this.#access.beginTransition();
-      expectedRevision = this.#access.revision;
-      await result.resume(resumeLease);
+      currentLease = this.#access.grantRemote();
+      await result.resume(currentLease);
     } catch (error) {
       if (this.#destroyed || !isCurrent()) return;
       if (isExplicitAuthDenial(error)) {
