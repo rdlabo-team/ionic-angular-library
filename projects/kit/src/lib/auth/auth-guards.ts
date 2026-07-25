@@ -350,6 +350,9 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
       if (data === 'unavailable') {
         return resolveUnavailable(authStateError);
       }
+      // `required` / `confirm` are authoritative denials. Revoke a previously verified local
+      // capability before an anonymous-sign-in fallback (if any) is allowed to await.
+      if (!access.suspend(lease)) return false;
       // 既定は false（whenUnauthorized へ）。匿名ログイン等のフォールバックが要るアプリだけ渡す。
       const fallback = onUnauthenticated ? await onUnauthenticated(state, lease) : false;
       if (!lease.isCurrent()) return false;

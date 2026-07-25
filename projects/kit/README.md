@@ -263,6 +263,8 @@ transport. The guard then publishes `remote`, and only then calls `resume()` to 
 realtime work. Returning plain `true` remains supported for applications that do not need phased activation.
 When a protected guard starts a new asynchronous decision, any previously published `remote` capability is
 immediately suspended to `none`; it is granted again only after the current lease completes successfully.
+Once the authority returns `required` or `confirm`, an existing `local` capability is also suspended before any
+anonymous-sign-in fallback runs. Only the `unavailable` path may retain or re-grant verified local access.
 
 **Setup**
 

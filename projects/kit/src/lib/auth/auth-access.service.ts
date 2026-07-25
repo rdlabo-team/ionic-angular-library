@@ -81,6 +81,13 @@ export class KitAuthAccessService {
     return { isCurrent: () => this.#revision === revision };
   }
 
+  /** Revoke published capabilities without invalidating the transition that owns `lease`. */
+  suspend(lease: KitAuthAccessLease): boolean {
+    if (!lease.isCurrent()) return false;
+    if (this.#mode.value !== 'none') this.#mode.next('none');
+    return true;
+  }
+
   /** Publish a verified local-replica-only session. */
   grantLocal(): void {
     this.#publish('local');
