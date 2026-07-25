@@ -218,6 +218,34 @@ describe('bundled email/password flows (uniform hooks + no-throw null/false)', (
     expect(error).toHaveBeenCalledWith(boom);
   });
 
+  it('kitSignOut skips a newer Firebase session that replaces the expected user during before', async () => {
+    const expectedUser = { uid: 'same-uid' };
+    const newerUser = { uid: 'same-uid' };
+    const auth = authWith(expectedUser);
+    const success = vi.fn();
+    const error = vi.fn();
+    const finallyHook = vi.fn();
+
+    const result = await kitSignOut(
+      auth,
+      {
+        before: async () => {
+          (auth as unknown as { currentUser: unknown }).currentUser = newerUser;
+        },
+        success,
+        error,
+        finally: finallyHook,
+      },
+      { expectedUser: expectedUser as unknown as import('firebase/auth').User },
+    );
+
+    expect(result).toBe(false);
+    expect(signOut).not.toHaveBeenCalled();
+    expect(success).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(finallyHook).toHaveBeenCalledOnce();
+  });
+
   it('kitSendEmailVerification is a no-op (still true) when signed out, sends otherwise', async () => {
     expect(await kitSendEmailVerification(authWith(null))).toBe(true);
     expect(sendEmailVerification).not.toHaveBeenCalled();

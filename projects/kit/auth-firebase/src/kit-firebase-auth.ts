@@ -45,6 +45,18 @@ export interface KitAuthHooks {
   finally?: () => void | Promise<unknown>;
 }
 
+/** Optional identity guard evaluated immediately before Firebase sign-out is invoked. */
+export interface KitSignOutOptions {
+  /**
+   * Only sign out when this exact Firebase User object is still current after `before` completes.
+   *
+   * @remarks
+   * A different object is treated as a newer authentication session even when it has the same UID.
+   * A mismatch resolves `false`, skips `success` and `error`, and still runs `finally`.
+   */
+  expectedUser?: User;
+}
+
 /** Run a value-returning op through the {@link KitAuthHooks} lifecycle; resolve `null` on failure. */
 const runAuthFlow = async <T>(op: () => Promise<T>, hooks?: KitAuthHooks): Promise<T | null> => {
   await hooks?.before?.();
@@ -101,7 +113,26 @@ export const kitSignUp = (auth: Auth, email: string, password: string, hooks?: K
  * App-specific cleanup (clearing stores, toasts, navigation, third-party logout) is the caller's,
  * done via the hooks — the kit only owns the Firebase op. `true` on success, `false` on failure.
  */
-export const kitSignOut = (auth: Auth, hooks?: KitAuthHooks): Promise<boolean> => runAuthFlowVoid(() => signOut(auth), hooks);
+export const kitSignOut = async (
+  auth: Auth,
+  hooks?: KitAuthHooks,
+  options?: KitSignOutOptions,
+): Promise<boolean> => {
+  await hooks?.before?.();
+  try {
+    if (options?.expectedUser !== undefined && auth.currentUser !== options.expectedUser) {
+      return false;
+    }
+    await signOut(auth);
+    await hooks?.success?.();
+    return true;
+  } catch (error) {
+    await hooks?.error?.(error);
+    return false;
+  } finally {
+    await hooks?.finally?.();
+  }
+};
 
 /** Send a password-reset email. `true` on success, `false` on failure. */
 export const kitSendPasswordReset = (auth: Auth, email: string, hooks?: KitAuthHooks): Promise<boolean> =>

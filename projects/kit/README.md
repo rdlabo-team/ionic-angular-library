@@ -931,6 +931,7 @@ import {
   kitSignOut,
   kitResolveAuthStatus,
   kitReauthWithRetry,
+  type User,
 } from '@rdlabo/ionic-angular-kit/auth-firebase';
 import { updatePassword } from 'firebase/auth'; // escape hatch for the reauth mutation
 
@@ -956,13 +957,24 @@ export class AuthService {
     }).catch((e) => (this.presentError(e), false));
     if (ok) this.overlay.alertClose({ header: 'Saved', message: '…' });
   }
+
+  // A delayed denial must not sign out a newer Firebase session. Capture the User that owns the
+  // request and pass it as expectedUser; the kit checks object identity after `before` completes
+  // and immediately before invoking Firebase signOut.
+  signOutDeniedSession(expectedUser: User) {
+    return kitSignOut(
+      this.#auth,
+      { before: () => this.clearDeniedSessionTransport() },
+      { expectedUser },
+    );
+  }
 }
 ```
 
 Surface:
 
 - **DI** — `KIT_FIREBASE_AUTH` (`InjectionToken<Auth>`), `provideKitFirebase({ firebaseConfig })`, `provideKitFirebaseAnalytics()`.
-- **Flow functions** (uniform hooks + no-throw null/false) — `kitSignIn`, `kitSignUp` (create + send verification), `kitSignOut`, `kitSendPasswordReset`, `kitSendEmailVerification`, `kitUnlinkProvider`.
+- **Flow functions** (uniform hooks + no-throw null/false) — `kitSignIn`, `kitSignUp` (create + send verification), `kitSignOut`, `kitSendPasswordReset`, `kitSendEmailVerification`, `kitUnlinkProvider`. `kitSignOut(..., { expectedUser })` prevents an old asynchronous denial from signing out a newer Firebase User object.
 - **Mechanics** — `kitReauthWithRetry` (app injects `prompt` / `withLoading` / `mutate`; boolean result, non-wrong-password errors thrown), `kitResolveAuthStatus` (`'user' | 'confirm' | 'required'` from the user; social counts as verified; `allowWhen` bypass), `kitAuthState`, `kitGetIdToken`.
 - **Error dictionary** — `KIT_DEFAULT_AUTH_TEXT` (importable canonical constant; the kit does not present it — the app renders its own alert).
 - **Social** (`@rdlabo/ionic-angular-kit/auth-firebase/social`, separate nested entry to isolate the Capacitor plugins) — `kitFacebookLogin`, `kitAppleLogin`, `kitFacebookLogout`; options carry the same `{ before, success, error, finally }` hooks (`success` receives the identity payload for a backend call).
