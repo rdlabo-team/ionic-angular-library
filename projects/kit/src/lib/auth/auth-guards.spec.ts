@@ -4,7 +4,7 @@ import type { ActivatedRouteSnapshot, RouterStateSnapshot, UrlTree } from '@angu
 import { Router } from '@angular/router';
 import { NavController } from '@ionic/angular/standalone';
 import type { Observable } from 'rxjs';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { throwError } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
 
@@ -56,11 +56,13 @@ function setup(
     ) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>,
     onUnavailable = vi.fn().mockResolvedValue(false) as unknown as (s: RouterStateSnapshot, error?: unknown) => Promise<boolean | UrlTree>,
     isUnavailableError = vi.fn().mockReturnValue(false) as unknown as (error: unknown) => boolean,
+    authState = () => of(state),
   }: {
     onAuthorized?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
     onUnauthenticated?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
     onUnavailable?: (s: RouterStateSnapshot, error?: unknown) => Promise<boolean | UrlTree>;
     isUnavailableError?: (error: unknown) => boolean;
+    authState?: () => Observable<KitAuthGuardState>;
   } = {},
 ) {
   const navigate = vi.fn().mockResolvedValue(true);
@@ -70,7 +72,7 @@ function setup(
     providers: [
       provideZonelessChangeDetection(),
       provideKitAuth(() => ({
-        authState: () => of(state),
+        authState,
         onAuthorized,
         onUnauthenticated,
         onUnavailable,
@@ -120,6 +122,21 @@ describe('kitRequiredUnauthorizedGuard', () => {
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequiredUnauthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
   });
+
+  it('does not let a stale auth-page guard clear or redirect a newer identity', async () => {
+    const authState = new Subject<KitAuthGuardState>();
+    const { navigate } = setup('required', { authState: () => authState });
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequiredUnauthorizedGuard(routeStub, stateStub)));
+    const access = TestBed.inject(KitAuthAccessService);
+    access.beginTransition();
+    access.grantRemote();
+
+    authState.next('required');
+
+    await expect(pending).resolves.toBe(false);
+    expect(access.mode).toBe('remote');
+    expect(navigate).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -158,6 +175,21 @@ describe('kitRequireConfirmingGuard', () => {
     expect(result).toBe(false);
     expect(setDirection).toHaveBeenCalledWith('root');
     expect(navigate).toHaveBeenCalledWith([REDIRECTS.whenNotConfirming]);
+  });
+
+  it('does not let a stale confirming guard clear or redirect a newer identity', async () => {
+    const authState = new Subject<KitAuthGuardState>();
+    const { navigate } = setup('confirm', { authState: () => authState });
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireConfirmingGuard(routeStub, stateStub)));
+    const access = TestBed.inject(KitAuthAccessService);
+    access.beginTransition();
+    access.grantRemote();
+
+    authState.next('confirm');
+
+    await expect(pending).resolves.toBe(false);
+    expect(access.mode).toBe('remote');
+    expect(navigate).not.toHaveBeenCalled();
   });
 });
 

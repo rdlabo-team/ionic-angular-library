@@ -182,10 +182,15 @@ export const kitRequiredUnauthorizedGuard: CanActivateFn = () => {
   const router = inject(Router);
   const navCtrl = inject(NavController);
   const access = inject(KitAuthAccessService);
-  access.beginTransition({ suspendRemote: true });
+  const lease = access.beginTransition({ suspendRemote: true });
 
   return authState().pipe(
+    catchError((error) => {
+      if (lease.isCurrent() && isExplicitAuthDenial(error)) access.clear();
+      return throwError(() => error);
+    }),
     map((data) => {
+      if (!lease.isCurrent()) return false;
       if (data !== 'unavailable') access.clear();
       if (data === 'user') {
         navCtrl.setDirection('root');
@@ -220,10 +225,15 @@ export const kitRequireConfirmingGuard: CanActivateFn = () => {
   const router = inject(Router);
   const navCtrl = inject(NavController);
   const access = inject(KitAuthAccessService);
-  access.beginTransition({ suspendRemote: true });
+  const lease = access.beginTransition({ suspendRemote: true });
 
   return authState().pipe(
+    catchError((error) => {
+      if (lease.isCurrent() && isExplicitAuthDenial(error)) access.clear();
+      return throwError(() => error);
+    }),
     map((data) => {
+      if (!lease.isCurrent()) return false;
       if (data !== 'unavailable') access.clear();
       if (data === 'confirm') {
         return true;
