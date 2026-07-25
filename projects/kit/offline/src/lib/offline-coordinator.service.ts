@@ -72,6 +72,7 @@ export class OfflineCoordinatorService {
   }
 
   clearActiveSession(): Promise<void> {
+    this.#sync.revokeSession();
     this.#session.revokeAccess();
     ++this.#transitionRevision;
     return this.#enqueueTransition(async () => {

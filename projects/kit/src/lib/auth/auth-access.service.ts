@@ -1,4 +1,4 @@
-import { ErrorHandler, inject, Injectable, InjectionToken } from '@angular/core';
+import { DestroyRef, ErrorHandler, inject, Injectable, InjectionToken } from '@angular/core';
 import type { Observable } from 'rxjs';
 import { BehaviorSubject, Subscription } from 'rxjs';
 
@@ -121,10 +121,20 @@ export class KitAuthRecoveryService {
   readonly #access = inject(KitAuthAccessService);
   readonly #config = inject(KIT_AUTH_RECOVERY_CONFIG);
   readonly #errorHandler = inject(ErrorHandler);
+  readonly #destroyRef = inject(DestroyRef);
   #subscription: Subscription | null = null;
   #recovery: Promise<void> | null = null;
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #available = false;
+  #retryRequested = false;
+
+  constructor() {
+    this.#destroyRef.onDestroy(() => {
+      this.#clearRetry();
+      this.#subscription?.unsubscribe();
+      this.#subscription = null;
+    });
+  }
 
   /** Subscribe to the configured remote-availability stream once. */
   initialize(): void {
@@ -162,9 +172,21 @@ export class KitAuthRecoveryService {
 
   /** Run one ordered remote recovery attempt, coalescing concurrent triggers. */
   recover(): Promise<void> {
-    if (this.#recovery) return this.#recovery;
+    if (this.#recovery) {
+      if (this.#access.mode === 'local') this.#retryRequested = true;
+      return this.#recovery;
+    }
     const promise = this.#runRecovery().finally(() => {
-      if (this.#recovery === promise) this.#recovery = null;
+      if (this.#recovery !== promise) return;
+      this.#recovery = null;
+      if (!this.#retryRequested) return;
+      this.#retryRequested = false;
+      if (this.#access.mode !== 'local') return;
+      if (this.#available) {
+        void this.recover();
+      } else {
+        this.#scheduleRetry();
+      }
     });
     this.#recovery = promise;
     return promise;
@@ -180,16 +202,19 @@ export class KitAuthRecoveryService {
       const result = await recovery.reauthenticate(lease);
       if (!isCurrent() || this.#access.mode !== 'local') return;
       if (result === false) {
+        this.#clearRetry();
         this.#access.clear();
         return;
       }
       if (!(await result.activate(lease)) || !isCurrent() || this.#access.mode !== 'local') return;
+      this.#clearRetry();
       this.#access.grantRemote();
       expectedRevision = this.#access.revision;
       await result.resume();
     } catch (error) {
       if (!isCurrent()) return;
       if (isExplicitAuthDenial(error)) {
+        this.#clearRetry();
         this.#access.clear();
       } else if (this.#config.isUnavailableError?.(error)) {
         this.#scheduleRetry();
@@ -205,13 +230,18 @@ export class KitAuthRecoveryService {
     this.#retryTimer = setTimeout(() => {
       this.#retryTimer = null;
       if (this.#access.mode === 'local') void this.recover();
-    }, recovery.retryDelayMs ?? 30_000);
+    }, this.#retryDelayMs(recovery.retryDelayMs));
   }
 
   #clearRetry(): void {
     if (!this.#retryTimer) return;
     clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
+  }
+
+  #retryDelayMs(configured: number | undefined): number {
+    if (configured === undefined || !Number.isFinite(configured)) return 30_000;
+    return Math.max(1_000, configured);
   }
 }
 

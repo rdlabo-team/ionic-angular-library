@@ -47,6 +47,7 @@ describe('OfflineCoordinatorService', () => {
       conflicts: signal([]),
       initialize: vi.fn(async () => undefined),
       resetSession: vi.fn(async () => void order.push('reset')),
+      revokeSession: vi.fn(() => void order.push('revoke-sync')),
       refreshSession: vi.fn(async () => void order.push('resume-remote')),
       refreshLocalSession: vi.fn(async () => void order.push('refresh-local')),
       discardAllPending: vi.fn(async () => undefined),
@@ -123,11 +124,12 @@ describe('OfflineCoordinatorService', () => {
   });
 
   it('revokes runtime local access synchronously before queued durable cleanup', async () => {
-    const { coordinator, session } = setup();
+    const { coordinator, session, sync } = setup();
 
     const clearing = coordinator.clearActiveSession();
 
     expect(session.revokeAccess).toHaveBeenCalledOnce();
+    expect(sync.revokeSession).toHaveBeenCalledOnce();
     await clearing;
   });
 
