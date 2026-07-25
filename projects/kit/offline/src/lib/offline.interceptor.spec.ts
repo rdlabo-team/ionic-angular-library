@@ -51,10 +51,10 @@ describe('offlineInterceptor', () => {
     expect(markApiFailure).toHaveBeenCalledOnce();
   });
 
-  it('403/500はlocal replicaで隠さない', async () => {
+  it('401/403/500はlocal replicaで隠さない', async () => {
     const readLocal = vi.fn();
     resolve.mockReturnValue({ kind: 'read', readLocal });
-    for (const status of [403, 500]) {
+    for (const status of [401, 403, 500]) {
       const error = new HttpErrorResponse({ status });
       await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), () => throwError(() => error)))).rejects.toBe(error);
     }

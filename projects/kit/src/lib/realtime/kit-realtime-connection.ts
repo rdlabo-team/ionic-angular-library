@@ -1,9 +1,10 @@
 import { App } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { Network } from '@capacitor/network';
-import { Injectable } from '@angular/core';
+import { Injectable, Optional } from '@angular/core';
 import type { Observable } from 'rxjs';
-import { Subject } from 'rxjs';
+import { Subject, Subscription } from 'rxjs';
+import { KitAuthAccessService } from '../auth/auth-access.service';
 
 /** One WebSocket endpoint and its ordered subprotocol list. URLs must be unique within a target set. */
 export interface KitRealtimeSocketTarget {
@@ -28,6 +29,8 @@ export interface KitRealtimeConnectionOptions {
   openTimeoutMs?: number;
   pingIntervalMs?: number;
   livenessTimeoutMs?: number;
+  /** Require shared `remote` auth access before opening or retaining sockets. */
+  requireRemoteAccess?: boolean;
 }
 
 interface SocketHealth {
@@ -120,6 +123,11 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   #isNetworkConnected = true;
   #lifecycleRegistration: Promise<void> | null = null;
   #lifecycleGeneration = 0;
+  #accessSubscription: Subscription | null = null;
+
+  // Constructor injection keeps direct `new` compatibility for existing subclasses and tests.
+  // eslint-disable-next-line @angular-eslint/prefer-inject
+  constructor(@Optional() private readonly authAccess: KitAuthAccessService | null = null) {}
 
   /** All parsed events received by this connection. */
   readonly events$: Observable<KitClientRealtimeEvent<TEvent>> = this.#events$.asObservable();
@@ -141,6 +149,7 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
       openTimeoutMs: options.openTimeoutMs ?? 15_000,
       pingIntervalMs: options.pingIntervalMs ?? 30_000,
       livenessTimeoutMs: options.livenessTimeoutMs ?? 70_000,
+      requireRemoteAccess: options.requireRemoteAccess ?? false,
     };
   }
 
@@ -170,7 +179,8 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   protected abstract buildSocketTargets(): Promise<KitRealtimeSocketTarget[]>;
 
   get #canOpen(): boolean {
-    return this.shouldConnect && this.#isAppActive && this.#isNetworkConnected;
+    const hasRemoteAccess = !this.#options.requireRemoteAccess || (this.authAccess !== null && this.authAccess.mode === 'remote');
+    return this.shouldConnect && this.#isAppActive && this.#isNetworkConnected && hasRemoteAccess;
   }
 
   /** Hook used by authenticated clients to invalidate a token after handshake failure. */
@@ -264,6 +274,7 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
 
   /** Register lifecycle listeners and establish the currently requested targets. */
   protected async startConnection(): Promise<void> {
+    this.#registerAccessListener();
     await this.registerLifecycleListeners();
     if (!this.shouldConnect) {
       this.removeLifecycleListeners();
@@ -277,6 +288,8 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
     this.resetConnectionState();
     this.suspend();
     this.removeLifecycleListeners();
+    this.#accessSubscription?.unsubscribe();
+    this.#accessSubscription = null;
   }
 
   /** Rebuild targets while preserving the owning session's connection intent and listeners. */
@@ -373,6 +386,17 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
         this.#opening = false;
       }
     }
+  }
+
+  #registerAccessListener(): void {
+    if (!this.#options.requireRemoteAccess || !this.authAccess || this.#accessSubscription) return;
+    this.#accessSubscription = this.authAccess.mode$.subscribe((mode) => {
+      if (mode === 'remote' && this.#canOpen) {
+        void this.open();
+      } else {
+        this.suspend();
+      }
+    });
   }
 
   #connectionFailed(generation: number, socket: WebSocket): void {

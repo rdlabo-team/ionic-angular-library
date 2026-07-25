@@ -4,7 +4,7 @@ A small ergonomic kit for Ionic Angular applications. It provides:
 
 - **KitStorageService** — a typed, write-loss-safe wrapper around `@ionic/storage-angular`
 - **KitOverlayController** — a unified presenter for Ionic Modal, Toast, and Alert
-- **Auth guards** — functional `CanActivateFn` guards for a 4-state auth model
+- **Auth guards** — functional guards plus shared `none` / `local` / `remote` runtime access
 - **HTTP interceptor** — a fleet-canonical auth + retry + error-hook interceptor
 - **KitRealtimeConnection** — foreground/network-aware Hibernation WebSocket reconnect and resync
 - **KitAuthInputDirective** — sign-in email remember/prefill + iOS autofill workaround for `ion-input`
@@ -59,6 +59,8 @@ authentication and the stable `KIT_REALTIME_CLIENT_ID` through WebSocket subprot
 putting credentials in the URL.
 
 Domain event types, authorization, room selection, and REST resync behavior remain in the app.
+Offline-capable authenticated clients set `requireRemoteAccess: true` in `realtimeOptions`; sockets then close on
+`local` / `none` and reopen only after `KitAuthAccessService` publishes `remote`.
 
 ---
 
@@ -227,16 +229,42 @@ This centralizes presentation options, keeps component props and dismiss data ty
 
 ### Auth guards + provideKitAuth
 
-Functional `CanActivateFn` guards for a four-state auth model:
+Functional `CanActivateFn` guards for a five-state auth model:
 
-| State         | Meaning                                              |
-| ------------- | ---------------------------------------------------- |
-| `'user'`      | Fully authenticated                                  |
-| `'confirm'`   | Authenticated but email confirmation pending         |
-| `'required'`  | Not authenticated                                    |
-| `'anonymous'` | Anonymous login active (can be prompted to register) |
+| State           | Meaning                                                  |
+| --------------- | -------------------------------------------------------- |
+| `'user'`        | Fully authenticated                                      |
+| `'confirm'`     | Authenticated but email confirmation pending             |
+| `'required'`    | Not authenticated                                        |
+| `'anonymous'`   | Anonymous login active (can be prompted to register)     |
+| `'unavailable'` | The authentication authority cannot currently be reached |
 
-**Convention:** every redirect path is supplied via `provideKitAuth`; the kit does not hard-code any routes. `authState` and `redirects` are required. The app-specific hooks `onAuthorized` / `onUnauthenticated` are **optional** and default to `true` (allow the authenticated user through) / `false` (fall through to the `whenUnauthorized` redirect), so an app only supplies the ones with real logic.
+**Convention:** every redirect path is supplied via `provideKitAuth`; the kit does not hard-code any routes.
+`authState` and `redirects` are required. The app-specific hooks `onAuthorized`, `onUnauthenticated`, and
+`onUnavailable` are optional. An authenticated user is allowed by default; unauthenticated and unavailable states
+redirect by default.
+
+`'required'` is an authoritative signed-out result. It must never be converted into offline access.
+`'unavailable'` means the authentication authority could not produce a result. Likewise,
+`isUnavailableError` must classify transport failures only; HTTP 401/403 are explicit denials and must return
+`false`. `onUnavailable` authorizes the route for local-replica use only—it does not create an HTTP or realtime
+credential.
+
+`KitAuthAccessService` is the authoritative capability state for the rest of the application:
+
+| Access mode | Local replica / outbox | Authenticated HTTP / realtime / sync |
+| ----------- | ---------------------- | ------------------------------------ |
+| `none`      | blocked                | blocked                              |
+| `local`     | allowed                | blocked                              |
+| `remote`    | allowed                | allowed                              |
+
+Remote activation has two ordered phases. `activate()` installs the remotely verified identity without starting
+transport. The guard then publishes `remote`, and only then calls `resume()` to start pull, outbox replay, and
+realtime work. Returning plain `true` remains supported for applications that do not need phased activation.
+When a protected guard starts a new asynchronous decision, any previously published `remote` capability is
+immediately suspended to `none`; it is granted again only after the current lease completes successfully.
+Once the authority returns `required` or `confirm`, an existing `local` capability is also suspended before any
+anonymous-sign-in fallback runs. Only the `unavailable` path may retain or re-grant verified local access.
 
 **Setup**
 
@@ -257,10 +285,38 @@ export const appConfig: ApplicationConfig = {
           whenUnauthorized: '/auth', // kitRequireAuthorizedGuard
         },
         // onAuthorized / onUnauthenticated omitted → defaults (allow / redirect).
-        // Supply onAuthorized only when 'user' needs extra work (token login, permissions):
-        // onAuthorized: async () => { await auth.refreshToken(); return true; },
+        // Supply onAuthorized only when 'user' needs extra work. A phased result is preferred when
+        // activating the offline runtime:
+        // onAuthorized: async () => {
+        //   const session = await auth.exchangeCredential();
+        //   return {
+        //     activate: (lease) => offline.prepareRemoteSession(
+        //       session.userId, session.groupIds, session.subject, lease,
+        //     ),
+        //     resume: () => offline.resumeRemoteSession(),
+        //   };
+        // },
         // Supply onUnauthenticated only for a fallback such as anonymous sign-in:
         // onUnauthenticated: async () => { await auth.signInAnonymously(); return true; },
+        // Supply onUnavailable only for a previously verified local replica:
+        // onUnavailable: async (_state, _error, lease) =>
+        //   (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
+        // isUnavailableError: (error) => isOfflineFallbackError(error),
+        // Optionally recover automatically after the authority is reachable again:
+        // remoteRecovery: {
+        //   availability: () => auth.authorityAvailable$,
+        //   reauthenticate: async () => {
+        //     const session = await auth.tryExchangeCredential();
+        //     return session
+        //       ? {
+        //           activate: (lease) => offline.prepareRemoteSession(
+        //             session.userId, session.groupIds, session.subject, lease,
+        //           ),
+        //           resume: () => offline.resumeRemoteSession(),
+        //         }
+        //       : false;
+        //   },
+        // },
       };
     }),
   ],
@@ -340,6 +396,54 @@ executor through `provideOffline(...)`.
 Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
 Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
 primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
+
+For cold-start offline route access, `OfflineCoordinatorService.activateOfflineSession()` restores only a manifest
+that is bound to a non-null authentication-provider subject. Supplying a currently known subject also rejects a
+different user on a shared device. It activates local replica writes and durable outbox enqueue, but remote pull and
+command replay remain disabled until online authentication completes the ordered
+`prepareRemoteSession(...)` → publish `remote` → `resumeRemoteSession()` transition. `activateSession(...)` remains
+available as a backward-compatible one-step API for callers that do not enforce shared access mode.
+Explicit sign-out must first call `KitAuthAccessService.clear()` and then await `clearActiveSession()`. The first
+step immediately invalidates every in-flight auth lease; the second serializes cleanup after local persistence
+already in progress and removes the manifest and user replica.
+
+```ts
+provideKitAuth(() => {
+  const offline = inject(OfflineCoordinatorService);
+  return {
+    authState: () => auth.state$,
+    onAuthorized: async () => {
+      const session = await auth.exchangeCredential();
+      return {
+        activate: (lease) => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
+        resume: () => offline.resumeRemoteSession(),
+      };
+    },
+    onUnavailable: async (_state, _error, lease) =>
+      (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
+    isUnavailableError: isOfflineFallbackError,
+    remoteRecovery: {
+      availability: () => auth.authorityAvailable$,
+      reauthenticate: async () => {
+        const session = await auth.tryExchangeCredential();
+        return session
+          ? {
+              activate: (lease) =>
+                offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
+              resume: () => offline.resumeRemoteSession(),
+            }
+          : false;
+      },
+    },
+    redirects,
+  };
+});
+```
+
+Register `offlineInterceptor` before `kitAuthInterceptor`. In local mode the auth interceptor synthesizes a
+transport-unavailable error before generating credentials or touching the network; the outer offline interceptor
+may then serve a matched `GET` from the replica. In `none` mode the same request is rejected and no local data is
+returned.
 
 The offline interceptor observes real transport responses to update API reachability. For matched `GET`
 requests only, a transport failure with `status=0` may return a local replica response tagged
@@ -541,6 +645,9 @@ export const appConfig: ApplicationConfig = {
       const auth = inject(AuthService);
       const reload = inject(KitReloadAlertController);
       return {
+        // Required for the new offline auth boundary. Kept opt-in so existing applications retain
+        // their current interceptor behavior until they wire KitAuthAccessService.
+        enforceAuthAccessMode: true,
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
@@ -561,13 +668,20 @@ export const appConfig: ApplicationConfig = {
 };
 ```
 
+For an offline replica, use
+`withInterceptors([offlineInterceptor, kitAuthInterceptor])` in that order. Authentication/bootstrap endpoints that
+must run before `remote` is granted must be explicitly covered by `bypass`; do not globally relax
+`enforceAuthAccessMode`.
+
 **Error dispatch** (after retries, in `catchError`):
 
-1. `offlineFallback` non-null → return fallback observable (no further hooks called)
-2. `401` → `onUnauthorized` · `403` → `onForbidden`
-3. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
-4. `400/422/500` with `error.message` → `onServerError`
-5. anything else (`404`, …) → not handled here; the caller decides
+1. With `enforceAuthAccessMode`, `401` / `403` → revoke access, notify the matching hook, and reject
+   without consulting `offlineFallback`
+2. Otherwise, `offlineFallback` non-null → return fallback observable (no further hooks called)
+3. `401` → `onUnauthorized` · `403` → `onForbidden`
+4. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
+5. `400/422/500` with `error.message` → `onServerError`
+6. anything else (`404`, …) → not handled here; the caller decides
 
 Plus: a `getAuthHeaders` rejection → `onAuthError(request, error)` (the request is never sent).
 
