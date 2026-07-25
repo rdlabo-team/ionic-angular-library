@@ -34,6 +34,7 @@ export {
 } from './kit-firebase-auth';
 export type {
   KitAuthHooks,
+  KitSignOutOptions,
   KitAuthStatus,
   KitResolveAuthStatusOptions,
   KitReauthWithRetryOptions,
