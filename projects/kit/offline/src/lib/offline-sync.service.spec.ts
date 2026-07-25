@@ -44,6 +44,7 @@ describe('OfflineSyncService', () => {
   let session: { userId: number; scopes: OfflineScope[] } | null;
   let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
   let beforePutCommand: ((command: OfflineCommand) => Promise<void>) | null;
+  let beforeGetReplicaRow: (() => Promise<void>) | null;
   let pull: ReturnType<typeof vi.fn<(scope: OfflineScope) => Promise<void>>>;
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
   const execute = vi.fn(
@@ -57,6 +58,7 @@ describe('OfflineSyncService', () => {
     session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
     localSession = undefined;
     beforePutCommand = null;
+    beforeGetReplicaRow = null;
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
     execute.mockReset();
@@ -81,13 +83,15 @@ describe('OfflineSyncService', () => {
       removeCommand: vi.fn(async (commandId: string) => {
         commands = commands.filter((item) => item.commandId !== commandId);
       }),
-      getReplicaRow: vi.fn(
-        async (scope: OfflineScope, sourceKey: string, localId: string) =>
+      getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, localId: string) => {
+        await beforeGetReplicaRow?.();
+        return (
           rows.find(
             (item) =>
               item.userId === scope.userId && item.groupId === scope.groupId && item.sourceKey === sourceKey && item.localId === localId,
-          ) ?? null,
-      ),
+          ) ?? null
+        );
+      }),
       getReplicaRowByServerId: vi.fn(
         async (scope: OfflineScope, sourceKey: string, serverId: number) =>
           rows.find(
@@ -170,6 +174,65 @@ describe('OfflineSyncService', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(commands).toHaveLength(1);
     expect(service.pendingCount()).toBe(1);
+  });
+
+  it('session失効前に開始したenqueueを永続commitせずreset完了まで直列化する', async () => {
+    let releaseRead: (() => void) | undefined;
+    let readStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    beforeGetReplicaRow = async () => {
+      readStarted?.();
+      await gate;
+    };
+
+    const enqueue = service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: 'revoked',
+        operation: 'documents.create',
+        payload: { title: 'stale' },
+        optimisticValue: { id: 0, title: 'stale' },
+      },
+      { flush: false },
+    );
+    await started;
+
+    service.revokeSession();
+    const reset = service.resetSession();
+    releaseRead?.();
+
+    await expect(enqueue).rejects.toThrow('Offline session changed');
+    await reset;
+    expect(rows).toEqual([]);
+    expect(commands).toEqual([]);
+  });
+
+  it('旧flushが失敗してもresetを中断せずdurable cleanupへ進める', async () => {
+    const pullError = new Error('pull failed during revocation');
+    let rejectPull: ((error: unknown) => void) | undefined;
+    pull.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPull = reject;
+        }),
+    );
+    connected.set(true);
+    const flush = service.flush();
+    const flushRejected = expect(flush).rejects.toBe(pullError);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledOnce());
+
+    const reset = service.resetSession();
+    rejectPull?.(pullError);
+
+    await flushRejected;
+    await expect(reset).resolves.toBeUndefined();
+    expect(service.pendingCount()).toBe(0);
   });
 
   it('同じaggregateの操作を作成順に送り、成功後だけoutboxから除く', async () => {
@@ -505,12 +568,13 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     const oldFlush = service.flush();
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
-    await service.resetSession();
+    const reset = service.resetSession();
+    resolveExecute({ response: null, serverRevision: 2 });
+    await reset;
     commands = commands.filter((command) => command.userId !== 1);
     connected.set(false);
     session = { userId: 2, scopes: [{ userId: 2, groupId: 20 }] };
     await service.refreshSession();
-    resolveExecute({ response: null, serverRevision: 2 });
     await oldFlush;
     expect(execute).toHaveBeenCalledOnce();
     expect(commands.some((command) => command.userId === 1)).toBe(false);
@@ -534,10 +598,11 @@ describe('OfflineSyncService', () => {
     const oldFlush = service.flush();
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
     connected.set(false);
-    await service.resetSession();
+    const reset = service.resetSession();
+    resolveFirst({ response: null });
+    await reset;
     await service.refreshSession();
     expect(service.pendingCommands()[0]?.state).toBe('pending');
-    resolveFirst({ response: null });
     await oldFlush;
     connected.set(true);
     await service.flush();

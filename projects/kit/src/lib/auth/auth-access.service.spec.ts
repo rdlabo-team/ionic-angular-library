@@ -99,6 +99,165 @@ describe('KitAuthRecoveryService', () => {
     expect(access.mode).toBe('none');
   });
 
+  it('retries authentication while local access remains active even without a new availability event', async () => {
+    vi.useFakeTimers();
+    const availability = new Subject<boolean>();
+    const transportError = { status: 0 };
+    const reauthenticate = vi
+      .fn()
+      .mockRejectedValueOnce(transportError)
+      .mockResolvedValueOnce({
+        activate: async () => true,
+        resume: async () => undefined,
+      });
+    const { access, recovery } = setup({
+      remoteRecovery: { availability: () => availability, retryDelayMs: 1000, reauthenticate },
+      isUnavailableError: (error) => error === transportError,
+    });
+    recovery.initialize();
+    access.grantLocal();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reauthenticate).toHaveBeenCalledTimes(1);
+    expect(access.mode).toBe('local');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reauthenticate).toHaveBeenCalledTimes(2);
+    expect(access.mode).toBe('remote');
+    vi.useRealTimers();
+  });
+
+  it('does not bypass retryDelay for coalesced recovery calls in the same access revision', async () => {
+    vi.useFakeTimers();
+    const availability = new Subject<boolean>();
+    let rejectOld: ((error: unknown) => void) | undefined;
+    const reauthenticate = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectOld = reject;
+          }),
+      )
+      .mockRejectedValue({ status: 0 });
+    const { access, recovery } = setup({
+      remoteRecovery: { availability: () => availability, retryDelayMs: 1_000, reauthenticate },
+      isUnavailableError: (error) => (error as { status?: number })?.status === 0,
+    });
+    recovery.initialize();
+    access.grantLocal();
+    availability.next(true);
+    const first = recovery.recover();
+    availability.next(true);
+    recovery.recover();
+    rejectOld?.({ status: 0 });
+    await first;
+
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reauthenticate).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it('reruns recovery for a newer local transition after the stale single flight settles', async () => {
+    const availability = new Subject<boolean>();
+    let releaseOld: (() => void) | undefined;
+    const oldGate = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const reauthenticate = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await oldGate;
+        return {
+          activate: async () => true,
+          resume: async () => undefined,
+        };
+      })
+      .mockResolvedValueOnce({
+        activate: async () => true,
+        resume: async () => undefined,
+      });
+    const { access, recovery } = setup({
+      remoteRecovery: { availability: () => availability, reauthenticate },
+    });
+    recovery.initialize();
+    access.grantLocal();
+    availability.next(true);
+    await Promise.resolve();
+
+    access.grantLocal();
+    releaseOld?.();
+    await vi.waitFor(() => expect(reauthenticate).toHaveBeenCalledTimes(2));
+    await recovery.recover();
+
+    expect(access.mode).toBe('remote');
+  });
+
+  it.each([
+    [0, 1_000],
+    [-1, 1_000],
+    [Number.NaN, 30_000],
+    [Number.POSITIVE_INFINITY, 30_000],
+  ])(
+    'clamps invalid retryDelayMs %s instead of creating an immediate retry loop',
+    async (retryDelayMs, expectedDelayMs) => {
+      vi.useFakeTimers();
+      const reauthenticate = vi.fn().mockRejectedValue({ status: 0 });
+      const { access, recovery } = setup({
+        remoteRecovery: {
+          availability: () => new Subject<boolean>(),
+          retryDelayMs,
+          reauthenticate,
+        },
+        isUnavailableError: () => true,
+      });
+      recovery.initialize();
+      access.grantLocal();
+
+      await vi.advanceTimersByTimeAsync(expectedDelayMs - 1);
+      expect(reauthenticate).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(reauthenticate).toHaveBeenCalledOnce();
+      vi.useRealTimers();
+    },
+  );
+
+  it('does not resume or recreate a retry timer after destruction settles an in-flight recovery', async () => {
+    vi.useFakeTimers();
+    let rejectRecovery: ((error: unknown) => void) | undefined;
+    const activate = vi.fn(async () => true);
+    const reauthenticate = vi.fn(
+      () =>
+        new Promise<KitRemoteAccessRecovery>((_resolve, reject) => {
+          rejectRecovery = reject;
+        }),
+    );
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        retryDelayMs: 1_000,
+        reauthenticate,
+      },
+      isUnavailableError: () => true,
+    });
+    recovery.initialize();
+    access.grantLocal();
+    const pending = recovery.recover();
+
+    TestBed.resetTestingModule();
+    rejectRecovery?.({ status: 0 });
+    await pending;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    expect(activate).not.toHaveBeenCalled();
+    expect(access.mode).toBe('local');
+    vi.useRealTimers();
+  });
+
   it('does not restore remote access after a newer access transition invalidates recovery', async () => {
     let resolveReauthentication: ((value: KitRemoteAccessRecovery) => void) | undefined;
     const activate = vi.fn(async () => true);

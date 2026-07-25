@@ -98,6 +98,12 @@ export class OfflineSessionService {
     this.#remoteActivatedThisRun = false;
   }
 
+  /** Immediately revoke local and remote runtime access while durable cleanup is pending. */
+  revokeAccess(): void {
+    this.#localAccessThisRun = false;
+    this.#remoteActivatedThisRun = false;
+  }
+
   /** Disable remote pull/replay eligibility while retaining the verified local manifest. */
   async suspendRemoteSession(): Promise<void> {
     await this.initialize();
@@ -134,10 +140,7 @@ export class OfflineSessionService {
    * @param authSubject - A currently known provider subject. When supplied, it must match the
    * persisted subject.
    */
-  async activateOfflineSession(
-    authSubject?: string | null,
-    lease?: OfflineSessionTransitionLease,
-  ): Promise<OfflineSessionManifest | null> {
+  async activateOfflineSession(authSubject?: string | null, lease?: OfflineSessionTransitionLease): Promise<OfflineSessionManifest | null> {
     const manifest = await this.getOfflineAccessManifest(authSubject);
     if (lease && !lease.isCurrent()) return null;
     this.#localAccessThisRun = manifest !== null;

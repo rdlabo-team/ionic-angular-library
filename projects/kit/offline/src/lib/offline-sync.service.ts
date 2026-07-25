@@ -56,6 +56,7 @@ export class OfflineSyncService {
   readonly #knownScopes = new Map<string, OfflineScope>();
   #activeUserId: number | null = null;
   #flushPromise: Promise<void> | null = null;
+  readonly #flushTransitions = new Set<Promise<void>>();
   #generation = 0;
   readonly #sendingTransitions = new Set<Promise<void>>();
   #enqueueTail: Promise<void> = Promise.resolve();
@@ -120,7 +121,8 @@ export class OfflineSyncService {
   }
 
   async resetSession(): Promise<void> {
-    this.#invalidateFlush();
+    this.revokeSession();
+    await Promise.allSettled([this.#enqueueTail, ...this.#flushTransitions]);
     await this.#waitForSendingTransitions();
     await this.#restoreInterruptedCommands();
     this.#activeUserId = null;
@@ -129,8 +131,14 @@ export class OfflineSyncService {
     this.#scheduleRetry(null);
   }
 
+  /** Synchronously invalidate in-flight enqueue and transport work owned by the current session. */
+  revokeSession(): void {
+    this.#invalidateFlush();
+  }
+
   enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean } = {}): Promise<string> {
-    const enqueue = this.#enqueueTail.then(() => this.#enqueue(request, options));
+    const generation = this.#generation;
+    const enqueue = this.#enqueueTail.then(() => this.#enqueue(request, options, generation));
     this.#enqueueTail = enqueue.then(
       () => undefined,
       () => undefined,
@@ -138,7 +146,7 @@ export class OfflineSyncService {
     return enqueue;
   }
 
-  async #enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean }): Promise<string> {
+  async #enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean }, generation: number): Promise<string> {
     await this.initialize();
     const session = await this.#getLocalSession();
     if (!session) throw new Error('Cannot enqueue an offline command without an authenticated user');
@@ -186,6 +194,9 @@ export class OfflineSyncService {
       fetchedAt: Date.now(),
       syncState: 'pending',
     };
+    if (generation !== this.#generation) {
+      throw new Error('Offline session changed before the command could be persisted');
+    }
     await this.#repository.transactReplica({ putRows: [optimisticRow], putCommands: [command] });
     await this.#refreshState();
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
@@ -223,9 +234,11 @@ export class OfflineSyncService {
     if (this.#flushPromise) return this.#flushPromise;
     const generation = this.#generation;
     const promise = this.#runFlush(generation).finally(() => {
+      this.#flushTransitions.delete(promise);
       if (this.#flushPromise === promise) this.#flushPromise = null;
     });
     this.#flushPromise = promise;
+    this.#flushTransitions.add(promise);
     return promise;
   }
 

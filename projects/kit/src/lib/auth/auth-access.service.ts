@@ -1,6 +1,6 @@
-import { ErrorHandler, inject, Injectable, InjectionToken } from '@angular/core';
-import type { Observable, Subscription } from 'rxjs';
-import { BehaviorSubject } from 'rxjs';
+import { DestroyRef, ErrorHandler, inject, Injectable, InjectionToken } from '@angular/core';
+import type { Observable } from 'rxjs';
+import { BehaviorSubject, Subscription } from 'rxjs';
 
 /** Access level currently granted to the application runtime. */
 export type KitAuthAccessMode = 'none' | 'local' | 'remote';
@@ -35,6 +35,12 @@ export interface KitAuthRecoveryConfig {
   isUnavailableError?(error: unknown): boolean;
   /** Optional online-recovery lifecycle used after local-only route access. */
   remoteRecovery?: {
+    /**
+     * Delay before probing authentication again while local access remains active.
+     *
+     * @defaultValue 30000
+     */
+    retryDelayMs?: number;
     availability(): Observable<boolean>;
     reauthenticate(lease: KitAuthAccessLease): Promise<KitRemoteAccessRecovery | false>;
   };
@@ -115,26 +121,87 @@ export class KitAuthRecoveryService {
   readonly #access = inject(KitAuthAccessService);
   readonly #config = inject(KIT_AUTH_RECOVERY_CONFIG);
   readonly #errorHandler = inject(ErrorHandler);
+  readonly #destroyRef = inject(DestroyRef);
   #subscription: Subscription | null = null;
   #recovery: Promise<void> | null = null;
+  #recoveryRevision: number | null = null;
+  #retryTimer: ReturnType<typeof setTimeout> | null = null;
+  #available = false;
+  #retryRequested = false;
+  #destroyed = false;
+
+  constructor() {
+    this.#destroyRef.onDestroy(() => {
+      this.#destroyed = true;
+      this.#clearRetry();
+      this.#subscription?.unsubscribe();
+      this.#subscription = null;
+    });
+  }
 
   /** Subscribe to the configured remote-availability stream once. */
   initialize(): void {
+    if (this.#destroyed) return;
     const recovery = this.#config.remoteRecovery;
     if (!recovery || this.#subscription) return;
-    this.#subscription = recovery.availability().subscribe({
-      next: (available) => {
-        if (available && this.#access.mode === 'local') void this.recover();
-      },
-      error: (error) => this.#errorHandler.handleError(error),
-    });
+    this.#subscription = new Subscription();
+    this.#subscription.add(
+      recovery.availability().subscribe({
+        next: (available) => {
+          this.#available = available;
+          if (available && this.#access.mode === 'local') {
+            this.#clearRetry();
+            void this.recover();
+          } else if (this.#access.mode === 'local') {
+            this.#scheduleRetry();
+          }
+        },
+        error: (error) => this.#errorHandler.handleError(error),
+      }),
+    );
+    this.#subscription.add(
+      this.#access.mode$.subscribe((mode) => {
+        if (mode !== 'local') {
+          this.#clearRetry();
+          return;
+        }
+        if (this.#available) {
+          void this.recover();
+        } else {
+          this.#scheduleRetry();
+        }
+      }),
+    );
   }
 
   /** Run one ordered remote recovery attempt, coalescing concurrent triggers. */
   recover(): Promise<void> {
-    if (this.#recovery) return this.#recovery;
-    const promise = this.#runRecovery().finally(() => {
-      if (this.#recovery === promise) this.#recovery = null;
+    if (this.#destroyed) return Promise.resolve();
+    if (this.#recovery) {
+      if (
+        this.#access.mode === 'local' &&
+        this.#recoveryRevision !== null &&
+        this.#access.revision > this.#recoveryRevision
+      ) {
+        this.#retryRequested = true;
+      }
+      return this.#recovery;
+    }
+    const running = this.#runRecovery();
+    this.#recoveryRevision = this.#access.revision;
+    const promise = running.finally(() => {
+      if (this.#recovery !== promise) return;
+      this.#recovery = null;
+      this.#recoveryRevision = null;
+      if (this.#destroyed) return;
+      if (!this.#retryRequested) return;
+      this.#retryRequested = false;
+      if (this.#access.mode !== 'local') return;
+      if (this.#available) {
+        void this.recover();
+      } else {
+        this.#scheduleRetry();
+      }
     });
     this.#recovery = promise;
     return promise;
@@ -142,29 +209,61 @@ export class KitAuthRecoveryService {
 
   async #runRecovery(): Promise<void> {
     const recovery = this.#config.remoteRecovery;
-    if (!recovery || this.#access.mode !== 'local') return;
+    if (this.#destroyed || !recovery || this.#access.mode !== 'local') return;
     const lease = this.#access.beginTransition();
     let expectedRevision = this.#access.revision;
     const isCurrent = (): boolean => this.#access.revision === expectedRevision;
     try {
       const result = await recovery.reauthenticate(lease);
-      if (!isCurrent() || this.#access.mode !== 'local') return;
+      if (this.#destroyed || !isCurrent() || this.#access.mode !== 'local') return;
       if (result === false) {
+        this.#clearRetry();
         this.#access.clear();
         return;
       }
-      if (!(await result.activate(lease)) || !isCurrent() || this.#access.mode !== 'local') return;
+      if (
+        !(await result.activate(lease)) ||
+        this.#destroyed ||
+        !isCurrent() ||
+        this.#access.mode !== 'local'
+      ) {
+        return;
+      }
+      this.#clearRetry();
       this.#access.grantRemote();
       expectedRevision = this.#access.revision;
       await result.resume();
     } catch (error) {
-      if (!isCurrent()) return;
+      if (this.#destroyed || !isCurrent()) return;
       if (isExplicitAuthDenial(error)) {
+        this.#clearRetry();
         this.#access.clear();
-      } else if (!this.#config.isUnavailableError?.(error)) {
+      } else if (this.#config.isUnavailableError?.(error)) {
+        this.#scheduleRetry();
+      } else {
         this.#errorHandler.handleError(error);
       }
     }
+  }
+
+  #scheduleRetry(): void {
+    const recovery = this.#config.remoteRecovery;
+    if (this.#destroyed || !recovery || this.#retryTimer || this.#access.mode !== 'local') return;
+    this.#retryTimer = setTimeout(() => {
+      this.#retryTimer = null;
+      if (this.#access.mode === 'local') void this.recover();
+    }, this.#retryDelayMs(recovery.retryDelayMs));
+  }
+
+  #clearRetry(): void {
+    if (!this.#retryTimer) return;
+    clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
+  }
+
+  #retryDelayMs(configured: number | undefined): number {
+    if (configured === undefined || !Number.isFinite(configured)) return 30_000;
+    return Math.max(1_000, configured);
   }
 }
 

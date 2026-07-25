@@ -22,13 +22,16 @@ describe('OfflineCoordinatorService', () => {
     };
     const session = {
       initialize: vi.fn(async () => undefined),
-      activateSession: vi.fn(async (userId: number, _scopeIds: readonly number[], _authSubject: string | null, lease: { isCurrent(): boolean }) => {
-        order.push('activate-remote');
-        if (!lease.isCurrent()) return false;
-        sessionState.userId = userId;
-        return true;
-      }),
+      activateSession: vi.fn(
+        async (userId: number, _scopeIds: readonly number[], _authSubject: string | null, lease: { isCurrent(): boolean }) => {
+          order.push('activate-remote');
+          if (!lease.isCurrent()) return false;
+          sessionState.userId = userId;
+          return true;
+        },
+      ),
       suspendRemoteSession: vi.fn(async () => void order.push('suspend-remote')),
+      revokeAccess: vi.fn(() => void order.push('revoke')),
       activateOfflineSession: vi.fn(async () => {
         order.push('activate-local');
         return manifest;
@@ -44,6 +47,7 @@ describe('OfflineCoordinatorService', () => {
       conflicts: signal([]),
       initialize: vi.fn(async () => undefined),
       resetSession: vi.fn(async () => void order.push('reset')),
+      revokeSession: vi.fn(() => void order.push('revoke-sync')),
       refreshSession: vi.fn(async () => void order.push('resume-remote')),
       refreshLocalSession: vi.fn(async () => void order.push('refresh-local')),
       discardAllPending: vi.fn(async () => undefined),
@@ -117,6 +121,16 @@ describe('OfflineCoordinatorService', () => {
     await Promise.all([activation, logout]);
 
     expect(sessionState.userId).toBeNull();
+  });
+
+  it('revokes runtime local access synchronously before queued durable cleanup', async () => {
+    const { coordinator, session, sync } = setup();
+
+    const clearing = coordinator.clearActiveSession();
+
+    expect(session.revokeAccess).toHaveBeenCalledOnce();
+    expect(sync.revokeSession).toHaveBeenCalledOnce();
+    await clearing;
   });
 
   it('keeps a newer identity when an older activation completes late', async () => {
