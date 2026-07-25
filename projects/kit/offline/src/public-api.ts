@@ -4,6 +4,7 @@ export * from './lib/offline-replica-puller';
 export * from './lib/offline-replica-pull.service';
 export * from './lib/offline-command-executor';
 export * from './lib/offline-command-hooks';
+export * from './lib/offline-auth-bridge';
 export * from './lib/offline-coordinator.service';
 export * from './lib/offline-kit-options';
 export * from './lib/offline-network.service';

@@ -408,35 +408,36 @@ step immediately invalidates every in-flight auth lease; the second serializes c
 already in progress and removes the manifest and user replica.
 
 ```ts
-provideKitAuth(() => {
-  const offline = inject(OfflineCoordinatorService);
-  return {
-    authState: () => auth.state$,
-    onAuthorized: async () => {
-      const session = await auth.exchangeCredential();
-      return {
-        activate: (lease) => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
-        resume: () => offline.resumeRemoteSession(),
-      };
+import { createOfflineAuthBridge, isOfflineFallbackError } from '@rdlabo/ionic-angular-kit/offline';
+
+provideKitAuth(() => ({
+  authState: () => auth.state$,
+  ...createOfflineAuthBridge({
+    exchange: async (ctx) => {
+      const remote = await auth.exchangeCredential(ctx);
+      const authSubject = auth.currentSubject();
+      return remote && authSubject
+        ? { ...remote, authSubject }
+        : false;
     },
-    onUnavailable: async (_state, _error, lease) => (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
+    currentAuthSubject: () => auth.currentSubject(),
     isUnavailableError: isOfflineFallbackError,
-    remoteRecovery: {
-      availability: () => auth.authorityAvailable$,
-      reauthenticate: async () => {
-        const session = await auth.tryExchangeCredential();
-        return session
-          ? {
-              activate: (lease) => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
-              resume: () => offline.resumeRemoteSession(),
-            }
-          : false;
-      },
-    },
-    redirects,
-  };
-});
+    availability: () => auth.authorityAvailable$,
+  }),
+  redirects,
+}));
 ```
+
+`createOfflineAuthBridge` owns `exchange` → `prepareRemoteSession` → kit `grantRemote` → `resumeRemoteSession`
+ordering via `KitRemoteAccessRecovery`. Product code keeps consent, error UI, and credential mapping inside
+`exchange(context)` (`phase: 'authorize' | 'recover'`, optional route state, lease). Return `null`/`false` to decline
+without throwing; thrown errors are never swallowed and remain available to the guard's unavailable/denial
+classification. The returned identity requires a positive `userId`, non-negative numeric scope ids (including the
+current user-scope compatibility value `0`), and a non-empty `authSubject`. The bridge compares that subject before
+session activation, immediately before the coordinator commits through a composite lease, and around remote resume.
+Optional `isIdentityCurrent` can add provider object-identity checks. `onRemoteResumed` receives the identity, phase,
+route state, and post-grant lease for safe redirects or other product side effects. Default recovery availability
+follows `offline.networkState !== 'offline'`.
 
 Register `offlineInterceptor` before `kitAuthInterceptor`. In local mode the auth interceptor synthesizes a
 transport-unavailable error before generating credentials or touching the network; the outer offline interceptor
