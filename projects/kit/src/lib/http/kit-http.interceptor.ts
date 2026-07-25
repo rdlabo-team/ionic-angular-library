@@ -6,7 +6,7 @@ import { Network } from '@capacitor/network';
 import type { Observable } from 'rxjs';
 import { from, retry, throwError, timer } from 'rxjs';
 import { catchError, map, mergeMap, tap, timeout } from 'rxjs/operators';
-import { KitAuthAccessService } from '../auth/auth-access.service';
+import { isExplicitAuthDenial, KitAuthAccessService } from '../auth/auth-access.service';
 
 /**
  * HTTP methods that are safe to retry automatically.
@@ -103,7 +103,8 @@ export interface KitHttpConfig {
    * @remarks
    * Optional and `false` by default for backward compatibility. In `local` mode the interceptor
    * consults `offlineFallback` without calling `getAuthHeaders` or transport. In `none` mode it
-   * rejects without exposing local data.
+   * rejects without exposing local data. Real HTTP/auth-header 401/403 responses revoke access and
+   * bypass `offlineFallback`.
    */
   enforceAuthAccessMode?: boolean;
   /**
@@ -163,6 +164,7 @@ export interface KitHttpConfig {
    * @remarks
    * Returning a non-null observable replaces the error with that response (for example a queued
    * offline result). Optional; defaults to `null` (no fallback, normal error handling proceeds).
+   * With shared access enforcement enabled, explicit 401/403 denials are never passed here.
    *
    * @param request - The request that failed (after headers were applied).
    * @param error - The error response that triggered the fallback.
@@ -345,7 +347,8 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
  *    `Idempotency-Key`), and the status is a {@link RETRYABLE_STATUSES | transient status}. The
  *    backoff is `retryCount * 500ms` plus up to 250ms of jitter, or the server's `Retry-After`.
  *    When the device is offline it stops retrying immediately.
- * 5. On the final error, `offlineFallback` is consulted first; otherwise the error is classified by
+ * 5. On the final error, enforced 401/403 revokes shared access and is rejected before fallback.
+ *    For every other error, `offlineFallback` is consulted first; otherwise the error is classified by
  *    status (see {@link dispatchError}): `401`→`onUnauthorized`, `403`→`onForbidden`, `0`→
  *    `onNetworkError` (when connected), `429`→`onRateLimited`, maintenance `503`→`onMaintenance`,
  *    other `502`/`503`/`504`→`onServerBusy`, and `400`/`422`/`500` with a body message→`onServerError`.
@@ -386,6 +389,7 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
   return from(Promise.resolve(config.getAuthHeaders(request))).pipe(
     catchError((headerError: unknown) => {
       // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
+      if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError)) access.clear();
       config.onAuthError?.(request, headerError);
       return throwError(() => headerError);
     }),
@@ -435,6 +439,11 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
           }
         }),
         catchError((error: HttpErrorResponse) => {
+          if (config.enforceAuthAccessMode && isExplicitAuthDenial(error)) {
+            access.clear();
+            dispatchError(config, req, error);
+            return throwError(() => error);
+          }
           const fallback = config.offlineFallback?.(req, error);
           if (fallback) {
             return fallback;

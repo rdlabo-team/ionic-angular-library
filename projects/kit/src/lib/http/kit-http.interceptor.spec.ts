@@ -174,6 +174,47 @@ describe('kitAuthInterceptor', () => {
       expect(config.getAuthHeaders).toHaveBeenCalledOnce();
       expect(next).toHaveBeenCalledOnce();
     });
+
+    it.each([
+      [401, 'onUnauthorized'],
+      [403, 'onForbidden'],
+    ] as const)('HTTP %i revokes remote access and bypasses even a broad offline fallback', async (status, hook) => {
+      const fallbackResponse = new HttpResponse({ status: 200, body: 'cached' });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        offlineFallback: vi.fn().mockReturnValue(of(fallbackResponse)),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const error = new HttpErrorResponse({ status });
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('none');
+      expect(config.offlineFallback).not.toHaveBeenCalled();
+      expect(config[hook]).toHaveBeenCalledOnce();
+    });
+
+    it('revokes remote access when auth header generation returns an explicit denial', async () => {
+      const denial = { status: 401 };
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        getAuthHeaders: vi.fn().mockRejectedValue(denial),
+        onAuthError: vi.fn(),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn();
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(denial);
+
+      expect(access.mode).toBe('none');
+      expect(config.onAuthError).toHaveBeenCalledWith(baseReq, denial);
+      expect(next).not.toHaveBeenCalled();
+    });
   });
 
   // ---- 401 handling ---------------------------------------------------------

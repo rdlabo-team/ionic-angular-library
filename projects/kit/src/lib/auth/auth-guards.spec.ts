@@ -109,8 +109,10 @@ describe('kitRequiredUnauthorizedGuard', () => {
 
   it("'required' → returns true", async () => {
     setup('required');
+    TestBed.inject(KitAuthAccessService).grantLocal();
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequiredUnauthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('none');
   });
 
   it("'anonymous' → returns true", async () => {
@@ -128,8 +130,10 @@ describe('kitRequireConfirmingGuard', () => {
 
   it("'confirm' → returns true", async () => {
     setup('confirm');
+    TestBed.inject(KitAuthAccessService).grantRemote();
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireConfirmingGuard(routeStub, stateStub)));
     expect(result).toBe(true);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('none');
   });
 
   it("'anonymous' → navigates whenAuthorized and returns false", async () => {

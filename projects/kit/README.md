@@ -675,11 +675,13 @@ must run before `remote` is granted must be explicitly covered by `bypass`; do n
 
 **Error dispatch** (after retries, in `catchError`):
 
-1. `offlineFallback` non-null → return fallback observable (no further hooks called)
-2. `401` → `onUnauthorized` · `403` → `onForbidden`
-3. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
-4. `400/422/500` with `error.message` → `onServerError`
-5. anything else (`404`, …) → not handled here; the caller decides
+1. With `enforceAuthAccessMode`, `401` / `403` → revoke access, notify the matching hook, and reject
+   without consulting `offlineFallback`
+2. Otherwise, `offlineFallback` non-null → return fallback observable (no further hooks called)
+3. `401` → `onUnauthorized` · `403` → `onForbidden`
+4. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
+5. `400/422/500` with `error.message` → `onServerError`
+6. anything else (`404`, …) → not handled here; the caller decides
 
 Plus: a `getAuthHeaders` rejection → `onAuthError(request, error)` (the request is never sent).
 

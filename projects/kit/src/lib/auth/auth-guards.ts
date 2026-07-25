@@ -181,9 +181,12 @@ export const kitRequiredUnauthorizedGuard: CanActivateFn = () => {
   const { authState, redirects } = inject(KIT_AUTH_CONFIG);
   const router = inject(Router);
   const navCtrl = inject(NavController);
+  const access = inject(KitAuthAccessService);
+  access.beginTransition({ suspendRemote: true });
 
   return authState().pipe(
     map((data) => {
+      if (data !== 'unavailable') access.clear();
       if (data === 'user') {
         navCtrl.setDirection('root');
         router.navigate([redirects.whenAuthorized]);
@@ -216,9 +219,12 @@ export const kitRequireConfirmingGuard: CanActivateFn = () => {
   const { authState, redirects } = inject(KIT_AUTH_CONFIG);
   const router = inject(Router);
   const navCtrl = inject(NavController);
+  const access = inject(KitAuthAccessService);
+  access.beginTransition({ suspendRemote: true });
 
   return authState().pipe(
     map((data) => {
+      if (data !== 'unavailable') access.clear();
       if (data === 'confirm') {
         return true;
       }
