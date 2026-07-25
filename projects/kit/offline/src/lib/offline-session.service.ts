@@ -36,10 +36,7 @@ export class OfflineSessionService {
     await this.initialize();
     const normalizedScopeIds = [...new Set(scopeIds)].filter((id) => id !== 0).sort((a, b) => a - b);
     const previousUserId = await this.#repository.getLastUserId();
-    let previous =
-      previousUserId === userId
-        ? ((await this.#repository.getSessionManifest<OfflineSessionManifest>(userId)) ?? null)
-        : null;
+    let previous = previousUserId === userId ? ((await this.#repository.getSessionManifest<OfflineSessionManifest>(userId)) ?? null) : null;
     // A changed provider subject is a different person even when the product reuses its numeric id.
     // This deliberately also clears legacy null -> known subject and known subject -> null transitions.
     if (previousUserId !== null && (previousUserId !== userId || previous?.authSubject !== authSubject)) {
@@ -71,6 +68,26 @@ export class OfflineSessionService {
     if (userId !== null) await this.#repository.clearUser(userId);
     this.#activeManifest.set(null);
     this.#activatedThisRun = false;
+  }
+
+  /**
+   * Returns the persisted identity boundary for local-only route access.
+   *
+   * @remarks
+   * This does not activate the sync context. Call it only after the authentication authority has
+   * been classified as unavailable, never after explicit sign-out or HTTP 401/403. Legacy
+   * manifests without an authentication-provider subject are rejected.
+   *
+   * @param authSubject - A currently known provider subject. When supplied, it must match the
+   * persisted subject.
+   */
+  async getOfflineAccessManifest(authSubject?: string | null): Promise<OfflineSessionManifest | null> {
+    await this.initialize();
+    const manifest = this.#activeManifest();
+    if (!manifest?.authSubject || (authSubject !== undefined && manifest.authSubject !== authSubject)) {
+      return null;
+    }
+    return { ...manifest, scopeIds: [...manifest.scopeIds] };
   }
 
   async getSession(): Promise<{ userId: number; scopes: OfflineScope[] } | null> {

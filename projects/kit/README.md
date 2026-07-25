@@ -227,16 +227,26 @@ This centralizes presentation options, keeps component props and dismiss data ty
 
 ### Auth guards + provideKitAuth
 
-Functional `CanActivateFn` guards for a four-state auth model:
+Functional `CanActivateFn` guards for a five-state auth model:
 
-| State         | Meaning                                              |
-| ------------- | ---------------------------------------------------- |
-| `'user'`      | Fully authenticated                                  |
-| `'confirm'`   | Authenticated but email confirmation pending         |
-| `'required'`  | Not authenticated                                    |
-| `'anonymous'` | Anonymous login active (can be prompted to register) |
+| State           | Meaning                                                  |
+| --------------- | -------------------------------------------------------- |
+| `'user'`        | Fully authenticated                                      |
+| `'confirm'`     | Authenticated but email confirmation pending             |
+| `'required'`    | Not authenticated                                        |
+| `'anonymous'`   | Anonymous login active (can be prompted to register)     |
+| `'unavailable'` | The authentication authority cannot currently be reached |
 
-**Convention:** every redirect path is supplied via `provideKitAuth`; the kit does not hard-code any routes. `authState` and `redirects` are required. The app-specific hooks `onAuthorized` / `onUnauthenticated` are **optional** and default to `true` (allow the authenticated user through) / `false` (fall through to the `whenUnauthorized` redirect), so an app only supplies the ones with real logic.
+**Convention:** every redirect path is supplied via `provideKitAuth`; the kit does not hard-code any routes.
+`authState` and `redirects` are required. The app-specific hooks `onAuthorized`, `onUnauthenticated`, and
+`onUnavailable` are optional. An authenticated user is allowed by default; unauthenticated and unavailable states
+redirect by default.
+
+`'required'` is an authoritative signed-out result. It must never be converted into offline access.
+`'unavailable'` means the authentication authority could not produce a result. Likewise,
+`isUnavailableError` must classify transport failures only; HTTP 401/403 are explicit denials and must return
+`false`. `onUnavailable` authorizes the route for local-replica use only—it does not create an HTTP or realtime
+credential.
 
 **Setup**
 
@@ -261,6 +271,9 @@ export const appConfig: ApplicationConfig = {
         // onAuthorized: async () => { await auth.refreshToken(); return true; },
         // Supply onUnauthenticated only for a fallback such as anonymous sign-in:
         // onUnauthenticated: async () => { await auth.signInAnonymously(); return true; },
+        // Supply onUnavailable only for a previously verified local replica:
+        // onUnavailable: async () => (await offlineSession.getOfflineAccessManifest()) !== null,
+        // isUnavailableError: (error) => isOfflineFallbackError(error),
       };
     }),
   ],
@@ -340,6 +353,29 @@ executor through `provideOffline(...)`.
 Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
 Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
 primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
+
+For cold-start offline route access, `OfflineSessionService.getOfflineAccessManifest()` restores only a manifest
+that is bound to a non-null authentication-provider subject. Supplying a currently known subject also rejects a
+different user on a shared device. This read does not activate the synchronization context: remote sync remains
+disabled until online authentication calls `activateSession(...)`. Explicit sign-out must call
+`clearActiveSession()`, which removes the manifest and local user replica before the auth guard can grant offline
+access again.
+
+```ts
+provideKitAuth(() => {
+  const session = inject(OfflineSessionService);
+  return {
+    authState: () => auth.state$,
+    onAuthorized: async () => {
+      await auth.tokenLogin();
+      return true;
+    },
+    onUnavailable: async () => (await session.getOfflineAccessManifest(auth.currentSubject())) !== null,
+    isUnavailableError: isOfflineFallbackError,
+    redirects,
+  };
+});
+```
 
 The offline interceptor observes real transport responses to update API reachability. For matched `GET`
 requests only, a transport failure with `status=0` may return a local replica response tagged

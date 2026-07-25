@@ -11,12 +11,7 @@ describe('OfflineSessionService shared-device boundary', () => {
 
   beforeEach(() => {
     lastUserId = 10;
-    manifests = new Map([
-      [
-        10,
-        { userId: 10, scopeIds: [1], authSubject: 'uid-A', updatedAt: 1 },
-      ],
-    ]);
+    manifests = new Map([[10, { userId: 10, scopeIds: [1], authSubject: 'uid-A', updatedAt: 1 }]]);
     clearUser = vi.fn(async (userId: number) => {
       manifests.delete(userId);
       if (lastUserId === userId) lastUserId = null;
@@ -43,6 +38,31 @@ describe('OfflineSessionService shared-device boundary', () => {
   it('起動時に旧manifestを復元しても認証後activateまではsync contextへ公開しない', async () => {
     await service.initialize();
     await expect(service.getSession()).resolves.toBeNull();
+  });
+
+  it('認証基盤へ到達不能ならsubject付きmanifestをlocal accessへ復元する', async () => {
+    await expect(service.getOfflineAccessManifest()).resolves.toEqual({
+      userId: 10,
+      scopeIds: [1],
+      authSubject: 'uid-A',
+      updatedAt: 1,
+    });
+    await expect(service.getSession()).resolves.toBeNull();
+  });
+
+  it('既知のsubjectがmanifestと違う場合はlocal accessを拒否する', async () => {
+    await expect(service.getOfflineAccessManifest('uid-B')).resolves.toBeNull();
+    await expect(service.getOfflineAccessManifest(null)).resolves.toBeNull();
+  });
+
+  it('legacy null subjectのmanifestはlocal accessへ復元しない', async () => {
+    manifests.set(10, { userId: 10, scopeIds: [1], authSubject: null, updatedAt: 1 });
+    await expect(service.getOfflineAccessManifest()).resolves.toBeNull();
+  });
+
+  it('明示logoutでclearしたmanifestはlocal accessへ復元しない', async () => {
+    await service.clearActiveSession();
+    await expect(service.getOfflineAccessManifest()).resolves.toBeNull();
   });
 
   it('AからBへ認証主体が変わるとA全scopeを削除してからBを有効化する', async () => {

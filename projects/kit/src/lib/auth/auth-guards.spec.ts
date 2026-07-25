@@ -5,9 +5,11 @@ import { Router } from '@angular/router';
 import { NavController } from '@ionic/angular/standalone';
 import type { Observable } from 'rxjs';
 import { of } from 'rxjs';
+import { throwError } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
 
 import {
+  type KitAuthGuardState,
   type KitAuthState,
   provideKitAuth,
   kitRequiredUnauthorizedGuard,
@@ -43,13 +45,17 @@ function mockFn<T>(): T {
 }
 
 function setup(
-  state: KitAuthState,
+  state: KitAuthGuardState,
   {
     onAuthorized = vi.fn().mockResolvedValue(true) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>,
     onUnauthenticated = vi.fn().mockResolvedValue(false) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>,
+    onUnavailable = vi.fn().mockResolvedValue(false) as unknown as (s: RouterStateSnapshot, error?: unknown) => Promise<boolean | UrlTree>,
+    isUnavailableError = vi.fn().mockReturnValue(false) as unknown as (error: unknown) => boolean,
   }: {
     onAuthorized?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
     onUnauthenticated?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
+    onUnavailable?: (s: RouterStateSnapshot, error?: unknown) => Promise<boolean | UrlTree>;
+    isUnavailableError?: (error: unknown) => boolean;
   } = {},
 ) {
   const navigate = vi.fn().mockResolvedValue(true);
@@ -62,6 +68,8 @@ function setup(
         authState: () => of(state),
         onAuthorized,
         onUnauthenticated,
+        onUnavailable,
+        isUnavailableError,
         redirects: REDIRECTS,
       })),
       { provide: Router, useValue: { navigate } },
@@ -69,7 +77,7 @@ function setup(
     ],
   });
 
-  return { navigate, setDirection, onAuthorized, onUnauthenticated };
+  return { navigate, setDirection, onAuthorized, onUnauthenticated, onUnavailable, isUnavailableError };
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +214,109 @@ describe('kitRequireAuthorizedGuard', () => {
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(false);
     expect(navigate).toHaveBeenCalledWith([REDIRECTS.whenUnauthorized]);
+  });
+
+  it("'unavailable' invokes only onUnavailable and allows local route access", async () => {
+    const onUnavailable = vi.fn().mockResolvedValue(true) as unknown as (
+      s: RouterStateSnapshot,
+      error?: unknown,
+    ) => Promise<boolean | UrlTree>;
+    const { onUnauthenticated } = setup('unavailable', { onUnavailable });
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(result).toBe(true);
+    expect(onUnavailable).toHaveBeenCalledWith(stateStub, undefined);
+    expect(onUnauthenticated).not.toHaveBeenCalled();
+  });
+
+  it("'required' never invokes the unavailable fallback", async () => {
+    const onUnavailable = vi.fn().mockResolvedValue(true) as unknown as (
+      s: RouterStateSnapshot,
+      error?: unknown,
+    ) => Promise<boolean | UrlTree>;
+    const { navigate } = setup('required', { onUnavailable });
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(result).toBe(false);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(navigate).toHaveBeenCalledWith([REDIRECTS.whenUnauthorized]);
+  });
+
+  it('classified onAuthorized transport failure invokes onUnavailable', async () => {
+    const networkError = { status: 0 };
+    const onAuthorized = vi.fn().mockRejectedValue(networkError) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
+    const onUnavailable = vi.fn().mockResolvedValue(true) as unknown as (
+      s: RouterStateSnapshot,
+      error?: unknown,
+    ) => Promise<boolean | UrlTree>;
+    setup('user', {
+      onAuthorized,
+      onUnavailable,
+      isUnavailableError: (error) => error === networkError,
+    });
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(result).toBe(true);
+    expect(onUnavailable).toHaveBeenCalledWith(stateStub, networkError);
+  });
+
+  it('unclassified onAuthorized error propagates without local fallback', async () => {
+    const unauthorized = { status: 401 };
+    const onAuthorized = vi.fn().mockRejectedValue(unauthorized) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
+    const onUnavailable = vi.fn().mockResolvedValue(true) as unknown as (
+      s: RouterStateSnapshot,
+      error?: unknown,
+    ) => Promise<boolean | UrlTree>;
+    setup('user', { onAuthorized, onUnavailable, isUnavailableError: () => false });
+    await expect(runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)))).rejects.toBe(unauthorized);
+    expect(onUnavailable).not.toHaveBeenCalled();
+  });
+});
+
+describe('kitRequireAuthorizedGuard — auth state source errors', () => {
+  afterEach(() => TestBed.resetTestingModule());
+
+  it('classified transport error invokes onUnavailable', async () => {
+    const networkError = { status: 0 };
+    const onUnavailable = vi.fn().mockResolvedValue(true);
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideKitAuth(() => ({
+          authState: () => throwError(() => networkError),
+          onUnavailable,
+          isUnavailableError: (error) => error === networkError,
+          redirects: REDIRECTS,
+        })),
+        { provide: Router, useValue: { navigate: vi.fn() } },
+        { provide: NavController, useValue: { setDirection: vi.fn() } },
+      ],
+    });
+
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(result).toBe(true);
+    expect(onUnavailable).toHaveBeenCalledWith(stateStub, networkError);
+  });
+
+  it('does not classify an error from onUnavailable a second time', async () => {
+    const networkError = { status: 0 };
+    const localStoreError = { status: 0, source: 'local-store' };
+    const onUnavailable = vi.fn().mockRejectedValue(localStoreError);
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideKitAuth(() => ({
+          authState: () => throwError(() => networkError),
+          onUnavailable,
+          isUnavailableError: (error) => (error as { status?: number })?.status === 0,
+          redirects: REDIRECTS,
+        })),
+        { provide: Router, useValue: { navigate: vi.fn() } },
+        { provide: NavController, useValue: { setDirection: vi.fn() } },
+      ],
+    });
+
+    await expect(runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)))).rejects.toBe(
+      localStoreError,
+    );
+    expect(onUnavailable).toHaveBeenCalledOnce();
   });
 });
 

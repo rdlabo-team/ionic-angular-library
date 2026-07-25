@@ -4,7 +4,8 @@ import type { CanActivateFn, RouterStateSnapshot, UrlTree } from '@angular/route
 import { Router } from '@angular/router';
 import { NavController } from '@ionic/angular/standalone';
 import type { Observable } from 'rxjs';
-import { map, mergeMap } from 'rxjs/operators';
+import { of, throwError } from 'rxjs';
+import { catchError, map, mergeMap } from 'rxjs/operators';
 
 /**
  * Discriminated set of authentication states the guards react to.
@@ -19,6 +20,16 @@ import { map, mergeMap } from 'rxjs/operators';
  * - `anonymous` — signed in anonymously; the user can still be guided toward full registration.
  */
 export type KitAuthState = 'user' | 'confirm' | 'required' | 'anonymous';
+
+/**
+ * Authentication states accepted by route guards.
+ *
+ * @remarks
+ * `unavailable` means the authentication authority cannot currently be reached; this is distinct
+ * from an explicit signed-out result. {@link KitAuthState} remains the original four-state union
+ * so existing exhaustive consumers remain source-compatible.
+ */
+export type KitAuthGuardState = KitAuthState | 'unavailable';
 
 /**
  * Redirect targets (route paths) used by the guards when access is denied.
@@ -42,9 +53,9 @@ export interface KitAuthRedirects {
  * Configuration consumed by the authentication guards, injected through {@link provideKitAuth}.
  *
  * @remarks
- * `authState` and `redirects` are required. The `onAuthorized` / `onUnauthenticated` hooks are
- * optional and default to allowing the authenticated user through (`true`) and falling through to
- * the default redirect (`false`) respectively, so an app only supplies the ones with real logic.
+ * `authState` and `redirects` are required. The `onAuthorized`, `onUnauthenticated`, and
+ * `onUnavailable` hooks are optional. Without them the guard allows an authenticated user and
+ * redirects unauthenticated or unavailable states, so an app only supplies hooks with real logic.
  */
 export interface KitAuthConfig {
   /**
@@ -55,7 +66,7 @@ export interface KitAuthConfig {
    *
    * @returns A stream of {@link KitAuthState} values.
    */
-  authState(): Observable<KitAuthState>;
+  authState(): Observable<KitAuthGuardState>;
   /**
    * Application-specific work that runs in {@link kitRequireAuthorizedGuard} after the state is confirmed to be `user`.
    *
@@ -78,6 +89,29 @@ export interface KitAuthConfig {
    * @returns `true` to allow activation, a `UrlTree` for a custom redirect, or `false` to use the default redirect.
    */
   onUnauthenticated?(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
+  /**
+   * Fallback that runs only when authentication is unavailable, never for an explicit
+   * unauthenticated result.
+   *
+   * @remarks
+   * This hook may authorize read/write access to a previously verified local replica. It must not
+   * provide credentials to HTTP or realtime transports. Explicit sign-out and HTTP 401/403 must
+   * remain unauthorized.
+   *
+   * @param state - The router state snapshot of the route being activated.
+   * @param error - The classified transport error, or `undefined` when `authState` emitted
+   * `unavailable`.
+   * @returns `true` to allow local route activation, a `UrlTree` for a custom redirect, or `false`
+   * to use the default redirect.
+   */
+  onUnavailable?(state: RouterStateSnapshot, error?: unknown): Promise<boolean | UrlTree>;
+  /**
+   * Classifies an error from `authState` or `onAuthorized` as authentication unavailability.
+   *
+   * @remarks
+   * Classify transport failures only. In particular, HTTP 401/403 must return `false`.
+   */
+  isUnavailableError?(error: unknown): boolean;
   /** Redirect targets used by the guards. */
   redirects: KitAuthRedirects;
 }
@@ -121,9 +155,9 @@ export const provideKitAuth = (configFactory: () => KitAuthConfig): EnvironmentP
  * Guard that requires the user to be unauthenticated (for example sign-in or sign-up pages).
  *
  * @remarks
- * Allows the `required` and `anonymous` states (an anonymous user is permitted to proceed to a
- * registration page). An authenticated user (`user`) is sent to `whenAuthorized`, and a user
- * awaiting confirmation (`confirm`) is sent to `whenConfirming`.
+ * Allows the `required`, `anonymous`, and `unavailable` states (an anonymous user is permitted to
+ * proceed to a registration page). An authenticated user (`user`) is sent to `whenAuthorized`, and
+ * a user awaiting confirmation (`confirm`) is sent to `whenConfirming`.
  *
  * @returns A stream emitting `true` to allow activation, or `false` after triggering a redirect.
  *
@@ -147,7 +181,7 @@ export const kitRequiredUnauthorizedGuard: CanActivateFn = () => {
         router.navigate([redirects.whenConfirming]);
         return false;
       }
-      // 'required' | 'anonymous'
+      // 'required' | 'anonymous' | 'unavailable'
       return true;
     }),
   );
@@ -190,6 +224,8 @@ export const kitRequireConfirmingGuard: CanActivateFn = () => {
  * @remarks
  * - `user` — runs {@link KitAuthConfig.onAuthorized} (token login, permission checks, and so on).
  * - `anonymous` — allowed as-is, for applications that permit anonymous browsing.
+ * - `unavailable` — runs {@link KitAuthConfig.onUnavailable}; this is the only state intended for
+ *   restored local-replica access.
  * - `required` / `confirm` — runs {@link KitAuthConfig.onUnauthenticated}; if it resolves to `false`,
  *   the user is redirected to `whenUnauthorized`.
  *
@@ -203,27 +239,53 @@ export const kitRequireConfirmingGuard: CanActivateFn = () => {
  * ```
  */
 export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
-  const { authState, onAuthorized, onUnauthenticated, redirects } = inject(KIT_AUTH_CONFIG);
+  const { authState, onAuthorized, onUnauthenticated, onUnavailable, isUnavailableError, redirects } = inject(KIT_AUTH_CONFIG);
   const router = inject(Router);
   const navCtrl = inject(NavController);
 
+  const redirectUnauthorized = (): false => {
+    navCtrl.setDirection('root');
+    router.navigate([redirects.whenUnauthorized]);
+    return false;
+  };
+  const resolveUnavailable = async (error?: unknown): Promise<boolean | UrlTree> => {
+    const fallback = onUnavailable ? await onUnavailable(state, error) : false;
+    return fallback === false ? redirectUnauthorized() : fallback;
+  };
+
+  interface AuthEmission {
+    authState: KitAuthGuardState;
+    error?: unknown;
+  }
   return authState().pipe(
-    mergeMap(async (data) => {
+    map((authState): AuthEmission => ({ authState })),
+    catchError(
+      (error): Observable<AuthEmission> =>
+        isUnavailableError?.(error) ? of({ authState: 'unavailable', error }) : throwError(() => error),
+    ),
+    mergeMap(async ({ authState: data, error: authStateError }) => {
       if (data === 'user') {
         // 既定は「許可」。tokenLogin / 権限確認等が必要なアプリだけ onAuthorized を渡す。
-        return onAuthorized ? onAuthorized(state) : true;
+        if (!onAuthorized) return true;
+        try {
+          return await onAuthorized(state);
+        } catch (error) {
+          if (!isUnavailableError?.(error)) throw error;
+          return resolveUnavailable(error);
+        }
       }
       if (data === 'anonymous') {
         return true;
+      }
+      if (data === 'unavailable') {
+        return resolveUnavailable(authStateError);
       }
       // 既定は false（whenUnauthorized へ）。匿名ログイン等のフォールバックが要るアプリだけ渡す。
       const fallback = onUnauthenticated ? await onUnauthenticated(state) : false;
       if (fallback !== false) {
         return fallback;
       }
-      navCtrl.setDirection('root');
-      router.navigate([redirects.whenUnauthorized]);
-      return false;
+      return redirectUnauthorized();
     }),
   );
 };
