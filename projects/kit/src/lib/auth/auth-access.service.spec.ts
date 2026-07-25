@@ -127,6 +127,40 @@ describe('KitAuthRecoveryService', () => {
     vi.useRealTimers();
   });
 
+  it('does not bypass retryDelay for coalesced recovery calls in the same access revision', async () => {
+    vi.useFakeTimers();
+    const availability = new Subject<boolean>();
+    let rejectOld: ((error: unknown) => void) | undefined;
+    const reauthenticate = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectOld = reject;
+          }),
+      )
+      .mockRejectedValue({ status: 0 });
+    const { access, recovery } = setup({
+      remoteRecovery: { availability: () => availability, retryDelayMs: 1_000, reauthenticate },
+      isUnavailableError: (error) => (error as { status?: number })?.status === 0,
+    });
+    recovery.initialize();
+    access.grantLocal();
+    availability.next(true);
+    const first = recovery.recover();
+    availability.next(true);
+    recovery.recover();
+    rejectOld?.({ status: 0 });
+    await first;
+
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(reauthenticate).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it('reruns recovery for a newer local transition after the stale single flight settles', async () => {
     const availability = new Subject<boolean>();
     let releaseOld: (() => void) | undefined;
@@ -190,6 +224,39 @@ describe('KitAuthRecoveryService', () => {
       vi.useRealTimers();
     },
   );
+
+  it('does not resume or recreate a retry timer after destruction settles an in-flight recovery', async () => {
+    vi.useFakeTimers();
+    let rejectRecovery: ((error: unknown) => void) | undefined;
+    const activate = vi.fn(async () => true);
+    const reauthenticate = vi.fn(
+      () =>
+        new Promise<KitRemoteAccessRecovery>((_resolve, reject) => {
+          rejectRecovery = reject;
+        }),
+    );
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        retryDelayMs: 1_000,
+        reauthenticate,
+      },
+      isUnavailableError: () => true,
+    });
+    recovery.initialize();
+    access.grantLocal();
+    const pending = recovery.recover();
+
+    TestBed.resetTestingModule();
+    rejectRecovery?.({ status: 0 });
+    await pending;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(reauthenticate).toHaveBeenCalledOnce();
+    expect(activate).not.toHaveBeenCalled();
+    expect(access.mode).toBe('local');
+    vi.useRealTimers();
+  });
 
   it('does not restore remote access after a newer access transition invalidates recovery', async () => {
     let resolveReauthentication: ((value: KitRemoteAccessRecovery) => void) | undefined;

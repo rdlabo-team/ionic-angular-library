@@ -213,6 +213,28 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
+  it('旧flushが失敗してもresetを中断せずdurable cleanupへ進める', async () => {
+    const pullError = new Error('pull failed during revocation');
+    let rejectPull: ((error: unknown) => void) | undefined;
+    pull.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectPull = reject;
+        }),
+    );
+    connected.set(true);
+    const flush = service.flush();
+    const flushRejected = expect(flush).rejects.toBe(pullError);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledOnce());
+
+    const reset = service.resetSession();
+    rejectPull?.(pullError);
+
+    await flushRejected;
+    await expect(reset).resolves.toBeUndefined();
+    expect(service.pendingCount()).toBe(0);
+  });
+
   it('同じaggregateの操作を作成順に送り、成功後だけoutboxから除く', async () => {
     await service.enqueue(
       {

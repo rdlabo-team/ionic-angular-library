@@ -124,12 +124,15 @@ export class KitAuthRecoveryService {
   readonly #destroyRef = inject(DestroyRef);
   #subscription: Subscription | null = null;
   #recovery: Promise<void> | null = null;
+  #recoveryRevision: number | null = null;
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #available = false;
   #retryRequested = false;
+  #destroyed = false;
 
   constructor() {
     this.#destroyRef.onDestroy(() => {
+      this.#destroyed = true;
       this.#clearRetry();
       this.#subscription?.unsubscribe();
       this.#subscription = null;
@@ -138,6 +141,7 @@ export class KitAuthRecoveryService {
 
   /** Subscribe to the configured remote-availability stream once. */
   initialize(): void {
+    if (this.#destroyed) return;
     const recovery = this.#config.remoteRecovery;
     if (!recovery || this.#subscription) return;
     this.#subscription = new Subscription();
@@ -172,13 +176,24 @@ export class KitAuthRecoveryService {
 
   /** Run one ordered remote recovery attempt, coalescing concurrent triggers. */
   recover(): Promise<void> {
+    if (this.#destroyed) return Promise.resolve();
     if (this.#recovery) {
-      if (this.#access.mode === 'local') this.#retryRequested = true;
+      if (
+        this.#access.mode === 'local' &&
+        this.#recoveryRevision !== null &&
+        this.#access.revision > this.#recoveryRevision
+      ) {
+        this.#retryRequested = true;
+      }
       return this.#recovery;
     }
-    const promise = this.#runRecovery().finally(() => {
+    const running = this.#runRecovery();
+    this.#recoveryRevision = this.#access.revision;
+    const promise = running.finally(() => {
       if (this.#recovery !== promise) return;
       this.#recovery = null;
+      this.#recoveryRevision = null;
+      if (this.#destroyed) return;
       if (!this.#retryRequested) return;
       this.#retryRequested = false;
       if (this.#access.mode !== 'local') return;
@@ -194,25 +209,32 @@ export class KitAuthRecoveryService {
 
   async #runRecovery(): Promise<void> {
     const recovery = this.#config.remoteRecovery;
-    if (!recovery || this.#access.mode !== 'local') return;
+    if (this.#destroyed || !recovery || this.#access.mode !== 'local') return;
     const lease = this.#access.beginTransition();
     let expectedRevision = this.#access.revision;
     const isCurrent = (): boolean => this.#access.revision === expectedRevision;
     try {
       const result = await recovery.reauthenticate(lease);
-      if (!isCurrent() || this.#access.mode !== 'local') return;
+      if (this.#destroyed || !isCurrent() || this.#access.mode !== 'local') return;
       if (result === false) {
         this.#clearRetry();
         this.#access.clear();
         return;
       }
-      if (!(await result.activate(lease)) || !isCurrent() || this.#access.mode !== 'local') return;
+      if (
+        !(await result.activate(lease)) ||
+        this.#destroyed ||
+        !isCurrent() ||
+        this.#access.mode !== 'local'
+      ) {
+        return;
+      }
       this.#clearRetry();
       this.#access.grantRemote();
       expectedRevision = this.#access.revision;
       await result.resume();
     } catch (error) {
-      if (!isCurrent()) return;
+      if (this.#destroyed || !isCurrent()) return;
       if (isExplicitAuthDenial(error)) {
         this.#clearRetry();
         this.#access.clear();
@@ -226,7 +248,7 @@ export class KitAuthRecoveryService {
 
   #scheduleRetry(): void {
     const recovery = this.#config.remoteRecovery;
-    if (!recovery || this.#retryTimer || this.#access.mode !== 'local') return;
+    if (this.#destroyed || !recovery || this.#retryTimer || this.#access.mode !== 'local') return;
     this.#retryTimer = setTimeout(() => {
       this.#retryTimer = null;
       if (this.#access.mode === 'local') void this.recover();

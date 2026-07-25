@@ -122,7 +122,7 @@ export class OfflineSyncService {
 
   async resetSession(): Promise<void> {
     this.revokeSession();
-    await Promise.all([this.#enqueueTail, ...this.#flushTransitions]);
+    await Promise.allSettled([this.#enqueueTail, ...this.#flushTransitions]);
     await this.#waitForSendingTransitions();
     await this.#restoreInterruptedCommands();
     this.#activeUserId = null;
