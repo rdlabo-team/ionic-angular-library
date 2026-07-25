@@ -6,6 +6,7 @@ import {
   KIT_AUTH_RECOVERY_CONFIG,
   KitAuthAccessService,
   KitAuthRecoveryService,
+  type KitAuthAccessLease,
   type KitAuthRecoveryConfig,
   type KitRemoteAccessRecovery,
 } from './auth-access.service';
@@ -98,14 +99,15 @@ describe('KitAuthRecoveryService', () => {
 
   it('does not reclaim a transition started by a synchronous remote-mode subscriber', async () => {
     const userVisibleEffect = vi.fn();
+    const resume = vi.fn(async (lease?: KitAuthAccessLease) => {
+      if (lease?.isCurrent()) userVisibleEffect();
+    });
     const { access, recovery } = setup({
       remoteRecovery: {
         availability: () => new Subject<boolean>(),
         reauthenticate: async () => ({
           activate: async () => true,
-          resume: async (lease) => {
-            if (lease?.isCurrent()) userVisibleEffect();
-          },
+          resume,
         }),
       },
     });
@@ -117,6 +119,7 @@ describe('KitAuthRecoveryService', () => {
     await recovery.recover();
     subscription.unsubscribe();
 
+    expect(resume).not.toHaveBeenCalled();
     expect(userVisibleEffect).not.toHaveBeenCalled();
     expect(access.mode).toBe('none');
   });

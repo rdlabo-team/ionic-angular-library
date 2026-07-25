@@ -265,11 +265,12 @@ describe('kitRequireAuthorizedGuard', () => {
 
   it("'user' → does not reclaim a transition started by a synchronous remote-mode subscriber", async () => {
     const navigateAfterResume = vi.fn();
+    const resume = vi.fn(async (lease?: KitAuthAccessLease) => {
+      if (lease?.isCurrent()) navigateAfterResume();
+    });
     const onAuthorized = vi.fn(async () => ({
       activate: async () => true,
-      resume: async (lease?: KitAuthAccessLease) => {
-        if (lease?.isCurrent()) navigateAfterResume();
-      },
+      resume,
     }));
     setup('user', { onAuthorized });
     const access = TestBed.inject(KitAuthAccessService);
@@ -281,6 +282,7 @@ describe('kitRequireAuthorizedGuard', () => {
     subscription.unsubscribe();
 
     expect(result).toBe(false);
+    expect(resume).not.toHaveBeenCalled();
     expect(navigateAfterResume).not.toHaveBeenCalled();
     expect(access.mode).toBe('none');
   });

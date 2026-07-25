@@ -246,6 +246,7 @@ export class KitAuthRecoveryService {
       }
       this.#clearRetry();
       currentLease = this.#access.grantRemote();
+      if (!currentLease.isCurrent()) return;
       await result.resume(currentLease);
     } catch (error) {
       if (this.#destroyed || !isCurrent()) return;
