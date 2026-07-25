@@ -37,6 +37,7 @@ describe('OfflineSessionService shared-device boundary', () => {
 
   it('起動時に旧manifestを復元しても認証後activateまではsync contextへ公開しない', async () => {
     await service.initialize();
+    await expect(service.getLocalSession()).resolves.toBeNull();
     await expect(service.getSession()).resolves.toBeNull();
   });
 
@@ -46,6 +47,15 @@ describe('OfflineSessionService shared-device boundary', () => {
       scopeIds: [1],
       authSubject: 'uid-A',
       updatedAt: 1,
+    });
+    await expect(service.getSession()).resolves.toBeNull();
+  });
+
+  it('offline sessionはlocal/outbox contextだけを有効にしてremote syncを許可しない', async () => {
+    await expect(service.activateOfflineSession('uid-A')).resolves.toMatchObject({ userId: 10 });
+    await expect(service.getLocalSession()).resolves.toEqual({
+      userId: 10,
+      scopes: [{ userId: 10, groupId: 1 }],
     });
     await expect(service.getSession()).resolves.toBeNull();
   });
@@ -71,6 +81,10 @@ describe('OfflineSessionService shared-device boundary', () => {
     expect(clearUser).toHaveBeenCalledWith(10);
     expect(lastUserId).toBe(20);
     await expect(service.getSession()).resolves.toEqual({ userId: 20, scopes: [{ userId: 20, groupId: 2 }] });
+    await expect(service.getLocalSession()).resolves.toEqual({
+      userId: 20,
+      scopes: [{ userId: 20, groupId: 2 }],
+    });
     expect(service.activeManifest()).toMatchObject({ userId: 20, authSubject: 'uid-B' });
   });
 

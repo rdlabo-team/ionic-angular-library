@@ -17,7 +17,8 @@ export class OfflineSessionService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
   readonly #activeManifest = signal<OfflineSessionManifest | null>(null);
   #initialized = false;
-  #activatedThisRun = false;
+  #localAccessThisRun = false;
+  #remoteActivatedThisRun = false;
 
   readonly activeManifest = this.#activeManifest.asReadonly();
 
@@ -59,7 +60,8 @@ export class OfflineSessionService {
     await this.#repository.setLastUserId(userId);
     await this.#repository.putSessionManifest(userId, manifest);
     this.#activeManifest.set(manifest);
-    this.#activatedThisRun = true;
+    this.#localAccessThisRun = true;
+    this.#remoteActivatedThisRun = true;
   }
 
   async clearActiveSession(): Promise<void> {
@@ -67,7 +69,8 @@ export class OfflineSessionService {
     const userId = await this.#repository.getLastUserId();
     if (userId !== null) await this.#repository.clearUser(userId);
     this.#activeManifest.set(null);
-    this.#activatedThisRun = false;
+    this.#localAccessThisRun = false;
+    this.#remoteActivatedThisRun = false;
   }
 
   /**
@@ -90,9 +93,36 @@ export class OfflineSessionService {
     return { ...manifest, scopeIds: [...manifest.scopeIds] };
   }
 
+  /**
+   * Activates a previously verified manifest for local replica and outbox access only.
+   *
+   * @remarks
+   * This never enables pull or command replay. A later successful remote authentication must call
+   * {@link activateSession} before synchronization can use transport.
+   *
+   * @param authSubject - A currently known provider subject. When supplied, it must match the
+   * persisted subject.
+   */
+  async activateOfflineSession(authSubject?: string | null): Promise<OfflineSessionManifest | null> {
+    const manifest = await this.getOfflineAccessManifest(authSubject);
+    this.#localAccessThisRun = manifest !== null;
+    this.#remoteActivatedThisRun = false;
+    return manifest;
+  }
+
+  /** Returns the session allowed to use the local replica and append outbox commands. */
+  async getLocalSession(): Promise<{ userId: number; scopes: OfflineScope[] } | null> {
+    await this.initialize();
+    return this.#localAccessThisRun ? this.#sessionFromManifest() : null;
+  }
+
+  /** Returns the remotely authenticated session eligible for pull and command replay. */
   async getSession(): Promise<{ userId: number; scopes: OfflineScope[] } | null> {
     await this.initialize();
-    if (!this.#activatedThisRun) return null;
+    return this.#remoteActivatedThisRun ? this.#sessionFromManifest() : null;
+  }
+
+  #sessionFromManifest(): { userId: number; scopes: OfflineScope[] } | null {
     const manifest = this.#activeManifest();
     return manifest
       ? { userId: manifest.userId, scopes: manifest.scopeIds.map((groupId) => ({ userId: manifest.userId, groupId })) }

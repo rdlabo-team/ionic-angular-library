@@ -1,11 +1,19 @@
 import type { EnvironmentProviders } from '@angular/core';
-import { inject, InjectionToken, makeEnvironmentProviders } from '@angular/core';
+import { inject, InjectionToken, makeEnvironmentProviders, provideAppInitializer } from '@angular/core';
 import type { CanActivateFn, RouterStateSnapshot, UrlTree } from '@angular/router';
 import { Router } from '@angular/router';
 import { NavController } from '@ionic/angular/standalone';
 import type { Observable } from 'rxjs';
 import { of, throwError } from 'rxjs';
 import { catchError, map, mergeMap } from 'rxjs/operators';
+import {
+  isExplicitAuthDenial,
+  type KitAuthRecoveryConfig,
+  type KitRemoteAccessRecovery,
+  KitAuthAccessService,
+  KIT_AUTH_RECOVERY_CONFIG,
+  KitAuthRecoveryService,
+} from './auth-access.service';
 
 /**
  * Discriminated set of authentication states the guards react to.
@@ -57,7 +65,7 @@ export interface KitAuthRedirects {
  * `onUnavailable` hooks are optional. Without them the guard allows an authenticated user and
  * redirects unauthenticated or unavailable states, so an app only supplies hooks with real logic.
  */
-export interface KitAuthConfig {
+export interface KitAuthConfig extends KitAuthRecoveryConfig {
   /**
    * Source of the current authentication state.
    *
@@ -75,9 +83,10 @@ export interface KitAuthConfig {
    * or restoring a previously requested redirect. Optional; defaults to `true` (allow activation).
    *
    * @param state - The router state snapshot of the route being activated.
-   * @returns `true` to allow activation, or a `UrlTree` to perform a custom redirect.
+   * @returns `true` to allow activation, a `UrlTree` to perform a custom redirect, or a phased
+   * remote activation that installs the session before transport work resumes.
    */
-  onAuthorized?(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
+  onAuthorized?(state: RouterStateSnapshot): Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
   /**
    * Fallback that runs in {@link kitRequireAuthorizedGuard} when the state is `required` (not authenticated).
    *
@@ -86,9 +95,10 @@ export interface KitAuthConfig {
    * (fall through to the default `whenUnauthorized` redirect).
    *
    * @param state - The router state snapshot of the route being activated.
-   * @returns `true` to allow activation, a `UrlTree` for a custom redirect, or `false` to use the default redirect.
+   * @returns `true` to allow activation, a `UrlTree` for a custom redirect, a phased remote
+   * activation, or `false` to use the default redirect.
    */
-  onUnauthenticated?(state: RouterStateSnapshot): Promise<boolean | UrlTree>;
+  onUnauthenticated?(state: RouterStateSnapshot): Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
   /**
    * Fallback that runs only when authentication is unavailable, never for an explicit
    * unauthenticated result.
@@ -105,13 +115,6 @@ export interface KitAuthConfig {
    * to use the default redirect.
    */
   onUnavailable?(state: RouterStateSnapshot, error?: unknown): Promise<boolean | UrlTree>;
-  /**
-   * Classifies an error from `authState` or `onAuthorized` as authentication unavailability.
-   *
-   * @remarks
-   * Classify transport failures only. In particular, HTTP 401/403 must return `false`.
-   */
-  isUnavailableError?(error: unknown): boolean;
   /** Redirect targets used by the guards. */
   redirects: KitAuthRedirects;
 }
@@ -149,7 +152,11 @@ export const KIT_AUTH_CONFIG = new InjectionToken<KitAuthConfig>('@rdlabo/ionic-
  * ```
  */
 export const provideKitAuth = (configFactory: () => KitAuthConfig): EnvironmentProviders =>
-  makeEnvironmentProviders([{ provide: KIT_AUTH_CONFIG, useFactory: configFactory }]);
+  makeEnvironmentProviders([
+    { provide: KIT_AUTH_CONFIG, useFactory: configFactory },
+    { provide: KIT_AUTH_RECOVERY_CONFIG, useExisting: KIT_AUTH_CONFIG },
+    provideAppInitializer(() => inject(KitAuthRecoveryService).initialize()),
+  ]);
 
 /**
  * Guard that requires the user to be unauthenticated (for example sign-in or sign-up pages).
@@ -242,15 +249,48 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   const { authState, onAuthorized, onUnauthenticated, onUnavailable, isUnavailableError, redirects } = inject(KIT_AUTH_CONFIG);
   const router = inject(Router);
   const navCtrl = inject(NavController);
+  const access = inject(KitAuthAccessService);
 
   const redirectUnauthorized = (): false => {
+    access.clear();
     navCtrl.setDirection('root');
     router.navigate([redirects.whenUnauthorized]);
     return false;
   };
   const resolveUnavailable = async (error?: unknown): Promise<boolean | UrlTree> => {
-    const fallback = onUnavailable ? await onUnavailable(state, error) : false;
-    return fallback === false ? redirectUnauthorized() : fallback;
+    try {
+      const fallback = onUnavailable ? await onUnavailable(state, error) : false;
+      if (fallback === true) {
+        access.grantLocal();
+        return true;
+      }
+      access.clear();
+      return fallback === false ? redirectUnauthorized() : fallback;
+    } catch (fallbackError) {
+      access.clear();
+      throw fallbackError;
+    }
+  };
+  const resolveRemote = async (
+    result: boolean | UrlTree | KitRemoteAccessRecovery,
+  ): Promise<boolean | UrlTree> => {
+    if (isRemoteAccessActivation(result)) {
+      await result.activate();
+      access.grantRemote();
+      try {
+        await result.resume();
+      } catch (error) {
+        if (isExplicitAuthDenial(error)) {
+          access.clear();
+          throw error;
+        }
+        if (!isUnavailableError?.(error)) throw error;
+      }
+      return true;
+    }
+    if (result === true) access.grantRemote();
+    else access.clear();
+    return result;
   };
 
   interface AuthEmission {
@@ -259,22 +299,33 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   }
   return authState().pipe(
     map((authState): AuthEmission => ({ authState })),
-    catchError(
-      (error): Observable<AuthEmission> =>
-        isUnavailableError?.(error) ? of({ authState: 'unavailable', error }) : throwError(() => error),
-    ),
+    catchError((error): Observable<AuthEmission> => {
+      if (isExplicitAuthDenial(error)) {
+        access.clear();
+        return throwError(() => error);
+      }
+      return isUnavailableError?.(error) ? of({ authState: 'unavailable', error }) : throwError(() => error);
+    }),
     mergeMap(async ({ authState: data, error: authStateError }) => {
       if (data === 'user') {
         // 既定は「許可」。tokenLogin / 権限確認等が必要なアプリだけ onAuthorized を渡す。
-        if (!onAuthorized) return true;
+        if (!onAuthorized) {
+          access.grantRemote();
+          return true;
+        }
         try {
-          return await onAuthorized(state);
+          return await resolveRemote(await onAuthorized(state));
         } catch (error) {
+          if (isExplicitAuthDenial(error)) {
+            access.clear();
+            throw error;
+          }
           if (!isUnavailableError?.(error)) throw error;
           return resolveUnavailable(error);
         }
       }
       if (data === 'anonymous') {
+        access.grantRemote();
         return true;
       }
       if (data === 'unavailable') {
@@ -283,9 +334,20 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
       // 既定は false（whenUnauthorized へ）。匿名ログイン等のフォールバックが要るアプリだけ渡す。
       const fallback = onUnauthenticated ? await onUnauthenticated(state) : false;
       if (fallback !== false) {
-        return fallback;
+        return resolveRemote(fallback);
       }
       return redirectUnauthorized();
     }),
   );
 };
+
+function isRemoteAccessActivation(value: boolean | UrlTree | KitRemoteAccessRecovery): value is KitRemoteAccessRecovery {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'activate' in value &&
+    typeof value.activate === 'function' &&
+    'resume' in value &&
+    typeof value.resume === 'function'
+  );
+}

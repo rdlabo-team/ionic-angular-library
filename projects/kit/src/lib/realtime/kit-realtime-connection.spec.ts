@@ -3,6 +3,7 @@ import { Injectable } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { kitRealtimeProtocols, KitRealtimeConnection, KitRealtimeLivenessWatchdog, toKitWebSocketUrl } from './kit-realtime-connection';
+import { KitAuthAccessService } from '../auth/auth-access.service';
 
 interface TestEvent {
   topic: string;
@@ -43,9 +44,14 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   readonly removeAppListener = vi.fn(() => Promise.resolve());
   readonly removeNetworkListener = vi.fn(() => Promise.resolve());
   appListenerResolver: ((handle: PluginListenerHandle) => void) | null = null;
+  requireRemoteAccess = false;
 
-  protected override get realtimeOptions(): { clientId: string } {
-    return { clientId: 'self' };
+  constructor(access?: KitAuthAccessService) {
+    super(access);
+  }
+
+  protected override get realtimeOptions(): { clientId: string; requireRemoteAccess: boolean } {
+    return { clientId: 'self', requireRemoteAccess: this.requireRemoteAccess };
   }
 
   protected get shouldConnect(): boolean {
@@ -143,6 +149,25 @@ describe('KitRealtimeConnection', () => {
   it('can be inherited by an Angular injectable without declaring a constructor', () => {
     TestBed.configureTestingModule({ providers: [InheritedConstructorConnection] });
     expect(TestBed.inject(InheritedConstructorConnection)).toBeInstanceOf(InheritedConstructorConnection);
+  });
+
+  it('opens only in remote mode and suspends an authenticated socket on local mode', async () => {
+    const access = new KitAuthAccessService();
+    const connection = new TestConnection(access);
+    connection.requireRemoteAccess = true;
+
+    const start = connection.startConnectionForTest();
+    connection.appListenerResolver?.({ remove: vi.fn() });
+    await start;
+    expect(connection.sockets).toHaveLength(0);
+
+    access.grantRemote();
+    await vi.waitFor(() => expect(connection.sockets).toHaveLength(1));
+    connection.sockets[0].open();
+    expect(connection.isStreamOpen).toBe(true);
+
+    access.grantLocal();
+    expect(connection.isStreamOpen).toBe(false);
   });
 
   it('pings all targets and reconnects only the target that closes', async () => {

@@ -6,6 +6,7 @@ import { of, throwError } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
 
 import { kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
+import { KitAuthAccessService } from '../auth/auth-access.service';
 
 // ---------------------------------------------------------------------------
 // Mock @capacitor/network so Network.getStatus() never hits native code.
@@ -130,6 +131,48 @@ describe('kitAuthInterceptor', () => {
       const result = await firstValueFrom(runInterceptor(baseReq, next));
       expect(result).toBe(fallbackResponse);
       expect(config.onUnauthorized).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('shared auth access mode', () => {
+    it('serves local fallback without generating headers or using transport', async () => {
+      const fallbackResponse = new HttpResponse({ status: 200, body: 'local' });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        offlineFallback: vi.fn().mockReturnValue(of(fallbackResponse)),
+      });
+      setupInterceptor(config);
+      TestBed.inject(KitAuthAccessService).grantLocal();
+      const next = vi.fn();
+
+      const result = await firstValueFrom(runInterceptor(baseReq, next));
+
+      expect(result).toBe(fallbackResponse);
+      expect(config.getAuthHeaders).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('none mode rejects without exposing local fallback or transport', async () => {
+      const config = makeConfig({ enforceAuthAccessMode: true });
+      setupInterceptor(config);
+      const next = vi.fn();
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toMatchObject({ status: 401 });
+      expect(config.offlineFallback).not.toHaveBeenCalled();
+      expect(config.getAuthHeaders).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('remote mode uses the existing authenticated transport pipeline', async () => {
+      const config = makeConfig({ enforceAuthAccessMode: true });
+      setupInterceptor(config);
+      TestBed.inject(KitAuthAccessService).grantRemote();
+      const response = new HttpResponse({ status: 200 });
+      const next = vi.fn().mockReturnValue(of(response));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).resolves.toBe(response);
+      expect(config.getAuthHeaders).toHaveBeenCalledOnce();
+      expect(next).toHaveBeenCalledOnce();
     });
   });
 

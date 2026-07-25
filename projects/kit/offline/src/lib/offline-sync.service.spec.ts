@@ -42,6 +42,7 @@ describe('OfflineSyncService', () => {
   let rows: OfflineReplicaRow[];
   let connected: ReturnType<typeof signal<boolean>>;
   let session: { userId: number; scopes: OfflineScope[] } | null;
+  let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
   let beforePutCommand: ((command: OfflineCommand) => Promise<void>) | null;
   let pull: ReturnType<typeof vi.fn<(scope: OfflineScope) => Promise<void>>>;
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
@@ -54,6 +55,7 @@ describe('OfflineSyncService', () => {
     rows = [];
     connected = signal(false);
     session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    localSession = undefined;
     beforePutCommand = null;
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
@@ -132,7 +134,10 @@ describe('OfflineSyncService', () => {
         { provide: ErrorHandler, useValue: { handleError } },
         {
           provide: OFFLINE_SYNC_CONTEXT,
-          useValue: { getSession: vi.fn(async () => session) },
+          useValue: {
+            getLocalSession: vi.fn(async () => (localSession === undefined ? session : localSession)),
+            getSession: vi.fn(async () => session),
+          },
         },
         {
           provide: OFFLINE_COMMAND_EXECUTOR,
@@ -141,6 +146,30 @@ describe('OfflineSyncService', () => {
       ],
     });
     service = TestBed.inject(OfflineSyncService);
+  });
+
+  it('local sessionはoutboxへenqueueできるがremote session確立までは送信しない', async () => {
+    localSession = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    session = null;
+    await service.refreshLocalSession();
+
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: 'offline-local',
+        operation: 'documents.create',
+        payload: { title: 'offline' },
+        optimisticValue: { id: 0, title: 'offline' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(commands).toHaveLength(1);
+    expect(service.pendingCount()).toBe(1);
   });
 
   it('同じaggregateの操作を作成順に送り、成功後だけoutboxから除く', async () => {

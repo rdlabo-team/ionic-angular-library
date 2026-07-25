@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { OfflineNetworkService } from './offline-network.service';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 import { OfflineSessionService } from './offline-session.service';
+import type { OfflineSessionManifest } from './offline-session.service';
 import { OfflineSyncService } from './offline-sync.service';
 
 /** User choice when logout encounters unconfirmed local mutations. */
@@ -27,9 +28,29 @@ export class OfflineCoordinatorService {
   }
 
   async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
+    await this.prepareRemoteSession(userId, scopeIds, authSubject);
+    await this.resumeRemoteSession();
+  }
+
+  /** Installs a remotely verified identity without starting pull or outbox replay. */
+  async prepareRemoteSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
     await this.#sync.resetSession();
     await this.#session.activateSession(userId, scopeIds, authSubject);
+  }
+
+  /** Starts pull and outbox replay after the caller has published remote access. */
+  async resumeRemoteSession(): Promise<void> {
     await this.#sync.refreshSession();
+  }
+
+  /**
+   * Activates a restored identity for local replica/outbox use without enabling transport sync.
+   */
+  async activateOfflineSession(authSubject?: string | null): Promise<OfflineSessionManifest | null> {
+    await this.#sync.resetSession();
+    const manifest = await this.#session.activateOfflineSession(authSubject);
+    if (manifest) await this.#sync.refreshLocalSession();
+    return manifest;
   }
 
   async clearActiveSession(): Promise<void> {

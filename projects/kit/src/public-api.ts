@@ -33,6 +33,7 @@ export * from './lib/keyboard/kit-keyboard';
 // only pulled in by apps that import those subpaths.
 
 // Auth: functional route guards.
+export * from './lib/auth/auth-access.service';
 export * from './lib/auth/auth-guards';
 
 // HTTP: functional interceptor.

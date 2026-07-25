@@ -1,5 +1,10 @@
 import { computed, effect, ErrorHandler, inject, Injectable, signal } from '@angular/core';
-import { OFFLINE_COMMAND_EXECUTOR, OFFLINE_SYNC_CONTEXT, type OfflineCommandResult } from './offline-command-executor';
+import {
+  OFFLINE_COMMAND_EXECUTOR,
+  OFFLINE_SYNC_CONTEXT,
+  type OfflineCommandResult,
+  type OfflineSyncSession,
+} from './offline-command-executor';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
@@ -106,6 +111,14 @@ export class OfflineSyncService {
     if (this.#network.connected()) this.#flushInBackground();
   }
 
+  /** Restores local outbox visibility without enabling pull or replay transport. */
+  async refreshLocalSession(): Promise<void> {
+    await this.initialize();
+    await this.#discoverLocalScopes();
+    await this.#restoreInterruptedCommands();
+    await this.#refreshState();
+  }
+
   async resetSession(): Promise<void> {
     this.#invalidateFlush();
     await this.#waitForSendingTransitions();
@@ -127,7 +140,7 @@ export class OfflineSyncService {
 
   async #enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean }): Promise<string> {
     await this.initialize();
-    const session = await this.#context.getSession();
+    const session = await this.#getLocalSession();
     if (!session) throw new Error('Cannot enqueue an offline command without an authenticated user');
     const userId = session.userId;
     this.#setActiveUser(userId);
@@ -159,9 +172,7 @@ export class OfflineSyncService {
     if (initialServerId !== null) {
       const mapped = await this.#repository.getReplicaRowByServerId(scope, entityType, initialServerId);
       if (mapped !== null && mapped.localId !== aggregateLocalId) {
-        throw new Error(
-          `Offline replica serverId ${String(initialServerId)} is already mapped to localId ${mapped.localId}.`,
-        );
+        throw new Error(`Offline replica serverId ${String(initialServerId)} is already mapped to localId ${mapped.localId}.`);
       }
     }
     const optimisticRow: OfflineReplicaRow = {
@@ -453,6 +464,18 @@ export class OfflineSyncService {
     const session = await this.#context.getSession();
     if (!this.#isCurrent(generation)) return false;
     if (!session) {
+      return false;
+    }
+    this.#setActiveUser(session.userId);
+    this.#knownScopes.clear();
+    for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
+    return true;
+  }
+
+  async #discoverLocalScopes(generation = this.#generation): Promise<boolean> {
+    const session = await this.#getLocalSession();
+    if (!this.#isCurrent(generation)) return false;
+    if (!session) {
       this.#activeUserId = null;
       this.#knownScopes.clear();
       return true;
@@ -461,6 +484,10 @@ export class OfflineSyncService {
     this.#knownScopes.clear();
     for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
     return true;
+  }
+
+  #getLocalSession(): Promise<OfflineSyncSession | null> {
+    return this.#context.getLocalSession?.() ?? this.#context.getSession();
   }
 
   #setActiveUser(userId: number): void {

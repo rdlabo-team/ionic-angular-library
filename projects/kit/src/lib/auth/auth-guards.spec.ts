@@ -16,6 +16,7 @@ import {
   kitRequireConfirmingGuard,
   kitRequireAuthorizedGuard,
 } from './auth-guards';
+import { KitAuthAccessService, type KitRemoteAccessRecovery } from './auth-access.service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,13 +48,17 @@ function mockFn<T>(): T {
 function setup(
   state: KitAuthGuardState,
   {
-    onAuthorized = vi.fn().mockResolvedValue(true) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>,
-    onUnauthenticated = vi.fn().mockResolvedValue(false) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>,
+    onAuthorized = vi.fn().mockResolvedValue(true) as unknown as (
+      s: RouterStateSnapshot,
+    ) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>,
+    onUnauthenticated = vi.fn().mockResolvedValue(false) as unknown as (
+      s: RouterStateSnapshot,
+    ) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>,
     onUnavailable = vi.fn().mockResolvedValue(false) as unknown as (s: RouterStateSnapshot, error?: unknown) => Promise<boolean | UrlTree>,
     isUnavailableError = vi.fn().mockReturnValue(false) as unknown as (error: unknown) => boolean,
   }: {
-    onAuthorized?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
-    onUnauthenticated?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
+    onAuthorized?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
+    onUnauthenticated?: (s: RouterStateSnapshot) => Promise<boolean | UrlTree | KitRemoteAccessRecovery>;
     onUnavailable?: (s: RouterStateSnapshot, error?: unknown) => Promise<boolean | UrlTree>;
     isUnavailableError?: (error: unknown) => boolean;
   } = {},
@@ -164,6 +169,7 @@ describe('kitRequireAuthorizedGuard', () => {
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(true);
     expect(onAuthorized).toHaveBeenCalledWith(stateStub);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
   });
 
   it("'user' → propagates UrlTree from onAuthorized", async () => {
@@ -172,6 +178,35 @@ describe('kitRequireAuthorizedGuard', () => {
     setup('user', { onAuthorized });
     const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
     expect(result).toBe(urlTree);
+  });
+
+  it("'user' → publishes remote access between phased activation and transport resume", async () => {
+    const order: string[] = [];
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => void order.push('activate'),
+      resume: async () => void order.push(`resume:${TestBed.inject(KitAuthAccessService).mode}`),
+    }));
+    setup('user', { onAuthorized });
+
+    const result = await runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+
+    expect(result).toBe(true);
+    expect(order).toEqual(['activate', 'resume:remote']);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
+  });
+
+  it("'user' → keeps verified remote access when only phased resume loses transport", async () => {
+    const networkError = { status: 0 };
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => undefined,
+      resume: async () => Promise.reject(networkError),
+    }));
+    setup('user', { onAuthorized, isUnavailableError: (error) => error === networkError });
+
+    await expect(
+      runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub))),
+    ).resolves.toBe(true);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
   });
 
   it("'anonymous' → returns true without calling any hook", async () => {
@@ -226,6 +261,7 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(result).toBe(true);
     expect(onUnavailable).toHaveBeenCalledWith(stateStub, undefined);
     expect(onUnauthenticated).not.toHaveBeenCalled();
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('local');
   });
 
   it("'required' never invokes the unavailable fallback", async () => {
@@ -267,6 +303,20 @@ describe('kitRequireAuthorizedGuard', () => {
     setup('user', { onAuthorized, onUnavailable, isUnavailableError: () => false });
     await expect(runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)))).rejects.toBe(unauthorized);
     expect(onUnavailable).not.toHaveBeenCalled();
+  });
+
+  it.each([401, 403])('HTTP %i from onAuthorized never uses local fallback even with an overly broad classifier', async (status) => {
+    const denial = { status };
+    const onAuthorized = vi.fn().mockRejectedValue(denial) as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
+    const onUnavailable = vi.fn().mockResolvedValue(true) as unknown as (
+      s: RouterStateSnapshot,
+      error?: unknown,
+    ) => Promise<boolean | UrlTree>;
+    setup('user', { onAuthorized, onUnavailable, isUnavailableError: () => true });
+
+    await expect(runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)))).rejects.toBe(denial);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('none');
   });
 });
 
@@ -317,6 +367,28 @@ describe('kitRequireAuthorizedGuard — auth state source errors', () => {
       localStoreError,
     );
     expect(onUnavailable).toHaveBeenCalledOnce();
+  });
+
+  it.each([401, 403])('HTTP %i from authState never uses local fallback even with an overly broad classifier', async (status) => {
+    const denial = { status };
+    const onUnavailable = vi.fn().mockResolvedValue(true);
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideKitAuth(() => ({
+          authState: () => throwError(() => denial),
+          onUnavailable,
+          isUnavailableError: () => true,
+          redirects: REDIRECTS,
+        })),
+        { provide: Router, useValue: { navigate: vi.fn() } },
+        { provide: NavController, useValue: { setDirection: vi.fn() } },
+      ],
+    });
+
+    await expect(runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)))).rejects.toBe(denial);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('none');
   });
 });
 

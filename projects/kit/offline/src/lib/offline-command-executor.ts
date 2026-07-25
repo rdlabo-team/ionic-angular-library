@@ -38,6 +38,9 @@ export interface OfflineSyncSession {
 
 /** Product adapter that exposes the currently authenticated synchronization session. */
 export interface OfflineSyncContext {
+  /** Session allowed to read/write the local replica and append durable outbox commands. */
+  getLocalSession?(): Promise<OfflineSyncSession | null>;
+  /** Remotely authenticated session allowed to pull and replay commands. */
   getSession(): Promise<OfflineSyncSession | null>;
 }
 

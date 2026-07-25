@@ -6,6 +6,7 @@ import { Network } from '@capacitor/network';
 import type { Observable } from 'rxjs';
 import { from, retry, throwError, timer } from 'rxjs';
 import { catchError, map, mergeMap, tap, timeout } from 'rxjs/operators';
+import { KitAuthAccessService } from '../auth/auth-access.service';
 
 /**
  * HTTP methods that are safe to retry automatically.
@@ -57,8 +58,7 @@ const DEFAULT_TIMEOUT_MS = 60_000;
  * @param error - The failed response.
  * @returns Whether this is a maintenance response.
  */
-export const isMaintenanceError = (error: HttpErrorResponse): boolean =>
-  error.status === 503 && error.error?.code === 'MAINTENANCE';
+export const isMaintenanceError = (error: HttpErrorResponse): boolean => error.status === 503 && error.error?.code === 'MAINTENANCE';
 
 /**
  * Parse a `Retry-After` header (delta-seconds or an HTTP-date) into milliseconds, or `null` when it
@@ -97,6 +97,15 @@ const parseRetryAfterMs = (error: HttpErrorResponse): number | null => {
  * only the behavior that actually differs from the canonical baseline.
  */
 export interface KitHttpConfig {
+  /**
+   * Enforce the shared auth access mode before generating headers or using transport.
+   *
+   * @remarks
+   * Optional and `false` by default for backward compatibility. In `local` mode the interceptor
+   * consults `offlineFallback` without calling `getAuthHeaders` or transport. In `none` mode it
+   * rejects without exposing local data.
+   */
+  enforceAuthAccessMode?: boolean;
   /**
    * Produce authentication and metadata headers for the outgoing request.
    *
@@ -352,9 +361,26 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
  */
 export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
   const config = inject(KIT_HTTP_CONFIG);
+  const access = inject(KitAuthAccessService);
 
   if (config.bypass?.(request)) {
     return next(request);
+  }
+
+  if (config.enforceAuthAccessMode && access.mode !== 'remote') {
+    const error = new HttpErrorResponse({
+      // `local` deliberately looks like a transport failure so an outer offline read interceptor
+      // may resolve it. `none` must not use status 0, otherwise that interceptor could expose a
+      // persisted replica before authentication.
+      status: access.mode === 'local' ? 0 : 401,
+      statusText: access.mode === 'local' ? 'Local access only' : 'Authentication required',
+      url: request.url,
+    });
+    if (access.mode === 'local') {
+      const fallback = config.offlineFallback?.(request, error);
+      if (fallback) return fallback;
+    }
+    return throwError(() => error);
   }
 
   return from(Promise.resolve(config.getAuthHeaders(request))).pipe(
