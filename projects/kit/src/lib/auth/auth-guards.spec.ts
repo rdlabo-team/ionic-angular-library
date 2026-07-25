@@ -409,6 +409,46 @@ describe('kitRequireAuthorizedGuard', () => {
     await expect(pending).resolves.toBe(false);
     expect(access.mode).toBe('none');
   });
+
+  it('suspends existing remote capabilities while unauthenticated fallback is pending', async () => {
+    let resolveUnauthenticated: ((value: false) => void) | undefined;
+    const onUnauthenticated = vi.fn(
+      () =>
+        new Promise<false>((resolve) => {
+          resolveUnauthenticated = resolve;
+        }),
+    );
+    setup('required', { onUnauthenticated });
+    const access = TestBed.inject(KitAuthAccessService);
+    access.grantRemote();
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(access.mode).toBe('none');
+    resolveUnauthenticated?.(false);
+
+    await expect(pending).resolves.toBe(false);
+    expect(access.mode).toBe('none');
+  });
+
+  it('suspends existing remote capabilities until unavailable fallback verifies local access', async () => {
+    let resolveUnavailable: ((value: true) => void) | undefined;
+    const onUnavailable = vi.fn(
+      () =>
+        new Promise<true>((resolve) => {
+          resolveUnavailable = resolve;
+        }),
+    );
+    setup('unavailable', { onUnavailable });
+    const access = TestBed.inject(KitAuthAccessService);
+    access.grantRemote();
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    expect(access.mode).toBe('none');
+    resolveUnavailable?.(true);
+
+    await expect(pending).resolves.toBe(true);
+    expect(access.mode).toBe('local');
+  });
 });
 
 describe('kitRequireAuthorizedGuard — auth state source errors', () => {

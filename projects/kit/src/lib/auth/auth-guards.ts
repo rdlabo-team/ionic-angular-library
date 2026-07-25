@@ -254,7 +254,7 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
   const router = inject(Router);
   const navCtrl = inject(NavController);
   const access = inject(KitAuthAccessService);
-  const lease = access.beginTransition();
+  const lease = access.beginTransition({ suspendRemote: true });
 
   const redirectUnauthorized = (): false => {
     if (!lease.isCurrent()) return false;

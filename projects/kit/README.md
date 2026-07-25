@@ -261,6 +261,8 @@ credential.
 Remote activation has two ordered phases. `activate()` installs the remotely verified identity without starting
 transport. The guard then publishes `remote`, and only then calls `resume()` to start pull, outbox replay, and
 realtime work. Returning plain `true` remains supported for applications that do not need phased activation.
+When a protected guard starts a new asynchronous decision, any previously published `remote` capability is
+immediately suspended to `none`; it is granted again only after the current lease completes successfully.
 
 **Setup**
 

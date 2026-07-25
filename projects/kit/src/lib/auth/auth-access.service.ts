@@ -66,10 +66,18 @@ export class KitAuthAccessService {
     return this.#revision;
   }
 
-  /** Start a transition and invalidate every older asynchronous access decision. */
-  beginTransition(): KitAuthAccessLease {
+  /**
+   * Start a transition and invalidate every older asynchronous access decision.
+   *
+   * @param options - Set `suspendRemote` when the new decision must revoke published remote
+   * capabilities immediately while keeping this new lease valid.
+   */
+  beginTransition(options: { suspendRemote?: boolean } = {}): KitAuthAccessLease {
     this.#revision += 1;
     const revision = this.#revision;
+    if (options.suspendRemote && this.#mode.value === 'remote') {
+      this.#mode.next('none');
+    }
     return { isCurrent: () => this.#revision === revision };
   }
 
