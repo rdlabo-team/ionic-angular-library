@@ -1,11 +1,11 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
+import { HttpContext, HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { of, throwError } from 'rxjs';
 import { firstValueFrom } from 'rxjs';
 
-import { kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
+import { KIT_AUTH_BOOTSTRAP_REQUEST, kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
 import { KitAuthAccessService } from '../auth/auth-access.service';
 
 // ---------------------------------------------------------------------------
@@ -174,6 +174,52 @@ describe('kitAuthInterceptor', () => {
       expect(config.getAuthHeaders).toHaveBeenCalledOnce();
       expect(next).toHaveBeenCalledOnce();
     });
+
+    it.each(['none', 'local'] as const)(
+      'allows an explicitly marked auth bootstrap request from %s mode through the authenticated pipeline',
+      async (mode) => {
+        const config = makeConfig({ enforceAuthAccessMode: true });
+        setupInterceptor(config);
+        const access = TestBed.inject(KitAuthAccessService);
+        if (mode === 'local') access.grantLocal();
+        const request = baseReq.clone({
+          context: new HttpContext().set(KIT_AUTH_BOOTSTRAP_REQUEST, true),
+        });
+        const response = new HttpResponse({ status: 200 });
+        const next = vi.fn().mockReturnValue(of(response));
+
+        await expect(firstValueFrom(runInterceptor(request, next))).resolves.toBe(response);
+
+        expect(access.mode).toBe(mode);
+        expect(config.getAuthHeaders).toHaveBeenCalledWith(request);
+        expect(next).toHaveBeenCalledOnce();
+      },
+    );
+
+    it.each(['none', 'local'] as const)(
+      'never turns a failed auth bootstrap request from %s mode into an offline success',
+      async (mode) => {
+        const fallbackResponse = new HttpResponse({ status: 200, body: 'local' });
+        const config = makeConfig({
+          enforceAuthAccessMode: true,
+          offlineFallback: vi.fn().mockReturnValue(of(fallbackResponse)),
+        });
+        setupInterceptor(config);
+        const access = TestBed.inject(KitAuthAccessService);
+        if (mode === 'local') access.grantLocal();
+        const request = new HttpRequest('POST', '/login', null, {
+          context: new HttpContext().set(KIT_AUTH_BOOTSTRAP_REQUEST, true),
+        });
+        const error = new HttpErrorResponse({ status: 0 });
+        const next = vi.fn().mockReturnValue(throwError(() => error));
+
+        await expect(firstValueFrom(runInterceptor(request, next))).rejects.toBe(error);
+
+        expect(access.mode).toBe(mode);
+        expect(config.offlineFallback).not.toHaveBeenCalled();
+        expect(config.onNetworkError).toHaveBeenCalledOnce();
+      },
+    );
 
     it.each([
       [401, 'onUnauthorized'],
