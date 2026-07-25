@@ -1,4 +1,4 @@
-import { HttpContext, HttpErrorResponse, HttpRequest, HttpResponse } from '@angular/common/http';
+import { HttpContext, HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { firstValueFrom, of, throwError } from 'rxjs';
@@ -38,6 +38,20 @@ describe('offlineInterceptor', () => {
     const response = new HttpResponse({ body: { userId: 1 }, status: 200 });
     await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), () => of(response)))).resolves.toBe(response);
     expect(markApiSuccess).toHaveBeenCalledOnce();
+  });
+
+  it('inner interceptorのlocal responseを実API成功として扱わない', async () => {
+    resolve.mockReturnValue({ kind: 'read', readLocal: vi.fn() });
+    const response = new HttpResponse({
+      body: { userId: 1 },
+      status: 200,
+      headers: new HttpHeaders().set(OFFLINE_RESPONSE_HEADER, 'local'),
+    });
+
+    await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), () => of(response)))).resolves.toBe(response);
+
+    expect(markApiSuccess).not.toHaveBeenCalled();
+    expect(markApiFailure).toHaveBeenCalledOnce();
   });
 
   it('status=0だけlocal replica responseへfallbackする', async () => {
