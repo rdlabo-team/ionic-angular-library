@@ -1,12 +1,24 @@
 import type { EnvironmentProviders } from '@angular/core';
 import { inject, InjectionToken, makeEnvironmentProviders } from '@angular/core';
 import type { HttpEvent, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
-import { HttpErrorResponse, HttpResponse } from '@angular/common/http';
+import { HttpContextToken, HttpErrorResponse, HttpResponse } from '@angular/common/http';
 import { Network } from '@capacitor/network';
 import type { Observable } from 'rxjs';
 import { from, retry, throwError, timer } from 'rxjs';
 import { catchError, map, mergeMap, tap, timeout } from 'rxjs/operators';
 import { isExplicitAuthDenial, KitAuthAccessService } from '../auth/auth-access.service';
+
+/**
+ * Marks the narrowly scoped credential-exchange request that establishes remote access.
+ *
+ * @remarks
+ * When shared auth access enforcement is enabled, the application starts in `none` (or may be
+ * recovering from `local`) and therefore cannot make ordinary authenticated requests. The one
+ * server request that verifies the current provider credential must set this context token. It
+ * still runs the complete header, retry, denial, and error pipeline; only the pre-existing
+ * `remote` access requirement is deferred until that exchange succeeds.
+ */
+export const KIT_AUTH_BOOTSTRAP_REQUEST = new HttpContextToken<boolean>(() => false);
 
 /**
  * HTTP methods that are safe to retry automatically.
@@ -365,12 +377,13 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
 export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
   const config = inject(KIT_HTTP_CONFIG);
   const access = inject(KitAuthAccessService);
+  const isAuthBootstrap = request.context.get(KIT_AUTH_BOOTSTRAP_REQUEST);
 
   if (config.bypass?.(request)) {
     return next(request);
   }
 
-  if (config.enforceAuthAccessMode && access.mode !== 'remote') {
+  if (config.enforceAuthAccessMode && access.mode !== 'remote' && !isAuthBootstrap) {
     const error = new HttpErrorResponse({
       // `local` deliberately looks like a transport failure so an outer offline read interceptor
       // may resolve it. `none` must not use status 0, otherwise that interceptor could expose a
@@ -444,9 +457,11 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
             dispatchError(config, req, error);
             return throwError(() => error);
           }
-          const fallback = config.offlineFallback?.(req, error);
-          if (fallback) {
-            return fallback;
+          if (!isAuthBootstrap) {
+            const fallback = config.offlineFallback?.(req, error);
+            if (fallback) {
+              return fallback;
+            }
           }
           dispatchError(config, req, error);
           return throwError(() => error);

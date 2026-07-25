@@ -419,8 +419,7 @@ provideKitAuth(() => {
         resume: () => offline.resumeRemoteSession(),
       };
     },
-    onUnavailable: async (_state, _error, lease) =>
-      (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
+    onUnavailable: async (_state, _error, lease) => (await offline.activateOfflineSession(auth.currentSubject(), lease)) !== null,
     isUnavailableError: isOfflineFallbackError,
     remoteRecovery: {
       availability: () => auth.authorityAvailable$,
@@ -428,8 +427,7 @@ provideKitAuth(() => {
         const session = await auth.tryExchangeCredential();
         return session
           ? {
-              activate: (lease) =>
-                offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
+              activate: (lease) => offline.prepareRemoteSession(session.userId, session.groupIds, session.subject, lease),
               resume: () => offline.resumeRemoteSession(),
             }
           : false;
@@ -669,8 +667,20 @@ export const appConfig: ApplicationConfig = {
 ```
 
 For an offline replica, use
-`withInterceptors([offlineInterceptor, kitAuthInterceptor])` in that order. Authentication/bootstrap endpoints that
-must run before `remote` is granted must be explicitly covered by `bypass`; do not globally relax
+`withInterceptors([offlineInterceptor, kitAuthInterceptor])` in that order. The credential-exchange
+request that must run before `remote` is granted sets `KIT_AUTH_BOOTSTRAP_REQUEST` in its
+`HttpContext`, together with the offline entry point's `OFFLINE_BYPASS`:
+
+```ts
+const context = new HttpContext().set(KIT_AUTH_BOOTSTRAP_REQUEST, true).set(OFFLINE_BYPASS, true);
+http.post('/login', body, { context });
+```
+
+It still receives authentication headers and uses the normal denial/error pipeline; only the
+pre-existing `remote` requirement is deferred. The auth interceptor never consults its configured
+offline fallback for this request, while `OFFLINE_BYPASS` prevents an outer offline interceptor
+from replacing a transport failure with local data. Do not use the broader HTTP `bypass` hook,
+because that also skips authentication headers and error handling, and do not globally relax
 `enforceAuthAccessMode`.
 
 **Error dispatch** (after retries, in `catchError`):
