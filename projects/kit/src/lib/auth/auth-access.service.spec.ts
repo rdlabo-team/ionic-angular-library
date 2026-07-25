@@ -99,6 +99,34 @@ describe('KitAuthRecoveryService', () => {
     expect(access.mode).toBe('none');
   });
 
+  it('retries authentication while local access remains active even without a new availability event', async () => {
+    vi.useFakeTimers();
+    const availability = new Subject<boolean>();
+    const transportError = { status: 0 };
+    const reauthenticate = vi
+      .fn()
+      .mockRejectedValueOnce(transportError)
+      .mockResolvedValueOnce({
+        activate: async () => true,
+        resume: async () => undefined,
+      });
+    const { access, recovery } = setup({
+      remoteRecovery: { availability: () => availability, retryDelayMs: 1000, reauthenticate },
+      isUnavailableError: (error) => error === transportError,
+    });
+    recovery.initialize();
+    access.grantLocal();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reauthenticate).toHaveBeenCalledTimes(1);
+    expect(access.mode).toBe('local');
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reauthenticate).toHaveBeenCalledTimes(2);
+    expect(access.mode).toBe('remote');
+    vi.useRealTimers();
+  });
+
   it('does not restore remote access after a newer access transition invalidates recovery', async () => {
     let resolveReauthentication: ((value: KitRemoteAccessRecovery) => void) | undefined;
     const activate = vi.fn(async () => true);

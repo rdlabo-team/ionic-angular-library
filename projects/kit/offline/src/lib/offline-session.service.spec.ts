@@ -60,6 +60,16 @@ describe('OfflineSessionService shared-device boundary', () => {
     await expect(service.getSession()).resolves.toBeNull();
   });
 
+  it('永続削除を待たずにlocal/outboxとremote syncのruntime accessを失効する', async () => {
+    await service.activateOfflineSession('uid-A');
+
+    service.revokeAccess();
+
+    await expect(service.getLocalSession()).resolves.toBeNull();
+    await expect(service.getSession()).resolves.toBeNull();
+    await expect(service.getOfflineAccessManifest('uid-A')).resolves.toMatchObject({ userId: 10 });
+  });
+
   it('既知のsubjectがmanifestと違う場合はlocal accessを拒否する', async () => {
     await expect(service.getOfflineAccessManifest('uid-B')).resolves.toBeNull();
     await expect(service.getOfflineAccessManifest(null)).resolves.toBeNull();

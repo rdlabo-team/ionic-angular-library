@@ -59,10 +59,7 @@ export class OfflineCoordinatorService {
   /**
    * Activates a restored identity for local replica/outbox use without enabling transport sync.
    */
-  activateOfflineSession(
-    authSubject?: string | null,
-    authLease?: OfflineSessionTransitionLease,
-  ): Promise<OfflineSessionManifest | null> {
+  activateOfflineSession(authSubject?: string | null, authLease?: OfflineSessionTransitionLease): Promise<OfflineSessionManifest | null> {
     const revision = ++this.#transitionRevision;
     const lease = this.#lease(revision, authLease);
     return this.#enqueueTransition(async () => {
@@ -75,6 +72,7 @@ export class OfflineCoordinatorService {
   }
 
   clearActiveSession(): Promise<void> {
+    this.#session.revokeAccess();
     ++this.#transitionRevision;
     return this.#enqueueTransition(async () => {
       await this.#sync.resetSession();
