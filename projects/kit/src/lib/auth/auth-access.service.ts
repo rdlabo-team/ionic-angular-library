@@ -26,7 +26,15 @@ export interface KitRemoteAccessRecovery {
    * @returns `false` when a newer logout or identity transition superseded this activation.
    */
   activate(lease: KitAuthAccessLease): Promise<boolean>;
-  resume(): Promise<void>;
+  /**
+   * Resume remote-only work after access has been published.
+   *
+   * @param lease - Post-grant lease supplied by the kit. Check it after every await before
+   * navigation or other user-visible side effects, because logout or a newer identity transition
+   * may supersede this resume while transport work is settling. Optional for source compatibility
+   * with callers that manually resumed a recovery result before leases were introduced.
+   */
+  resume(lease?: KitAuthAccessLease): Promise<void>;
 }
 
 /** Recovery-specific authentication configuration consumed by {@link KitAuthRecoveryService}. */
@@ -231,8 +239,9 @@ export class KitAuthRecoveryService {
       }
       this.#clearRetry();
       this.#access.grantRemote();
+      const resumeLease = this.#access.beginTransition();
       expectedRevision = this.#access.revision;
-      await result.resume();
+      await result.resume(resumeLease);
     } catch (error) {
       if (this.#destroyed || !isCurrent()) return;
       if (isExplicitAuthDenial(error)) {

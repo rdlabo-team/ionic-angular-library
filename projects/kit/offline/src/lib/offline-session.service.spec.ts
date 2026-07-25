@@ -98,6 +98,16 @@ describe('OfflineSessionService shared-device boundary', () => {
     expect(service.activeManifest()).toMatchObject({ userId: 20, authSubject: 'uid-B' });
   });
 
+  it('user-scoped replicaのscope 0をmanifestとremote sessionに保持する', async () => {
+    await service.activateSession(10, [0], 'uid-A');
+
+    expect(service.activeManifest()).toMatchObject({ userId: 10, scopeIds: [0], authSubject: 'uid-A' });
+    await expect(service.getSession()).resolves.toEqual({
+      userId: 10,
+      scopes: [{ userId: 10, groupId: 0 }],
+    });
+  });
+
   it('同じuserIdでもauthSubjectが変わると旧主体の全scopeを継承しない', async () => {
     await service.initialize();
     await service.activateSession(10, [2], 'uid-B');

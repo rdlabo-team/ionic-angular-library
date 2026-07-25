@@ -234,6 +234,35 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
   });
 
+  it("'user' → invalidates the post-grant resume lease before stale user-visible effects", async () => {
+    let markResumeStarted!: () => void;
+    let releaseResume!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      markResumeStarted = resolve;
+    });
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const navigateAfterResume = vi.fn();
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => true,
+      resume: async (lease?: KitAuthAccessLease) => {
+        markResumeStarted();
+        await resumeGate;
+        if (lease?.isCurrent()) navigateAfterResume();
+      },
+    }));
+    setup('user', { onAuthorized });
+
+    const pending = runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub)));
+    await resumeStarted;
+    TestBed.inject(KitAuthAccessService).clear();
+    releaseResume();
+
+    await expect(pending).resolves.toBe(false);
+    expect(navigateAfterResume).not.toHaveBeenCalled();
+  });
+
   it("'user' → keeps verified remote access when only phased resume loses transport", async () => {
     const networkError = { status: 0 };
     const onAuthorized = vi.fn(async () => ({

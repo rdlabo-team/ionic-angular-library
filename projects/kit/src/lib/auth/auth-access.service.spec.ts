@@ -61,6 +61,41 @@ describe('KitAuthRecoveryService', () => {
     expect(reauthenticate).toHaveBeenCalledOnce();
   });
 
+  it('invalidates the post-grant resume lease when access is revoked during recovery', async () => {
+    let markResumeStarted!: () => void;
+    let releaseResume!: () => void;
+    const resumeStarted = new Promise<void>((resolve) => {
+      markResumeStarted = resolve;
+    });
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const userVisibleEffect = vi.fn();
+    const { access, recovery } = setup({
+      remoteRecovery: {
+        availability: () => new Subject<boolean>(),
+        reauthenticate: async () => ({
+          activate: async () => true,
+          resume: async (lease) => {
+            markResumeStarted();
+            await resumeGate;
+            if (lease?.isCurrent()) userVisibleEffect();
+          },
+        }),
+      },
+    });
+    access.grantLocal();
+
+    const pending = recovery.recover();
+    await resumeStarted;
+    access.clear();
+    releaseResume();
+    await pending;
+
+    expect(userVisibleEffect).not.toHaveBeenCalled();
+    expect(access.mode).toBe('none');
+  });
+
   it('coalesces concurrent recovery attempts into one flight', async () => {
     let resolveRecovery: ((value: false) => void) | undefined;
     const reauthenticate = vi.fn(

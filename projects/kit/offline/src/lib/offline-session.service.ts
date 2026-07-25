@@ -53,7 +53,7 @@ export class OfflineSessionService {
   ): Promise<void | boolean> {
     await this.initialize();
     if (lease && !lease.isCurrent()) return false;
-    const normalizedScopeIds = [...new Set(scopeIds)].filter((id) => id !== 0).sort((a, b) => a - b);
+    const normalizedScopeIds = [...new Set(scopeIds)].sort((a, b) => a - b);
     const previousUserId = await this.#repository.getLastUserId();
     if (lease && !lease.isCurrent()) return false;
     let previous = previousUserId === userId ? ((await this.#repository.getSessionManifest<OfflineSessionManifest>(userId)) ?? null) : null;

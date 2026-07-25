@@ -303,9 +303,10 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
     if (isRemoteAccessActivation(result)) {
       if (!(await result.activate(lease)) || !lease.isCurrent()) return false;
       access.grantRemote();
+      const resumeLease = access.beginTransition();
       const remoteRevision = access.revision;
       try {
-        await result.resume();
+        await result.resume(resumeLease);
       } catch (error) {
         if (access.revision !== remoteRevision) return false;
         if (isExplicitAuthDenial(error)) {
