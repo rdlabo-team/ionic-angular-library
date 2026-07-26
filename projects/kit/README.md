@@ -416,9 +416,7 @@ provideKitAuth(() => ({
     exchange: async (ctx) => {
       const remote = await auth.exchangeCredential(ctx);
       const authSubject = auth.currentSubject();
-      return remote && authSubject
-        ? { ...remote, authSubject }
-        : false;
+      return remote && authSubject ? { ...remote, authSubject } : false;
     },
     currentAuthSubject: () => auth.currentSubject(),
     isUnavailableError: isOfflineFallbackError,
@@ -647,6 +645,9 @@ export const appConfig: ApplicationConfig = {
         // Required for the new offline auth boundary. Kept opt-in so existing applications retain
         // their current interceptor behavior until they wire KitAuthAccessService.
         enforceAuthAccessMode: true,
+        // Optional. Use this only when the API distinguishes invalid identity (401) from
+        // authenticated resource permission (403). Omission keeps the legacy 401/403 revoke policy.
+        isAuthAccessDenial: (_req, error) => error.status === 401,
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
@@ -686,8 +687,9 @@ because that also skips authentication headers and error handling, and do not gl
 
 **Error dispatch** (after retries, in `catchError`):
 
-1. With `enforceAuthAccessMode`, `401` / `403` → revoke access, notify the matching hook, and reject
-   without consulting `offlineFallback`
+1. With `enforceAuthAccessMode`, `401` / `403` never consults `offlineFallback`. The matching hook is
+   notified and the error is rejected. Shared access is revoked only when `isAuthAccessDenial`
+   returns `true`; omitting it preserves the legacy behavior that revokes on both 401 and 403.
 2. Otherwise, `offlineFallback` non-null → return fallback observable (no further hooks called)
 3. `401` → `onUnauthorized` · `403` → `onForbidden`
 4. `0` (connected) → `onNetworkError` · `429` → `onRateLimited(retryAfter?)` · `502/503/504` → `onServerBusy(status, retryAfter?)`
@@ -963,11 +965,7 @@ export class AuthService {
   // request and pass it as expectedUser; the kit checks object identity after `before` completes
   // and immediately before invoking Firebase signOut.
   signOutDeniedSession(expectedUser: User) {
-    return kitSignOut(
-      this.#auth,
-      { before: () => this.clearDeniedSessionTransport() },
-      { expectedUser },
-    );
+    return kitSignOut(this.#auth, { before: () => this.clearDeniedSessionTransport() }, { expectedUser });
   }
 }
 ```

@@ -270,6 +270,28 @@ export interface KitHttpConfig {
    * @param error - The error thrown by `getAuthHeaders`.
    */
   onAuthError?(request: HttpRequest<unknown>, error: unknown): void;
+  /**
+   * Classify whether an auth-related failure should revoke shared remote access.
+   *
+   * @remarks
+   * Consulted only when {@link KitHttpConfig.enforceAuthAccessMode} is enabled and the failure is
+   * an explicit authentication denial ({@link isExplicitAuthDenial | HTTP 401/403} or the same
+   * status shape from {@link KitHttpConfig.getAuthHeaders}). Return `true` to call
+   * {@link KitAuthAccessService.clear}; return `false` to keep the current access mode (for example
+   * when a `403` is a resource permission error rather than a lost session). When omitted, both
+   * `401` and `403` revoke access — the historical default.
+   *
+   * Regardless of the return value, explicit `401`/`403` responses never reach
+   * {@link KitHttpConfig.offlineFallback}; the matching response hook
+   * ({@link KitHttpConfig.onUnauthorized} / {@link KitHttpConfig.onForbidden}) still runs and the
+   * error is rethrown. A rejection from `getAuthHeaders` has no response, so it calls only
+   * {@link KitHttpConfig.onAuthError}.
+   *
+   * @param request - The outgoing request that failed (or whose headers could not be produced).
+   * @param error - The `HttpErrorResponse` or header-production rejection.
+   * @returns `true` when shared remote access should be cleared.
+   */
+  isAuthAccessDenial?(request: HttpRequest<unknown>, error: unknown): boolean;
 }
 
 /**
@@ -310,6 +332,19 @@ export const KIT_HTTP_CONFIG = new InjectionToken<KitHttpConfig>('@rdlabo/ionic-
  */
 export const provideKitHttp = (configFactory: () => KitHttpConfig): EnvironmentProviders =>
   makeEnvironmentProviders([{ provide: KIT_HTTP_CONFIG, useFactory: configFactory }]);
+
+/**
+ * True when shared remote access should be revoked for an auth-related failure.
+ *
+ * @remarks
+ * Only meaningful when {@link KitHttpConfig.enforceAuthAccessMode} is enabled and
+ * {@link isExplicitAuthDenial} already matched. When {@link KitHttpConfig.isAuthAccessDenial} is
+ * omitted, every explicit denial revokes access (legacy default).
+ *
+ * @internal
+ */
+const shouldRevokeAuthAccess = (config: KitHttpConfig, req: HttpRequest<unknown>, error: unknown): boolean =>
+  config.isAuthAccessDenial?.(req, error) ?? isExplicitAuthDenial(error);
 
 /**
  * Classify a final (post-retry) error and invoke the matching {@link KitHttpConfig} hook.
@@ -402,7 +437,9 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
   return from(Promise.resolve(config.getAuthHeaders(request))).pipe(
     catchError((headerError: unknown) => {
       // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
-      if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError)) access.clear();
+      if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError) && shouldRevokeAuthAccess(config, request, headerError)) {
+        access.clear();
+      }
       config.onAuthError?.(request, headerError);
       return throwError(() => headerError);
     }),
@@ -453,7 +490,7 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
         }),
         catchError((error: HttpErrorResponse) => {
           if (config.enforceAuthAccessMode && isExplicitAuthDenial(error)) {
-            access.clear();
+            if (shouldRevokeAuthAccess(config, req, error)) access.clear();
             dispatchError(config, req, error);
             return throwError(() => error);
           }
