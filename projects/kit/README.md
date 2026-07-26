@@ -633,7 +633,7 @@ fields and ignored server fields are never persisted.
 ```typescript
 // app.config.ts
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { kitAuthInterceptor, provideKitHttp, KitReloadAlertController } from '@rdlabo/ionic-angular-kit';
+import { isIdentityAuthFailure, kitAuthInterceptor, provideKitHttp, KitReloadAlertController } from '@rdlabo/ionic-angular-kit';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -645,13 +645,15 @@ export const appConfig: ApplicationConfig = {
         // Required for the new offline auth boundary. Kept opt-in so existing applications retain
         // their current interceptor behavior until they wire KitAuthAccessService.
         enforceAuthAccessMode: true,
-        // Optional. Use this only when the API distinguishes invalid identity (401) from
-        // authenticated resource permission (403). Omission keeps the legacy 401/403 revoke policy.
-        isAuthAccessDenial: (_req, error) => error.status === 401,
+        // Only an explicitly tagged global identity failure may revoke shared access.
+        // Omission keeps the legacy 401/403 revoke policy for existing applications.
+        isAuthAccessDenial: (_req, error) => isIdentityAuthFailure(error),
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
-        onUnauthorized: (req) => auth.signOut(),
+        onUnauthorized: (_req, error) => {
+          if (isIdentityAuthFailure(error)) auth.signOut();
+        },
         // Fleet-canonical "network error → offer reload" (see KitReloadAlertController).
         onNetworkError: (status) =>
           reload.present({
@@ -697,6 +699,20 @@ because that also skips authentication headers and error handling, and do not gl
 6. anything else (`404`, …) → not handled here; the caller decides
 
 Plus: a `getAuthHeaders` rejection → `onAuthError(request, error)` (the request is never sent).
+
+The shared `401` body carries `authFailureScope`:
+
+- `identity`: the Firebase/global identity cannot be established; global session and replica/outbox
+  invalidation is allowed.
+- `reauthentication`: the identity remains valid, but a recent sign-in/step-up is required.
+- `credential`: only a feature-owned delegated credential is invalid.
+
+`getAuthFailureScope(error)` reads this explicit field and returns `null` for untagged legacy
+responses. `isIdentityAuthFailure(error)` is therefore intentionally strict. `onUnauthorized`
+receives the complete `HttpErrorResponse`, allowing destructive callbacks to use the same boundary.
+`403` always remains a resource/scope/business permission failure and never implies global identity
+loss. Existing callbacks that accept only the request remain source-compatible, and applications
+that omit `isAuthAccessDenial` retain the historical 401/403 revocation behavior.
 
 **Note (0.0.9):** `onNetworkError` is now narrowed to genuine network failures (status `0`); `502/503/429` moved to `onServerBusy`/`onRateLimited`. Existing configs stay valid — they just fire less often — so adopt the new hooks only if you want to distinguish server-busy / rate-limit from a connection loss.
 

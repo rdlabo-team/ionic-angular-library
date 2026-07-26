@@ -300,7 +300,7 @@ describe('kitAuthInterceptor', () => {
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error403);
 
       expect(access.mode).toBe('remote');
-      expect(config.onForbidden).toHaveBeenCalledOnce();
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error403);
       expect(config.onUnauthorized).not.toHaveBeenCalled();
       expect(config.offlineFallback).not.toHaveBeenCalled();
       expect(config.isAuthAccessDenial).toHaveBeenCalledWith(baseReq, error403);
@@ -320,7 +320,7 @@ describe('kitAuthInterceptor', () => {
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error401);
 
       expect(access.mode).toBe('none');
-      expect(config.onUnauthorized).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(baseReq, error401);
       expect(config.isAuthAccessDenial).toHaveBeenCalledWith(baseReq, error401);
     });
 
@@ -353,7 +353,7 @@ describe('kitAuthInterceptor', () => {
       const next = vi.fn().mockReturnValue(throwError(() => error401));
 
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toThrow();
-      expect(config.onUnauthorized).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(baseReq, error401);
       expect(config.onForbidden).not.toHaveBeenCalled();
     });
   });
@@ -368,7 +368,7 @@ describe('kitAuthInterceptor', () => {
       const next = vi.fn().mockReturnValue(throwError(() => error403));
 
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toThrow();
-      expect(config.onForbidden).toHaveBeenCalledOnce();
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error403);
       expect(config.onUnauthorized).not.toHaveBeenCalled();
     });
   });
