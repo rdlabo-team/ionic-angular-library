@@ -324,8 +324,13 @@ export class SqliteOfflineRepository implements OfflineRepository {
     }
     if (!commandColumns.some((column) => column['name'] === 'optimistic_value_json')) {
       await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_value_json TEXT');
-      await this.#execute(databaseId, 'UPDATE offline_sync_commands SET optimistic_value_json = payload_json');
     }
+    // Keep this repair outside the ADD-column branch so a process/database
+    // failure after ALTER but before backfill is retried on every open.
+    await this.#execute(
+      databaseId,
+      'UPDATE offline_sync_commands SET optimistic_value_json = payload_json WHERE optimistic_value_json IS NULL',
+    );
     await this.#execute(
       databaseId,
       `INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)

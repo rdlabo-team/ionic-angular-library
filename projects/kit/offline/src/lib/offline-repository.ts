@@ -138,8 +138,6 @@ const METADATA_KEY = 'offline:metadata';
 const SESSION_MANIFESTS_KEY = 'offline:session:manifests';
 const ROWS_KEY = 'offline:replica:rows';
 const CURSORS_KEY = 'offline:replica:cursors';
-const LEGACY_ENTITIES_KEY = 'offline:business_cache:entities';
-const LEGACY_QUERIES_KEY = 'offline:business_cache:queries';
 const OUTBOX_KEY = 'offline:outbox:commands';
 const REPLICA_TRANSACTION_KEY = 'offline:replica:transaction';
 const REPLICA_SCHEMA_MIGRATION_KEY = 'offline:replica:schema-migration';
@@ -322,24 +320,10 @@ export class IonicOfflineRepository implements OfflineRepository {
   async #migrate(): Promise<void> {
     const metadata = await this.#storage.get<Partial<OfflineMetadata>>(METADATA_KEY);
     if (metadata?.schemaVersion !== undefined && metadata.schemaVersion !== OFFLINE_SCHEMA_VERSION) {
-      await Promise.all([
-        this.#storage.remove(SESSION_MANIFESTS_KEY),
-        this.#storage.remove(ROWS_KEY),
-        this.#storage.remove(CURSORS_KEY),
-        this.#storage.remove(LEGACY_ENTITIES_KEY),
-        this.#storage.remove(LEGACY_QUERIES_KEY),
-        this.#storage.remove(OUTBOX_KEY),
-        this.#storage.remove(REPLICA_SCHEMA_MIGRATION_KEY),
-      ]);
-      await this.#storage.set<OfflineMetadata>(METADATA_KEY, {
-        schemaVersion: OFFLINE_SCHEMA_VERSION,
-        lastUserId: metadata.lastUserId ?? null,
-        replicaSchemaVersion: null,
-        replicaSchemaHash: null,
-      });
-      await this.#storage.remove(REPLICA_TRANSACTION_KEY);
-      await this.#initializeReplicaSchema(null, null);
-      return;
+      throw new Error(
+        `Unsupported offline storage schema version ${metadata.schemaVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
+          'A lossless core schema migration is required before this database can be opened.',
+      );
     }
 
     const interruptedSchemaMigration = await this.#storage.get<OfflineReplicaSchemaMigrationJournal>(REPLICA_SCHEMA_MIGRATION_KEY);

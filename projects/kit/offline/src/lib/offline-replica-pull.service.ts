@@ -12,6 +12,13 @@ import {
   type OfflineScope,
 } from './offline-repository';
 
+interface CollapsedOfflineReplicaChange extends OfflineReplicaChange {
+  /** Last position in this page at which each command id was acknowledged. */
+  acknowledgementOrdinals: Readonly<Record<string, number>>;
+  /** Position of the authoritative last change retained by the collapse. */
+  collapsedOrdinal: number;
+}
+
 /** Pulls authoritative server deltas into one durable local replica partition. */
 @Injectable({ providedIn: 'root' })
 export class OfflineReplicaPullService {
@@ -223,21 +230,28 @@ export class OfflineReplicaPullService {
     return projectOfflineReplicaValues(schema, change.values);
   }
 
-  #collapseChanges(changes: readonly OfflineReplicaChange[]): OfflineReplicaChange[] {
-    const collapsed = new Map<string, OfflineReplicaChange>();
-    for (const change of changes) {
+  #collapseChanges(changes: readonly OfflineReplicaChange[]): CollapsedOfflineReplicaChange[] {
+    const collapsed = new Map<string, CollapsedOfflineReplicaChange>();
+    for (const [ordinal, change] of changes.entries()) {
       const key = `${change.sourceKey}:${change.serverId}`;
       const previous = collapsed.get(key);
+      const acknowledgedCommandIds = [...new Set([...(previous?.acknowledgedCommandIds ?? []), ...(change.acknowledgedCommandIds ?? [])])];
+      const acknowledgementOrdinals = { ...(previous?.acknowledgementOrdinals ?? {}) };
+      for (const commandId of change.acknowledgedCommandIds ?? []) {
+        acknowledgementOrdinals[commandId] = ordinal;
+      }
       collapsed.set(key, {
         ...change,
-        acknowledgedCommandIds: [...new Set([...(previous?.acknowledgedCommandIds ?? []), ...(change.acknowledgedCommandIds ?? [])])],
+        acknowledgedCommandIds,
+        acknowledgementOrdinals,
+        collapsedOrdinal: ordinal,
       });
     }
     return [...collapsed.values()];
   }
 
   #applyAcknowledgement(
-    change: OfflineReplicaChange,
+    change: CollapsedOfflineReplicaChange,
     row: OfflineReplicaRow,
     related: readonly OfflineCommand[],
     putRows: OfflineReplicaRow[],
@@ -253,9 +267,15 @@ export class OfflineReplicaPullService {
     if (related.slice(0, lastAcknowledgedIndex + 1).some((command) => !acknowledgedIds.has(command.commandId))) {
       throw new Error(`Replica acknowledgement skipped an earlier aggregate command.`);
     }
+    const lastAcknowledgedCommand = related[lastAcknowledgedIndex]!;
+    const acknowledgementSuperseded = (change.acknowledgementOrdinals[lastAcknowledgedCommand.commandId] ?? -1) < change.collapsedOrdinal;
     const following = related
       .slice(lastAcknowledgedIndex + 1)
-      .map((command) => this.#executor.withServerRevision(command, change.serverRevision));
+      .map((command) =>
+        acknowledgementSuperseded
+          ? { ...command, state: 'conflict' as const, retryAt: null, lastErrorCode: change.deleted ? 'remote_deleted' : 'remote_revision' }
+          : this.#executor.withServerRevision(command, change.serverRevision),
+      );
     for (const command of following) putCommands.set(command.commandId, command);
     for (const command of related.slice(0, lastAcknowledgedIndex + 1)) {
       removeCommandIds.add(command.commandId);
@@ -283,7 +303,7 @@ export class OfflineReplicaPullService {
       confirmedValues,
       serverRevision: change.serverRevision,
       fetchedAt: Date.now(),
-      syncState: following.length > 0 ? 'pending' : 'confirmed',
+      syncState: following.length > 0 ? (acknowledgementSuperseded ? 'conflict' : 'pending') : 'confirmed',
     });
   }
 

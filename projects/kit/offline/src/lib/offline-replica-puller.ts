@@ -14,7 +14,10 @@ export interface OfflineReplicaChange {
   sourceKey: string;
   serverId: number;
   serverRevision: string | number;
-  /** Idempotency command ids durably recorded by the server and reflected in this final row state. */
+  /**
+   * Idempotency command ids durably recorded by the server and reflected in this final row state.
+   * They may include commands from other clients; the runtime correlates only ids in its local Outbox.
+   */
   acknowledgedCommandIds?: readonly string[];
   values: unknown | null;
   deleted: boolean;

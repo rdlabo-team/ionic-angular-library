@@ -788,6 +788,152 @@ describe('OfflineReplicaPullService', () => {
       expect(await repository.getCommands(scope)).toEqual([]);
     });
 
+    it('lost ACKの後に外部更新が同じpageへ入ってもfollowing commandを最新revisionへrebaseしない', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-lost-update',
+            serverId: 42,
+            values: { id: 42, title: 'Follow-up edit' },
+            confirmedValues: { id: 42, title: 'Baseline' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-ack-lost',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-lost-update',
+            operation: 'test_items.update',
+            payload: { title: 'First edit' },
+            optimisticValue: { id: 42, title: 'First edit' },
+            payloadHash: 'hash-1',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 1,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+          {
+            ...scope,
+            commandId: 'cmd-following',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-lost-update',
+            operation: 'test_items.update',
+            payload: { title: 'Follow-up edit' },
+            optimisticValue: { id: 42, title: 'Follow-up edit' },
+            payloadHash: 'hash-2',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 2,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      pull.mockResolvedValueOnce(
+        page(
+          [
+            itemChange(42, 'First edit applied', {
+              serverRevision: 2,
+              acknowledgedCommandIds: ['cmd-ack-lost'],
+            }),
+            itemChange(42, 'Other device edit', {
+              serverRevision: 3,
+              acknowledgedCommandIds: ['cmd-other-device'],
+            }),
+          ],
+          { nextCursor: 'cursor-v1' },
+        ),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', '019d-lost-update')).resolves.toMatchObject({
+        values: { title: 'Follow-up edit' },
+        confirmedValues: { title: 'Other device edit' },
+        serverRevision: 3,
+        syncState: 'conflict',
+      });
+      await expect(repository.getCommands(scope)).resolves.toEqual([
+        expect.objectContaining({
+          commandId: 'cmd-following',
+          baseRevision: 1,
+          state: 'conflict',
+          lastErrorCode: 'remote_revision',
+        }),
+      ]);
+    });
+
+    it('page内のackが全て他端末由来ならlocal commandをconflictへ遷移しない', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-other-acks',
+            serverId: 42,
+            values: { id: 42, title: 'Local edit' },
+            confirmedValues: { id: 42, title: 'Baseline' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-local',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-other-acks',
+            operation: 'test_items.update',
+            payload: { title: 'Local edit' },
+            optimisticValue: { id: 42, title: 'Local edit' },
+            payloadHash: 'hash-local',
+            baseRevision: 3,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      pull.mockResolvedValueOnce(
+        page(
+          [
+            itemChange(42, 'Other device edit 1', {
+              serverRevision: 2,
+              acknowledgedCommandIds: ['cmd-other-1'],
+            }),
+            itemChange(42, 'Other device edit 2', {
+              serverRevision: 3,
+              acknowledgedCommandIds: ['cmd-other-2'],
+            }),
+          ],
+          { nextCursor: 'cursor-v1' },
+        ),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', '019d-other-acks')).resolves.toMatchObject({
+        confirmedValues: { title: 'Other device edit 2' },
+        serverRevision: 3,
+        syncState: 'pending',
+      });
+      await expect(repository.getCommands(scope)).resolves.toEqual([
+        expect.objectContaining({ commandId: 'cmd-local', baseRevision: 3, state: 'pending' }),
+      ]);
+    });
+
     it('skipped-prefix acknowledgementはrejectする', async () => {
       await repository.transactReplica({
         putRows: [

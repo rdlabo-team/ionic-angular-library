@@ -325,6 +325,47 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(plugin.commitTransaction).not.toHaveBeenCalled();
   });
 
+  it('optimistic_value_jsonのADD後にbackfillが失敗しても次回openで再試行する', async () => {
+    let hasOptimisticValueColumn = false;
+    let failBackfill = true;
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[replicaSchemaV1.version, replicaSchemaV1Hash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) {
+        return {
+          rows: [{ name: 'aggregate_local_id' }, ...(hasOptimisticValueColumn ? [{ name: 'optimistic_value_json' }] : [])],
+        };
+      }
+      return { rows: [] };
+    });
+    plugin.execute.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement.startsWith('ALTER TABLE offline_sync_commands ADD COLUMN optimistic_value_json')) {
+        hasOptimisticValueColumn = true;
+      }
+      if (statement.startsWith('UPDATE offline_sync_commands SET optimistic_value_json') && failBackfill) {
+        failBackfill = false;
+        throw new Error('injected backfill failure');
+      }
+      return {};
+    });
+
+    await expect(createRepository().initialize()).rejects.toThrow('injected backfill failure');
+    TestBed.resetTestingModule();
+    await expect(createRepository().initialize()).resolves.toBeUndefined();
+
+    const statements = plugin.execute.mock.calls.map(([options]) => (options as { statement: string }).statement);
+    expect(
+      statements.filter((statement) => statement.startsWith('ALTER TABLE offline_sync_commands ADD COLUMN optimistic_value_json')),
+    ).toHaveLength(1);
+    expect(statements.filter((statement) => statement.startsWith('UPDATE offline_sync_commands SET optimistic_value_json'))).toHaveLength(
+      2,
+    );
+  });
+
   describe('offline replica schema initialization', () => {
     it('first install creates product tables and stores metadata in one transaction', async () => {
       storedReplicaMetadata = null;

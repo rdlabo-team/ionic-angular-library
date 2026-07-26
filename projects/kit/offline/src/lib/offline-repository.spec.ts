@@ -890,12 +890,13 @@ describe('IonicOfflineRepository', () => {
     await expect(repository.getReplicaRows({ userId: 1, groupId: 10 }, 'local_projections')).resolves.toEqual([]);
   });
 
-  it('未知schemaではoffline領域だけ初期化し他のstorage keyを保持する', async () => {
+  it('未知core schemaはOutboxを消さずlossless migrationが無い限りfail closedにする', async () => {
     storage.values.set('offline:metadata', { schemaVersion: 999, lastUserId: 1 });
     storage.values.set('offline:outbox:commands', { stale: {} });
     storage.values.set('firebaseToken', { token: 'keep' });
-    await repository.initialize();
-    expect(storage.values.has('offline:outbox:commands')).toBe(false);
+    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999; expected 4');
+    expect(storage.values.get('offline:outbox:commands')).toEqual({ stale: {} });
+    expect(storage.values.get('offline:metadata')).toEqual({ schemaVersion: 999, lastUserId: 1 });
     expect(storage.values.get('firebaseToken')).toEqual({ token: 'keep' });
   });
 
@@ -989,7 +990,7 @@ describe('IonicOfflineRepository', () => {
     expect(await repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-bbbb')).toBeNull();
   });
 
-  it('schema reset時にreplica rowsも消す', async () => {
+  it('未知core schemaではreplica rowsも破壊しない', async () => {
     storage.values.set('offline:replica:rows', {
       '1:10:test_items:019d-bbbb': {
         userId: 1,
@@ -1005,8 +1006,8 @@ describe('IonicOfflineRepository', () => {
       },
     });
     storage.values.set('offline:metadata', { schemaVersion: 999, lastUserId: 1 });
-    await repository.initialize();
-    expect(storage.values.has('offline:replica:rows')).toBe(false);
+    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999');
+    expect(storage.values.has('offline:replica:rows')).toBe(true);
   });
 
   describe('replica pull persistence', () => {
