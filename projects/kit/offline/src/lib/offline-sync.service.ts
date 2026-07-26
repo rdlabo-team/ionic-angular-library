@@ -76,7 +76,8 @@ export class OfflineSyncService {
 
   constructor() {
     effect(() => {
-      if (this.#initialized && this.#network.connected()) this.#flushInBackground();
+      const connected = this.#network.connected();
+      if (this.#initialized && connected) this.#flushInBackground();
     });
   }
 
