@@ -176,6 +176,27 @@ describe('OfflineSyncService', () => {
     expect(service.pendingCount()).toBe(1);
   });
 
+  it('offline初期化後の再接続でpending outboxを自動送信する', async () => {
+    await service.initialize();
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: 'reconnect-local',
+        operation: 'documents.create',
+        payload: { title: 'queued offline' },
+        optimisticValue: { id: 0, title: 'queued offline' },
+      },
+      { flush: false },
+    );
+    expect(execute).not.toHaveBeenCalled();
+
+    connected.set(true);
+
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(service.pendingCount()).toBe(0));
+  });
+
   it('session失効前に開始したenqueueを永続commitせずreset完了まで直列化する', async () => {
     let releaseRead: (() => void) | undefined;
     let readStarted: (() => void) | undefined;
