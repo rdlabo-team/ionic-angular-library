@@ -7,6 +7,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { KIT_AUTH_BOOTSTRAP_REQUEST, kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
 import { KitAuthAccessService } from '../auth/auth-access.service';
+import { isIdentityAuthFailure } from './auth-failure';
 
 // ---------------------------------------------------------------------------
 // Mock @capacitor/network so Network.getStatus() never hits native code.
@@ -340,6 +341,59 @@ describe('kitAuthInterceptor', () => {
         expect(access.mode).toBe('none');
         expect(config[hook]).toHaveBeenCalledOnce();
       }
+    });
+
+    it.each([
+      ['identity', 'AUTH_IDENTITY_INVALID', true],
+      ['reauthentication', 'STEP_UP_REQUIRED', false],
+      ['credential', 'PUBLIC_BOOKING_SESSION_INVALID', false],
+      [undefined, undefined, false],
+    ] as const)('strict auth scope keeps global access unless scope is %s', async (authFailureScope, code, shouldClear) => {
+      const error = new HttpErrorResponse({
+        status: 401,
+        error:
+          authFailureScope === undefined
+            ? { statusCode: 401, message: 'Legacy unauthorized' }
+            : { statusCode: 401, message: 'Unauthorized', code, authFailureScope },
+      });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe(shouldClear ? 'none' : 'remote');
+      expect(config.onUnauthorized).toHaveBeenCalledWith(baseReq, error);
+    });
+
+    it('does not revoke for a 403 that falsely claims identity without the standard code', async () => {
+      const error = new HttpErrorResponse({
+        status: 403,
+        error: {
+          statusCode: 403,
+          message: 'Forbidden',
+          code: 'BUSINESS_FORBIDDEN',
+          authFailureScope: 'identity',
+        },
+      });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('remote');
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
     });
   });
 

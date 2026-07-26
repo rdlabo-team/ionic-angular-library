@@ -708,11 +708,26 @@ The shared `401` body carries `authFailureScope`:
 - `credential`: only a feature-owned delegated credential is invalid.
 
 `getAuthFailureScope(error)` reads this explicit field and returns `null` for untagged legacy
-responses. `isIdentityAuthFailure(error)` is therefore intentionally strict. `onUnauthorized`
+responses. It also accepts an explicitly tagged historical `403` identity failure for products
+whose installed clients still require that status; new APIs use `401`.
+`isIdentityAuthFailure(error)` is therefore intentionally strict. `onUnauthorized`
 receives the complete `HttpErrorResponse`, allowing destructive callbacks to use the same boundary.
-`403` always remains a resource/scope/business permission failure and never implies global identity
-loss. Existing callbacks that accept only the request remain source-compatible, and applications
+An untagged `403` remains a resource/scope/business permission failure and never implies global
+identity loss. Existing callbacks that accept only the request remain source-compatible, and applications
 that omit `isAuthAccessDenial` retain the historical 401/403 revocation behavior.
+
+Deploy the API contract before enabling the strict client classifier:
+
+| Combination                  | Result                                                                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Tagged API + legacy client   | The extra body fields are ignored and the client's existing status behavior is preserved.                   |
+| Untagged API + strict client | Global identity loss cannot be identified safely, so the client retains local identity state.               |
+| Tagged API + strict client   | Only `identity` with `AUTH_IDENTITY_INVALID` revokes global access; narrower failures remain feature-owned. |
+
+For products whose installed clients historically require auth failure as `403`, deploy an explicitly
+tagged legacy `403` identity response first. The strict classifier accepts it only with the matching
+`statusCode`, scope, and `AUTH_IDENTITY_INVALID` code. Do not infer identity from an untagged legacy
+401/403: that would collapse `credential` and `reauthentication` back into destructive global logout.
 
 **Note (0.0.9):** `onNetworkError` is now narrowed to genuine network failures (status `0`); `502/503/429` moved to `onServerBusy`/`onRateLimited`. Existing configs stay valid — they just fire less often — so adopt the new hooks only if you want to distinguish server-busy / rate-limit from a connection loss.
 
