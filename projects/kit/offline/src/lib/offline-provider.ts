@@ -55,6 +55,7 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
         databaseName: options.databaseName,
         createEncryptionKey: options.createEncryptionKey,
         replicaSchema: options.replicaSchema,
+        outboxLimits: options.outboxLimits,
       },
     },
     {

@@ -38,8 +38,26 @@ export class OfflinePayloadValidationError extends Error {
   }
 }
 
+/** Raised before persistence when retaining another command would exceed the configured durable Outbox capacity. */
+export class OfflineOutboxCapacityError extends Error {
+  constructor(
+    readonly reason: 'command_count' | 'serialized_bytes',
+    readonly currentCommands: number,
+    readonly currentBytes: number,
+  ) {
+    super(
+      reason === 'command_count'
+        ? 'Offline Outbox command limit reached; synchronize or discard a pending command before continuing'
+        : 'Offline Outbox storage limit reached; synchronize or discard a pending command before continuing',
+    );
+    this.name = 'OfflineOutboxCapacityError';
+  }
+}
+
 const MAX_PARALLEL_AGGREGATES = 3;
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
+const DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER = 1_000;
+const DEFAULT_MAX_OUTBOX_BYTES_PER_USER = 10 * 1024 * 1024;
 
 /** Maintains the optimistic local replica and synchronizes its durable outbox. */
 @Injectable({ providedIn: 'root' })
@@ -175,6 +193,7 @@ export class OfflineSyncService {
       createdAt: await this.#nextCommandCreatedAt(userId),
       lastErrorCode: null,
     };
+    await this.#assertOutboxCapacity(userId, command);
     const entityType = this.#entityType(command);
     const existing = await this.#repository.getReplicaRow(scope, entityType, aggregateLocalId);
     const initialServerId = this.#initialServerId(existing?.serverId ?? null, request.serverId);
@@ -202,6 +221,26 @@ export class OfflineSyncService {
     await this.#refreshState();
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
     return commandId;
+  }
+
+  async #assertOutboxCapacity(userId: number, command: OfflineCommand): Promise<void> {
+    const commands = this.#repository.getCommandsForUser
+      ? await this.#repository.getCommandsForUser(userId)
+      : (await Promise.all([...this.#knownScopes.values()].filter((scope) => scope.userId === userId).map((scope) => this.#repository.getCommands(scope)))).flat();
+    const maxCommands = this.#options.outboxLimits?.maxCommandsPerUser ?? DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER;
+    const maxBytes = this.#options.outboxLimits?.maxBytesPerUser ?? DEFAULT_MAX_OUTBOX_BYTES_PER_USER;
+    const currentBytes = this.#serializedOutboxBytes(commands);
+    if (commands.length >= maxCommands) {
+      throw new OfflineOutboxCapacityError('command_count', commands.length, currentBytes);
+    }
+    const nextBytes = currentBytes + this.#serializedOutboxBytes([command]);
+    if (nextBytes > maxBytes) {
+      throw new OfflineOutboxCapacityError('serialized_bytes', commands.length, currentBytes);
+    }
+  }
+
+  #serializedOutboxBytes(commands: readonly OfflineCommand[]): number {
+    return new TextEncoder().encode(JSON.stringify(commands)).byteLength;
   }
 
   async discard(commandId: string, options: { flush?: boolean } = {}): Promise<void> {

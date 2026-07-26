@@ -7,7 +7,7 @@ import {
   type OfflineCommandResult,
   type OfflineCommandTarget,
 } from './offline-command-executor';
-import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
+import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
 import { defineOfflineReplicaSchema, defineReplicaEntity, serverId, text } from './offline-replica-schema';
@@ -47,6 +47,7 @@ describe('OfflineSyncService', () => {
   let beforeGetReplicaRow: (() => Promise<void>) | null;
   let pull: ReturnType<typeof vi.fn<(scope: OfflineScope) => Promise<void>>>;
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
+  let options: OfflineKitOptions;
   const execute = vi.fn(
     async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({ response: null }),
   );
@@ -61,6 +62,7 @@ describe('OfflineSyncService', () => {
     beforeGetReplicaRow = null;
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
+    options = { databaseName: 'test-offline', replicaSchema };
     execute.mockReset();
     execute.mockResolvedValue({ response: null });
     const repository = {
@@ -133,7 +135,7 @@ describe('OfflineSyncService', () => {
         OfflineSyncService,
         { provide: OFFLINE_REPOSITORY, useValue: repository },
         { provide: OfflineNetworkService, useValue: { connected } },
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: options },
         { provide: OfflineReplicaPullService, useValue: { pull } },
         { provide: ErrorHandler, useValue: { handleError } },
         {
@@ -150,6 +152,57 @@ describe('OfflineSyncService', () => {
       ],
     });
     service = TestBed.inject(OfflineSyncService);
+  });
+
+  it('Outbox件数上限では既存commandを失わず新規enqueueを拒否する', async () => {
+    options.outboxLimits = { maxCommandsPerUser: 1 };
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: 'first',
+        operation: 'documents.create',
+        payload: { title: 'first' },
+        optimisticValue: { id: 0, title: 'first' },
+      },
+      { flush: false },
+    );
+
+    await expect(
+      service.enqueue(
+        {
+          groupId: 10,
+          aggregateType: 'documents',
+          aggregateLocalId: 'second',
+          operation: 'documents.create',
+          payload: { title: 'second' },
+          optimisticValue: { id: 0, title: 'second' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toMatchObject({ name: 'OfflineOutboxCapacityError', reason: 'command_count' });
+    expect(commands).toHaveLength(1);
+    expect(rows.map((row) => row.localId)).toEqual(['first']);
+  });
+
+  it('Outbox容量上限では既存commandとreplicaを失わず新規enqueueを拒否する', async () => {
+    options.outboxLimits = { maxBytesPerUser: 1 };
+
+    await expect(
+      service.enqueue(
+        {
+          groupId: 10,
+          aggregateType: 'documents',
+          aggregateLocalId: 'oversized',
+          operation: 'documents.create',
+          payload: { title: 'too large' },
+          optimisticValue: { id: 0, title: 'too large' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toMatchObject({ name: 'OfflineOutboxCapacityError', reason: 'serialized_bytes' });
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
   });
 
   it('local sessionはoutboxへenqueueできるがremote session確立までは送信しない', async () => {

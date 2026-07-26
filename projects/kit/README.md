@@ -520,6 +520,13 @@ The write lifecycle is: update the replica immediately → append an outbox comm
 the optimistic value → replay in the background → validate the server revision → store the confirmed value and
 revision. The server remains authoritative; SQLite is the durable local working database, not an HTTP response cache.
 
+The runtime retains pending, rejected, and conflicted commands until synchronization or an explicit user discard;
+it never evicts an unconfirmed mutation because of age or storage pressure. To keep a device that remains offline for
+months from exhausting SQLite, enqueue applies backpressure at 1,000 commands or 10 MiB per user by default. Products
+may lower these limits with `outboxLimits: { maxCommandsPerUser, maxBytesPerUser }`. When a limit is reached, the
+existing replica and Outbox remain unchanged and enqueue rejects with `OfflineOutboxCapacityError`, so the UI can ask
+the user to reconnect or resolve/discard an attention item.
+
 `serverId()` supports positive safe integers only. Products must expose an internal numeric primary key for a
 replicated entity; a human-facing string such as a public code, slip number, or SKU remains an ordinary replicated
 column. There is intentionally no text-server-id overload.
