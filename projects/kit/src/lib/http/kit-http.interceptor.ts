@@ -190,8 +190,9 @@ export interface KitHttpConfig {
    * Optional; defaults to a no-op.
    *
    * @param request - The request that received the `401`.
+   * @param error - The complete response, including any explicit authentication failure scope.
    */
-  onUnauthorized?(request: HttpRequest<unknown>): void;
+  onUnauthorized?(request: HttpRequest<unknown>, error: HttpErrorResponse): void;
   /**
    * Side effect to run on a `403` response (a permission error).
    *
@@ -199,8 +200,9 @@ export interface KitHttpConfig {
    * Optional; defaults to a no-op.
    *
    * @param request - The request that received the `403`.
+   * @param error - The complete permission-error response.
    */
-  onForbidden?(request: HttpRequest<unknown>): void;
+  onForbidden?(request: HttpRequest<unknown>, error: HttpErrorResponse): void;
   /**
    * UX hook for a genuine network / transport failure (status `0`) while the device reports itself
    * connected — i.e. the server is unreachable rather than the phone being offline.
@@ -270,6 +272,17 @@ export interface KitHttpConfig {
    * @param error - The error thrown by `getAuthHeaders`.
    */
   onAuthError?(request: HttpRequest<unknown>, error: unknown): void;
+  /**
+   * Called when {@link KitHttpConfig.isAuthAccessDenial} classifies a failure as
+   * global identity loss and shared remote access is revoked.
+   *
+   * @remarks
+   * This hook is status-independent so an explicitly tagged historical 403
+   * identity response reaches the same cleanup as a new 401 identity response.
+   * Status hooks still run afterward for response-specific UX. Optional and
+   * backward compatible.
+   */
+  onAuthAccessDenial?(request: HttpRequest<unknown>, error: unknown): void;
   /**
    * Classify whether an auth-related failure should revoke shared remote access.
    *
@@ -357,9 +370,9 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
   const retryAfterSeconds = retryAfterMs === null ? undefined : Math.round(retryAfterMs / 1000);
 
   if (status === 401) {
-    config.onUnauthorized?.(req);
+    config.onUnauthorized?.(req, error);
   } else if (status === 403) {
-    config.onForbidden?.(req);
+    config.onForbidden?.(req, error);
   } else if (status === 0) {
     // Genuine network/transport failure. Only surface it when the device is actually connected
     // (server unreachable); when offline, offlineFallback owns the UX — a reload prompt won't help.
@@ -439,6 +452,7 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
       // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
       if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError) && shouldRevokeAuthAccess(config, request, headerError)) {
         access.clear();
+        config.onAuthAccessDenial?.(request, headerError);
       }
       config.onAuthError?.(request, headerError);
       return throwError(() => headerError);
@@ -490,7 +504,10 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
         }),
         catchError((error: HttpErrorResponse) => {
           if (config.enforceAuthAccessMode && isExplicitAuthDenial(error)) {
-            if (shouldRevokeAuthAccess(config, req, error)) access.clear();
+            if (shouldRevokeAuthAccess(config, req, error)) {
+              access.clear();
+              config.onAuthAccessDenial?.(req, error);
+            }
             dispatchError(config, req, error);
             return throwError(() => error);
           }

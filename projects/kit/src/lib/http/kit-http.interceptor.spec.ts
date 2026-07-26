@@ -7,6 +7,7 @@ import { firstValueFrom } from 'rxjs';
 
 import { KIT_AUTH_BOOTSTRAP_REQUEST, kitAuthInterceptor, provideKitHttp, type KitHttpConfig } from './kit-http.interceptor';
 import { KitAuthAccessService } from '../auth/auth-access.service';
+import { isIdentityAuthFailure } from './auth-failure';
 
 // ---------------------------------------------------------------------------
 // Mock @capacitor/network so Network.getStatus() never hits native code.
@@ -300,7 +301,7 @@ describe('kitAuthInterceptor', () => {
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error403);
 
       expect(access.mode).toBe('remote');
-      expect(config.onForbidden).toHaveBeenCalledOnce();
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error403);
       expect(config.onUnauthorized).not.toHaveBeenCalled();
       expect(config.offlineFallback).not.toHaveBeenCalled();
       expect(config.isAuthAccessDenial).toHaveBeenCalledWith(baseReq, error403);
@@ -320,7 +321,7 @@ describe('kitAuthInterceptor', () => {
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error401);
 
       expect(access.mode).toBe('none');
-      expect(config.onUnauthorized).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(baseReq, error401);
       expect(config.isAuthAccessDenial).toHaveBeenCalledWith(baseReq, error401);
     });
 
@@ -341,6 +342,105 @@ describe('kitAuthInterceptor', () => {
         expect(config[hook]).toHaveBeenCalledOnce();
       }
     });
+
+    it.each([
+      ['identity', 'AUTH_IDENTITY_INVALID', true],
+      ['reauthentication', 'STEP_UP_REQUIRED', false],
+      ['credential', 'PUBLIC_BOOKING_SESSION_INVALID', false],
+      [undefined, undefined, false],
+    ] as const)('strict auth scope keeps global access unless scope is %s', async (authFailureScope, code, shouldClear) => {
+      const error = new HttpErrorResponse({
+        status: 401,
+        error:
+          authFailureScope === undefined
+            ? { statusCode: 401, message: 'Legacy unauthorized' }
+            : { statusCode: 401, message: 'Unauthorized', code, authFailureScope },
+      });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe(shouldClear ? 'none' : 'remote');
+      expect(config.onUnauthorized).toHaveBeenCalledWith(baseReq, error);
+    });
+
+    it('does not revoke for a 403 that falsely claims identity without the standard code', async () => {
+      const error = new HttpErrorResponse({
+        status: 403,
+        error: {
+          statusCode: 403,
+          message: 'Forbidden',
+          code: 'BUSINESS_FORBIDDEN',
+          authFailureScope: 'identity',
+        },
+      });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('remote');
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
+    });
+
+    it('runs status-independent identity cleanup for a tagged legacy 403', async () => {
+      const error = new HttpErrorResponse({
+        status: 403,
+        error: {
+          statusCode: 403,
+          message: 'Forbidden resource',
+          code: 'AUTH_IDENTITY_INVALID',
+          authFailureScope: 'identity',
+        },
+      });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+        onAuthAccessDenial: vi.fn(),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('none');
+      expect(config.onAuthAccessDenial).toHaveBeenCalledWith(baseReq, error);
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
+    });
+
+    it('sends a normal business 403 only to permission handling', async () => {
+      const error = new HttpErrorResponse({ status: 403, error: { statusCode: 403, code: 'NOT_ALLOWED' } });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+        onAuthAccessDenial: vi.fn(),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('remote');
+      expect(config.onAuthAccessDenial).not.toHaveBeenCalled();
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
+    });
   });
 
   // ---- 401 handling ---------------------------------------------------------
@@ -353,7 +453,7 @@ describe('kitAuthInterceptor', () => {
       const next = vi.fn().mockReturnValue(throwError(() => error401));
 
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toThrow();
-      expect(config.onUnauthorized).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(baseReq, error401);
       expect(config.onForbidden).not.toHaveBeenCalled();
     });
   });
@@ -368,7 +468,7 @@ describe('kitAuthInterceptor', () => {
       const next = vi.fn().mockReturnValue(throwError(() => error403));
 
       await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toThrow();
-      expect(config.onForbidden).toHaveBeenCalledOnce();
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error403);
       expect(config.onUnauthorized).not.toHaveBeenCalled();
     });
   });

@@ -38,6 +38,7 @@ export * from './lib/auth/auth-guards';
 
 // HTTP: functional interceptor.
 export * from './lib/http/kit-http.interceptor';
+export * from './lib/http/auth-failure';
 
 // Realtime: reconnecting Hibernation WebSocket client infrastructure.
 export * from './lib/realtime/kit-realtime-connection';

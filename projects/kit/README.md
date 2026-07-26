@@ -633,7 +633,7 @@ fields and ignored server fields are never persisted.
 ```typescript
 // app.config.ts
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { kitAuthInterceptor, provideKitHttp, KitReloadAlertController } from '@rdlabo/ionic-angular-kit';
+import { isIdentityAuthFailure, kitAuthInterceptor, provideKitHttp, KitReloadAlertController } from '@rdlabo/ionic-angular-kit';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -645,13 +645,17 @@ export const appConfig: ApplicationConfig = {
         // Required for the new offline auth boundary. Kept opt-in so existing applications retain
         // their current interceptor behavior until they wire KitAuthAccessService.
         enforceAuthAccessMode: true,
-        // Optional. Use this only when the API distinguishes invalid identity (401) from
-        // authenticated resource permission (403). Omission keeps the legacy 401/403 revoke policy.
-        isAuthAccessDenial: (_req, error) => error.status === 401,
+        // Only an explicitly tagged global identity failure may revoke shared access.
+        // Omission keeps the legacy 401/403 revoke policy for existing applications.
+        isAuthAccessDenial: (_req, error) => isIdentityAuthFailure(error),
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
-        onUnauthorized: (req) => auth.signOut(),
+        // Status-independent: handles both new identity 401 and tagged historical identity 403.
+        onAuthAccessDenial: () => auth.signOut(),
+        onUnauthorized: (_req, error) => {
+          // Feature UX for reauthentication/credential failures may inspect the error here.
+        },
         // Fleet-canonical "network error → offer reload" (see KitReloadAlertController).
         onNetworkError: (status) =>
           reload.present({
@@ -697,6 +701,36 @@ because that also skips authentication headers and error handling, and do not gl
 6. anything else (`404`, …) → not handled here; the caller decides
 
 Plus: a `getAuthHeaders` rejection → `onAuthError(request, error)` (the request is never sent).
+
+The shared `401` body carries `authFailureScope`:
+
+- `identity`: the Firebase/global identity cannot be established; global session and replica/outbox
+  invalidation is allowed.
+- `reauthentication`: the identity remains valid, but a recent sign-in/step-up is required.
+- `credential`: only a feature-owned delegated credential is invalid.
+
+`getAuthFailureScope(error)` reads this explicit field and returns `null` for untagged legacy
+responses. It also accepts an explicitly tagged historical `403` identity failure for products
+whose installed clients still require that status; new APIs use `401`.
+`isIdentityAuthFailure(error)` is therefore intentionally strict. Put destructive global cleanup in
+`onAuthAccessDenial`; it runs for a classified identity failure independently of whether a compatible
+server returned 401 or 403. `onUnauthorized` receives the complete `HttpErrorResponse` for status-specific UX.
+An untagged `403` remains a resource/scope/business permission failure and never implies global
+identity loss. Existing callbacks that accept only the request remain source-compatible, and applications
+that omit `isAuthAccessDenial` retain the historical 401/403 revocation behavior.
+
+Deploy the API contract before enabling the strict client classifier:
+
+| Combination                  | Result                                                                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Tagged API + legacy client   | The extra body fields are ignored and the client's existing status behavior is preserved.                   |
+| Untagged API + strict client | Global identity loss cannot be identified safely, so the client retains local identity state.               |
+| Tagged API + strict client   | Only `identity` with `AUTH_IDENTITY_INVALID` revokes global access; narrower failures remain feature-owned. |
+
+For products whose installed clients historically require auth failure as `403`, deploy an explicitly
+tagged legacy `403` identity response first. The strict classifier accepts it only with the matching
+`statusCode`, scope, and `AUTH_IDENTITY_INVALID` code. Do not infer identity from an untagged legacy
+401/403: that would collapse `credential` and `reauthentication` back into destructive global logout.
 
 **Note (0.0.9):** `onNetworkError` is now narrowed to genuine network failures (status `0`); `502/503/429` moved to `onServerBusy`/`onRateLimited`. Existing configs stay valid — they just fire less often — so adopt the new hooks only if you want to distinguish server-busy / rate-limit from a connection loss.
 
