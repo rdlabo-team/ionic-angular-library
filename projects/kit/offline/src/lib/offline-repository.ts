@@ -24,6 +24,8 @@ export type OfflineReplicaSyncState = 'confirmed' | 'pending' | 'blocked_auth' |
 
 /** Durable processing state of an outbox command. */
 export type OfflineCommandState = 'pending' | 'sending' | 'retry_wait' | 'blocked_auth' | 'rejected' | 'conflict';
+/** Optimistic effect applied to the aggregate while an outbox command is pending. */
+export type OfflineCommandEffect = 'upsert' | 'delete';
 
 /** Product-agnostic mutation persisted in the outbox by local id. */
 export interface OfflineCommand<T = unknown> extends OfflineScope {
@@ -32,6 +34,10 @@ export interface OfflineCommand<T = unknown> extends OfflineScope {
   /** Immutable local id of the target. The outbox never persists a server id. */
   aggregateLocalId: string;
   operation: string;
+  /**
+   * Explicit optimistic effect. Missing means `upsert` for commands persisted by older application versions.
+   */
+  effect?: OfflineCommandEffect;
   payload: T;
   /** Full optimistic entity value displayed while this command is pending. */
   optimisticValue: unknown;

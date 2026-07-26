@@ -8,6 +8,7 @@ import {
   type OfflineCommandTarget,
 } from './offline-command-executor';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
+import { OfflineCapabilityError, OFFLINE_RUNTIME_CAPABILITIES } from './offline-capabilities';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
 import { defineOfflineReplicaSchema, defineReplicaEntity, serverId, text } from './offline-replica-schema';
@@ -51,18 +52,7 @@ describe('OfflineSyncService', () => {
     async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({ response: null }),
   );
 
-  beforeEach(() => {
-    commands = [];
-    rows = [];
-    connected = signal(false);
-    session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
-    localSession = undefined;
-    beforePutCommand = null;
-    beforeGetReplicaRow = null;
-    pull = vi.fn(async () => undefined);
-    handleError = vi.fn();
-    execute.mockReset();
-    execute.mockResolvedValue({ response: null });
+  function configureService(runtime = { replicaPull: true, outbox: true }): OfflineSyncService {
     const repository = {
       initialize: vi.fn(async () => undefined),
       getCommands: vi.fn(async (scope: OfflineScope) =>
@@ -147,9 +137,25 @@ describe('OfflineSyncService', () => {
           provide: OFFLINE_COMMAND_EXECUTOR,
           useValue: { execute, withServerRevision: (command: OfflineCommand) => command },
         },
+        { provide: OFFLINE_RUNTIME_CAPABILITIES, useValue: runtime },
       ],
     });
-    service = TestBed.inject(OfflineSyncService);
+    return TestBed.inject(OfflineSyncService);
+  }
+
+  beforeEach(() => {
+    commands = [];
+    rows = [];
+    connected = signal(false);
+    session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    localSession = undefined;
+    beforePutCommand = null;
+    beforeGetReplicaRow = null;
+    pull = vi.fn(async () => undefined);
+    handleError = vi.fn();
+    execute.mockReset();
+    execute.mockResolvedValue({ response: null });
+    service = configureService();
   });
 
   it('local sessionはoutboxへenqueueできるがremote session確立までは送信しない', async () => {
@@ -837,7 +843,7 @@ describe('OfflineSyncService', () => {
     });
   });
 
-  it('採用済みserverIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
+  it('明示delete effectは採用済みserverIdをexecutorへ渡し、成功後にreplicaを除く', async () => {
     await service.enqueue(
       {
         groupId: 10,
@@ -845,15 +851,18 @@ describe('OfflineSyncService', () => {
         aggregateLocalId: '019d-adopted',
         serverId: 38142,
         operation: 'documents.delete',
+        effect: 'delete',
         payload: {},
         optimisticValue: {},
       },
       { flush: false },
     );
+    expect(commands[0]?.effect).toBe('delete');
     connected.set(true);
-    execute.mockResolvedValueOnce({ removeReplica: true, response: null });
+    execute.mockResolvedValueOnce({ response: null });
     await service.flush();
     expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: 38142 });
+    expect(rows).toEqual([]);
   });
 
   it.each([0, -1, 1.5])('enqueue時の不正serverId %sは永続化前にrejectする', async (serverId) => {
@@ -1298,5 +1307,69 @@ describe('OfflineSyncService', () => {
       expect(execute.mock.calls.map(([command]) => command.groupId).sort()).toEqual([10, 11]);
       expect(service.pendingCount()).toBe(0);
     });
+  });
+
+  it('outbox capabilityが無い場合はenqueueを拒否する', async () => {
+    TestBed.resetTestingModule();
+    service = configureService({ replicaPull: true, outbox: false });
+    await expect(
+      service.enqueue(
+        {
+          groupId: 10,
+          aggregateType: 'documents',
+          aggregateLocalId: 'no-outbox',
+          operation: 'documents.create',
+          payload: { title: 'blocked' },
+          optimisticValue: { id: 0, title: 'blocked' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow(OfflineCapabilityError);
+  });
+
+  it('replica pull capabilityが無い場合はflushでpullしない', async () => {
+    TestBed.resetTestingModule();
+    service = configureService({ replicaPull: false, outbox: true });
+    await service.enqueue(
+      {
+        groupId: 10,
+        aggregateType: 'documents',
+        aggregateLocalId: 'no-pull',
+        operation: 'documents.create',
+        payload: { title: 'local' },
+        optimisticValue: { id: 0, title: 'local' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it('outbox capabilityが無い場合はflushでcommandを送信しない', async () => {
+    TestBed.resetTestingModule();
+    service = configureService({ replicaPull: true, outbox: false });
+    commands.push({
+      userId: 1,
+      groupId: 10,
+      commandId: 'existing-command',
+      aggregateType: 'documents',
+      aggregateLocalId: 'existing-local',
+      operation: 'documents.create',
+      payload: { title: 'queued' },
+      optimisticValue: { id: 0, title: 'queued' },
+      payloadHash: 'hash',
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+    await service.initialize();
+    connected.set(true);
+    await service.flush();
+    expect(execute).not.toHaveBeenCalled();
+    expect(pull).toHaveBeenCalled();
   });
 });

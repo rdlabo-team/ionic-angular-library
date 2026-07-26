@@ -314,6 +314,18 @@ describe('OfflineReplicaPullService', () => {
     );
   });
 
+  it('schemaのserverId fieldとchange metadataが不一致ならrejectしcursorを進めない', async () => {
+    await expectPullRejectsPreservingCursor(
+      () =>
+        pull.mockResolvedValueOnce(
+          page([itemChange(42, 'Created', { values: { id: 99, title: 'Created' } })], {
+            nextCursor: 'cursor-v1',
+          }),
+        ),
+      'Offline replica server id mismatch for "test_items": metadata=42, values=99.',
+    );
+  });
+
   describe('pull page boundary validation', () => {
     it('malformed nextCursorはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(

@@ -391,11 +391,30 @@ A fleet-canonical HTTP interceptor with:
 
 The optional `offline` entry point provides a user/group-scoped local replica, durable outbox, authenticated
 session boundary, cursor-based delta pull, aggregate-ordered replay, optimistic updates, retry classification, and a
-read-only request-policy interceptor. Applications provide URL/DTO read policies, a replica puller, and a command
-executor through `provideOffline(...)`.
+read-only request-policy interceptor. Applications install only the capabilities they use through
+`provideOffline(...)`; read-only products do not need dummy pullers or command executors.
 Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
 Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
 primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
+
+Use capability-based setup for new integrations. Pull, outbox, and HTTP read fallback are independent:
+
+```ts
+provideOffline({
+  databaseName: 'product-offline',
+  replicaSchema,
+  capabilities: [
+    withOfflineReplicaPull(ProductReplicaPuller),
+    withOfflineOutbox({ executor: ProductCommandExecutor, hooks: ProductCommandHooks }),
+    withOfflineReadFallback(ProductRequestPolicy),
+  ],
+});
+```
+
+A read-only cache installs only `withOfflineReadFallback(...)`. Calling `enqueue()` without
+`withOfflineOutbox(...)` fails immediately with `OfflineCapabilityError`; synchronization never invokes a missing
+pull or outbox transport. The original `commandExecutor` / `replicaPuller` / `requestPolicies` configuration remains
+supported with identical behavior for already shipped integrations.
 
 For cold-start offline route access, `OfflineCoordinatorService.activateOfflineSession()` restores only a manifest
 that is bound to a non-null authentication-provider subject. Supplying a currently known subject also rejects a
@@ -535,10 +554,17 @@ await offlineSync.enqueue({
   aggregateLocalId: localId,
   serverId: existingApiItem.id,
   operation: 'items.delete',
+  effect: 'delete',
   payload: { method: 'DELETE' },
   optimisticValue: existingApiItem,
 });
 ```
+
+`effect: 'delete'` is the durable optimistic tombstone marker; it must not be inferred from the operation name.
+Use `OfflineReplicaQueryService.getVisibleRows(...)` for product projections so pending deletes are consistently
+hidden. Rejected or conflicted deletes remain visible for resolution. Commands written by older application
+versions have no `effect` and are read as `upsert`. After a successful delete, the kit removes the replica row even
+when the executor omits the legacy `removeReplica` result flag.
 
 The mapping is immutable and unique inside its effective replica scope. Reassigning one `localId` to another
 `serverId`, or assigning the same `serverId` to another `localId`, rejects before persistence. Web storage enforces
@@ -552,6 +578,9 @@ replica schema version/hash and advances a durable user/group cursor in the same
 mismatch, malformed row, or non-advancing cursor rejects synchronization without advancing that cursor. If a remote
 revision changed while a local command is pending, the optimistic row remains visible and both row and command move
 to `conflict`; the new server value is retained as the confirmed baseline.
+For every non-deleted change, the value mapped with `serverId()` must equal the change metadata's `serverId`; the kit
+validates this before persisting rows or advancing the cursor. Product pullers only convert REST values into the
+declared DB/select shape and must not duplicate this identity check.
 
 The command adapter must send `commandId` as the server-side idempotency key. The server persists that key with the
 mutation and returns all keys represented by a delta row as `acknowledgedCommandIds`. This correlation is required:
@@ -602,10 +631,10 @@ const replicaSchema = defineOfflineReplicaSchema({
 });
 
 provideOffline({
+  databaseName: 'product-offline',
   replicaSchema,
-  replicaPuller: ProductReplicaPuller,
-  commandExecutor: ProductCommandExecutor,
-  // ...request policies, databaseName, createEncryptionKey
+  capabilities: [withOfflineReplicaPull(ProductReplicaPuller), withOfflineOutbox({ executor: ProductCommandExecutor })],
+  // ...createEncryptionKey
 });
 ```
 
