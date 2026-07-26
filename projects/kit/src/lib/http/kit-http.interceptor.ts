@@ -273,6 +273,17 @@ export interface KitHttpConfig {
    */
   onAuthError?(request: HttpRequest<unknown>, error: unknown): void;
   /**
+   * Called when {@link KitHttpConfig.isAuthAccessDenial} classifies a failure as
+   * global identity loss and shared remote access is revoked.
+   *
+   * @remarks
+   * This hook is status-independent so an explicitly tagged historical 403
+   * identity response reaches the same cleanup as a new 401 identity response.
+   * Status hooks still run afterward for response-specific UX. Optional and
+   * backward compatible.
+   */
+  onAuthAccessDenial?(request: HttpRequest<unknown>, error: unknown): void;
+  /**
    * Classify whether an auth-related failure should revoke shared remote access.
    *
    * @remarks
@@ -441,6 +452,7 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
       // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
       if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError) && shouldRevokeAuthAccess(config, request, headerError)) {
         access.clear();
+        config.onAuthAccessDenial?.(request, headerError);
       }
       config.onAuthError?.(request, headerError);
       return throwError(() => headerError);
@@ -492,7 +504,10 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
         }),
         catchError((error: HttpErrorResponse) => {
           if (config.enforceAuthAccessMode && isExplicitAuthDenial(error)) {
-            if (shouldRevokeAuthAccess(config, req, error)) access.clear();
+            if (shouldRevokeAuthAccess(config, req, error)) {
+              access.clear();
+              config.onAuthAccessDenial?.(req, error);
+            }
             dispatchError(config, req, error);
             return throwError(() => error);
           }

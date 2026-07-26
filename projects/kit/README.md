@@ -651,8 +651,10 @@ export const appConfig: ApplicationConfig = {
         getAuthHeaders: async (req) => ({
           Authorization: `Bearer ${await auth.getToken()}`,
         }),
+        // Status-independent: handles both new identity 401 and tagged historical identity 403.
+        onAuthAccessDenial: () => auth.signOut(),
         onUnauthorized: (_req, error) => {
-          if (isIdentityAuthFailure(error)) auth.signOut();
+          // Feature UX for reauthentication/credential failures may inspect the error here.
         },
         // Fleet-canonical "network error → offer reload" (see KitReloadAlertController).
         onNetworkError: (status) =>
@@ -710,8 +712,9 @@ The shared `401` body carries `authFailureScope`:
 `getAuthFailureScope(error)` reads this explicit field and returns `null` for untagged legacy
 responses. It also accepts an explicitly tagged historical `403` identity failure for products
 whose installed clients still require that status; new APIs use `401`.
-`isIdentityAuthFailure(error)` is therefore intentionally strict. `onUnauthorized`
-receives the complete `HttpErrorResponse`, allowing destructive callbacks to use the same boundary.
+`isIdentityAuthFailure(error)` is therefore intentionally strict. Put destructive global cleanup in
+`onAuthAccessDenial`; it runs for a classified identity failure independently of whether a compatible
+server returned 401 or 403. `onUnauthorized` receives the complete `HttpErrorResponse` for status-specific UX.
 An untagged `403` remains a resource/scope/business permission failure and never implies global
 identity loss. Existing callbacks that accept only the request remain source-compatible, and applications
 that omit `isAuthAccessDenial` retain the historical 401/403 revocation behavior.

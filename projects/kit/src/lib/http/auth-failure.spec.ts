@@ -65,4 +65,18 @@ describe('auth failure protocol', () => {
       ),
     ).toBe(true);
   });
+
+  it.each(['reauthentication', 'credential'] as const)('rejects %s on the legacy 403 exception', (scope) => {
+    expect(
+      getAuthFailureScope({
+        status: 403,
+        error: {
+          statusCode: 403,
+          message: 'Forbidden',
+          code: 'DOMAIN_CODE',
+          authFailureScope: scope,
+        },
+      }),
+    ).toBeNull();
+  });
 });

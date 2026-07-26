@@ -44,6 +44,7 @@ export const getAuthFailureScope = (error: unknown): AuthFailureScope | null => 
 
   const scope = body['authFailureScope'];
   if (!isAuthFailureScope(scope)) return null;
+  if (status === 403 && scope !== AUTH_FAILURE_SCOPES.identity) return null;
   if (scope === AUTH_FAILURE_SCOPES.identity && body['code'] !== AUTH_IDENTITY_INVALID_CODE) return null;
   return scope;
 };

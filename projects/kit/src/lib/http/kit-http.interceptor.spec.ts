@@ -395,6 +395,52 @@ describe('kitAuthInterceptor', () => {
       expect(access.mode).toBe('remote');
       expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
     });
+
+    it('runs status-independent identity cleanup for a tagged legacy 403', async () => {
+      const error = new HttpErrorResponse({
+        status: 403,
+        error: {
+          statusCode: 403,
+          message: 'Forbidden resource',
+          code: 'AUTH_IDENTITY_INVALID',
+          authFailureScope: 'identity',
+        },
+      });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+        onAuthAccessDenial: vi.fn(),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('none');
+      expect(config.onAuthAccessDenial).toHaveBeenCalledWith(baseReq, error);
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
+    });
+
+    it('sends a normal business 403 only to permission handling', async () => {
+      const error = new HttpErrorResponse({ status: 403, error: { statusCode: 403, code: 'NOT_ALLOWED' } });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        isAuthAccessDenial: (_req, candidate) => isIdentityAuthFailure(candidate),
+        onAuthAccessDenial: vi.fn(),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+      const next = vi.fn().mockReturnValue(throwError(() => error));
+
+      await expect(firstValueFrom(runInterceptor(baseReq, next))).rejects.toBe(error);
+
+      expect(access.mode).toBe('remote');
+      expect(config.onAuthAccessDenial).not.toHaveBeenCalled();
+      expect(config.onForbidden).toHaveBeenCalledWith(baseReq, error);
+    });
   });
 
   // ---- 401 handling ---------------------------------------------------------
