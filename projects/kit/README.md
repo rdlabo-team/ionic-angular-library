@@ -506,16 +506,18 @@ provideOffline({
 });
 ```
 
-SQLite entities use an immutable client-generated UUID as `localId` and keep the server's
-`AUTO_INCREMENT` id separately as nullable `serverId`. The outbox references only `aggregateLocalId`.
-Immediately before each send, the executor receives the latest `{ localId, serverId }` resolved from
-SQLite; a successful create adds `serverId` without replacing `localId`. Entity projection and outbox
-append/removal are committed in one local transaction.
+Every SQLite entity uses an immutable client-generated UUID as `localId`; the outbox references only
+`aggregateLocalId`. Remote identity is declared per entity:
 
-| Identity   | SQLite column | Before synchronization  | After server acknowledgement        |
-| ---------- | ------------- | ----------------------- | ----------------------------------- |
-| `localId`  | `local_id`    | client-generated UUID   | unchanged UUID                      |
-| `serverId` | `server_id`   | `NULL` for a new entity | positive server `AUTO_INCREMENT` id |
+| Remote identity                 | SQLite representation                         | Executor target                           |
+| ------------------------------- | --------------------------------------------- | ----------------------------------------- |
+| `serverId()`                    | nullable `server_id`                          | `{ localId, serverId }`                   |
+| `naturalKey(['a', 'b'])`        | mapped `a`/`b` columns; no `server_id` column | `{ localId, serverId: null, naturalKey }` |
+| no remote identity (local-only) | mapped values only                            | `{ localId, serverId: null }`             |
+
+A successful numeric create adds `serverId` without replacing `localId`. A natural key is derived from current
+mapped values in declaration order; it is not duplicated as hidden row metadata. Entity projection and outbox
+append/removal are committed in one local transaction.
 
 The write lifecycle is: update the replica immediately → append an outbox command in the same transaction → render
 the optimistic value → replay in the background → validate the server revision → store the confirmed value and
@@ -528,9 +530,10 @@ may lower these limits with `outboxLimits: { maxCommandsPerUser, maxBytesPerUser
 existing replica and Outbox remain unchanged and enqueue rejects with `OfflineOutboxCapacityError`, so the UI can ask
 the user to reconnect or resolve/discard an attention item.
 
-`serverId()` supports positive safe integers only. Products must expose an internal numeric primary key for a
-replicated entity; a human-facing string such as a public code, slip number, or SKU remains an ordinary replicated
-column. There is intentionally no text-server-id overload.
+Use `serverId()` for a positive safe-integer `AUTO_INCREMENT` key. Use `naturalKey([...])` when the product table's
+remote identity is an existing composite primary key. Natural-key components must be required mapped `text()` or
+`integer()` columns; nullable, ignored, JSON, empty declarations, duplicates, and mixed `serverId()`/`naturalKey()`
+declarations reject. Text components reject NUL, malformed Unicode, and values larger than 1,024 UTF-8 bytes.
 
 When the application already knows the numeric server id but the first replica pull has not materialized the row,
 pass that identity explicitly while adopting the entity. This is required for updates and especially deletes: an
@@ -549,8 +552,9 @@ await offlineSync.enqueue({
 ```
 
 The mapping is immutable and unique inside its effective replica scope. Reassigning one `localId` to another
-`serverId`, or assigning the same `serverId` to another `localId`, rejects before persistence. Web storage enforces
-the same rule transactionally as SQLite's unique indexes: partition-scoped entities are unique per
+`serverId` or natural key, or assigning the same remote identity to another `localId`, rejects before persistence.
+Web storage enforces the rule transactionally. SQLite uses a scoped partial unique index for `server_id` and a
+scoped composite unique index over the natural-key columns: partition-scoped entities are unique per
 user/partition/source, and user-scoped entities are unique per user/source across partitions. If an adopted row has
 no confirmed baseline and
 its final command is discarded, the local row is removed; the next pull may materialize the authoritative server
@@ -560,7 +564,9 @@ Each synchronization cycle pulls authoritative server deltas before replaying th
 replica schema version/hash and advances a durable user/partition cursor in the same transaction as its rows. A schema
 mismatch, malformed row, or non-advancing cursor rejects synchronization without advancing that cursor. If a remote
 revision changed while a local command is pending, the optimistic row remains visible and both row and command move
-to `conflict`; the new server value is retained as the confirmed baseline.
+to `conflict`; the new server value is retained as the confirmed baseline. A remote tombstone follows the same
+retention rule: without pending commands it removes the row, while a pending row and its Outbox remain under
+`remote_deleted` conflict so the user can resolve or discard them.
 
 The command adapter must send `commandId` as the server-side idempotency key. The server persists that key with the
 mutation and returns all keys represented by a delta row as `acknowledgedCommandIds`. This correlation is required:
@@ -577,8 +583,22 @@ shape or `null` to delete a row. Identity and sync metadata (`localId`, `serverI
 `syncState`) stay outside the callback. The bundle fingerprint hashes `version`, entity layouts, and
 migration `fromVersion`/`statements` — never function bodies.
 
+Changing a natural-key component list or its order changes the schema fingerprint and SQLite unique index. For a
+released schema, bump `version`; native migration SQL must `DROP INDEX` and recreate the scoped composite index, and
+`migrateWebRow` must preserve every natural-key value. Keep the transaction journal and schema-migration recovery
+records until the replacement rows, index, and metadata commit together. This natural-key API is currently
+unreleased, so adopting it before the first release needs no compatibility helper or legacy-row migration.
+
 ```typescript
-import { defineOfflineReplicaSchema, defineReplicaEntity, provideOffline, serverId, text } from '@rdlabo/ionic-angular-kit/offline';
+import {
+  defineOfflineReplicaSchema,
+  defineReplicaEntity,
+  integer,
+  naturalKey,
+  provideOffline,
+  serverId,
+  text,
+} from '@rdlabo/ionic-angular-kit/offline';
 
 // This is the Hono package's existing `typeof items.$inferSelect` export.
 import type { Items as ItemSelect } from '@product/hono/db/schema';
@@ -594,9 +614,28 @@ const itemEntityV2 = defineReplicaEntity<ItemSelect>()({
   },
 });
 
+// Mirrors a product DB TableScheme whose primary key is (favFrom, favTo).
+type FavoriteSelect = {
+  favFrom: number;
+  favTo: number;
+  label: string;
+};
+
+const favoriteEntity = defineReplicaEntity<FavoriteSelect>()({
+  table: 'favorites',
+  sourceKey: 'favorites',
+  scope: 'user',
+  identity: naturalKey(['favFrom', 'favTo']),
+  fields: {
+    favFrom: integer(),
+    favTo: integer(),
+    label: text(),
+  },
+});
+
 const replicaSchema = defineOfflineReplicaSchema({
   version: 2,
-  entities: [itemEntityV2],
+  entities: [itemEntityV2, favoriteEntity],
   migrations: [
     {
       fromVersion: 1,
@@ -623,11 +662,12 @@ not a compatibility option: without strict null checking, TypeScript cannot dist
 from a required one and the schema lock cannot prove the SQLite mapping.
 
 The schema definition must import the Hono package's exported `$inferSelect` type and map every key exactly once as
-a SQLite column, `serverId()`, or `ignored(reason)`, with exactly one numeric `serverId()` per replicated entity.
+a SQLite column, `serverId()`, or `ignored(reason)`. A remotely replicated entity declares either one numeric
+`serverId()` or one ordered `naturalKey([...])`; a local-only projection declares neither.
 Nullable Hono columns require `nullable(...)`; non-null columns reject it. Therefore adding,
 removing, or changing nullability of a Drizzle column breaks the app build until its replica mapping is updated.
-At runtime, `values` contains only the mapped column projection; `localId` and `serverId` remain dedicated replica
-fields and ignored server fields are never persisted.
+At runtime, `values` contains only the mapped column projection; `localId` and numeric `serverId` remain dedicated
+replica fields, natural identity is always derived from `values`, and ignored server fields are never persisted.
 
 - **Status classification**: `0`→`onNetworkError` (connected only), `429`→`onRateLimited`, `502/503/504`→`onServerBusy`, `400/422/500`+message→`onServerError`, `401`→`onUnauthorized`, `403`→`onForbidden`. Other statuses (e.g. `404`) are left to the caller.
 - **Universal 60s timeout** — every request fails with a synthetic (retryable) `408` if it hangs for 60s. Deliberately generous (catches a dead server without cutting off a large upload / AI generation; `timeout({ each })` resets per emission, so streaming is unaffected). Not configurable — one fleet-wide behavior.

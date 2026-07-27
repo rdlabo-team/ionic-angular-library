@@ -7,6 +7,8 @@ import { isOfflineFallbackError } from './offline-network.service';
 import {
   defineOfflineReplicaSchema,
   defineReplicaEntity,
+  integer,
+  naturalKey,
   serverId,
   sha256OfflineReplicaSchema,
   text,
@@ -64,6 +66,20 @@ const localProjectionEntity = defineReplicaEntity<LocalProjectionSelect>()({
   fields: {
     feedKey: text(),
   },
+});
+
+const naturalFavoriteEntity = defineReplicaEntity<{ favFrom: number; favTo: string; label: string }>()({
+  table: 'natural_favorites',
+  sourceKey: 'natural_favorites',
+  scope: 'partition',
+  identity: naturalKey(['favFrom', 'favTo']),
+  fields: { favFrom: integer(), favTo: text(), label: text() },
+});
+
+const naturalFavoriteSchema = defineOfflineReplicaSchema({
+  version: 1,
+  entities: [naturalFavoriteEntity],
+  migrations: [],
 });
 
 const localProjectionSchema = defineOfflineReplicaSchema({
@@ -676,6 +692,14 @@ describe('IonicOfflineRepository', () => {
       fetchedAt: 1,
       syncState: 'confirmed' as const,
     };
+
+    it('同一localIdのserverId再割当をdirect transactionでもrejectする', async () => {
+      await expect(
+        repository.transactReplica({
+          putRows: [{ ...userRow, ...scopeG10, localId: '019d-cross', serverId: 43, values: { id: 43, title: 'B' } }],
+        }),
+      ).rejects.toThrow('Offline replica serverId is immutable: current=42, incoming=43.');
+    });
 
     beforeEach(async () => {
       await repository.transactReplica({
@@ -1293,6 +1317,68 @@ describe('IonicOfflineRepository', () => {
           ],
         }),
       ).rejects.toThrow('Offline replica serverId 42 is already mapped to localId 019d-aaaa.');
+    });
+  });
+
+  describe('naturalKey identity', () => {
+    const row = (scopeId: string, localId: string, label: string): OfflineReplicaRow => ({
+      userId: 1,
+      scopeId,
+      sourceKey: 'natural_favorites',
+      localId,
+      serverId: null,
+      values: { favFrom: 7, favTo: '42', label },
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'pending',
+    });
+
+    beforeEach(() => {
+      repository = createRepository(naturalFavoriteSchema);
+    });
+
+    it('same scopeのcomposite identity collisionをrejectする', async () => {
+      await repository.transactReplica({ putRows: [row('10', 'uuid-a', 'A')] });
+      await expect(repository.transactReplica({ putRows: [row('10', 'uuid-b', 'B')] })).rejects.toThrow(
+        'Offline replica remote identity is already mapped to localId uuid-a.',
+      );
+    });
+
+    it('partitionが異なれば同じnaturalKeyを許可しidentity lookupできる', async () => {
+      await repository.transactReplica({ putRows: [row('10', 'uuid-a', 'A'), row('11', 'uuid-b', 'B')] });
+
+      await expect(
+        repository.getReplicaRowByRemoteIdentity({ userId: 1, scopeId: '11' }, 'natural_favorites', {
+          naturalKey: { favTo: '42', favFrom: 7 },
+        }),
+      ).resolves.toMatchObject({ localId: 'uuid-b', serverId: null });
+    });
+
+    it('同一localIdのnaturalKey再割当をdirect transactionでもrejectする', async () => {
+      await repository.transactReplica({ putRows: [row('10', 'uuid-a', 'A')] });
+      await expect(
+        repository.transactReplica({
+          putRows: [{ ...row('10', 'uuid-a', 'changed'), values: { favFrom: 8, favTo: '42', label: 'changed' } }],
+        }),
+      ).rejects.toThrow('Offline replica naturalKey is immutable for "natural_favorites".');
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'natural_favorites', 'uuid-a')).resolves.toMatchObject({
+        values: { favFrom: 7, favTo: '42', label: 'A' },
+      });
+    });
+
+    it('confirmedValuesのnaturalKeyがvaluesと異なるrowを永続化しない', async () => {
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...row('10', 'uuid-mismatch', 'optimistic'),
+              confirmedValues: { favFrom: 8, favTo: '42', label: 'confirmed' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica confirmedValues naturalKey must match values for "natural_favorites".');
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'natural_favorites', 'uuid-mismatch')).resolves.toBeNull();
     });
   });
 

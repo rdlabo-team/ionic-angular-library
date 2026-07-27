@@ -15,6 +15,24 @@ export type OfflineReplicaEntityScope = 'user' | 'partition';
 /** Field projection policy for a source-model property. */
 export type OfflineReplicaFieldPolicy = 'column' | 'serverId' | 'ignored';
 
+/** Canonical value types accepted in a composite server-side natural key. */
+export type OfflineNaturalKeyValue = string | number;
+const MAX_OFFLINE_NATURAL_KEY_TEXT_BYTES = 1024;
+
+/** Ordered natural-key values keyed by source-model field name. */
+export type OfflineNaturalKey = Readonly<Record<string, OfflineNaturalKeyValue>>;
+
+/** Remote row identity. Exactly one variant is valid for a replicated entity. */
+export type OfflineReplicaRemoteIdentity =
+  | { readonly serverId: number; readonly naturalKey?: never }
+  | { readonly serverId?: never; readonly naturalKey: OfflineNaturalKey };
+
+/** Runtime identity policy materialized into an entity schema. */
+export type OfflineReplicaIdentityDescriptor =
+  | { readonly kind: 'localOnly'; readonly sourceKeys: readonly [] }
+  | { readonly kind: 'serverId'; readonly sourceKeys: readonly [string] }
+  | { readonly kind: 'naturalKey'; readonly sourceKeys: readonly string[] };
+
 /** Runtime descriptor for one mapped source property. */
 export interface OfflineReplicaFieldDescriptor {
   /** Source-model property name from the select shape. */
@@ -41,6 +59,8 @@ export interface OfflineReplicaEntitySchema<TSelect extends Record<string, unkno
   readonly sourceKey: string;
   /** Whether rows are partitioned by user only or user plus scope partition. */
   readonly scope: OfflineReplicaEntityScope;
+  /** Remote identity policy used by repository and pull reconciliation. */
+  readonly identity: OfflineReplicaIdentityDescriptor;
   /** Ordered field descriptors derived from the DSL definition. */
   readonly fields: readonly OfflineReplicaFieldDescriptor[];
   /** Deterministic DDL statements for the replica table and indexes. */
@@ -81,6 +101,12 @@ export interface OfflineReplicaServerIdDef {
 export interface OfflineReplicaIgnoredDef {
   readonly kind: 'ignored';
   readonly reason: string;
+}
+
+/** Builder selecting non-null source columns as a composite remote identity. */
+export interface OfflineReplicaNaturalKeyDef<TKey extends string = string> {
+  readonly kind: 'naturalKey';
+  readonly sourceKeys: readonly TKey[];
 }
 
 type OfflineReplicaFieldDef = OfflineReplicaColumnDef | OfflineReplicaServerIdDef | OfflineReplicaIgnoredDef;
@@ -128,6 +154,7 @@ export interface OfflineReplicaEntityDefinition<
   readonly table: string;
   readonly sourceKey: string;
   readonly scope: OfflineReplicaEntityScope;
+  readonly identity?: OfflineReplicaNaturalKeyDef<Extract<keyof TSelect, string>>;
   readonly fields: ExactSelectKeys<TSelect, TFields> & TFields;
 }
 
@@ -158,6 +185,7 @@ export function defineReplicaEntity<TSelect extends Record<string, unknown>>() {
       table: definition.table,
       sourceKey: definition.sourceKey,
       scope: definition.scope,
+      identity: definition.identity,
       fields: definition.fields as Record<string, OfflineReplicaFieldDef>,
     });
   };
@@ -218,11 +246,122 @@ export function serverId(): OfflineReplicaServerIdDef {
   return { kind: 'serverId' };
 }
 
+/** Declares an ordered composite natural key without changing the immutable local UUID. */
+export function naturalKey<const TKey extends string>(sourceKeys: readonly TKey[]): OfflineReplicaNaturalKeyDef<TKey> {
+  return { kind: 'naturalKey', sourceKeys };
+}
+
 /** Rejects a remote identity on a local-only projection before it reaches platform storage. */
 export function assertOfflineReplicaServerId(schema: OfflineReplicaEntitySchema<Record<string, unknown>>, value: number | null): void {
-  const hasServerId = schema.fields.some((field) => field.policy === 'serverId');
-  if (!hasServerId && value !== null) {
+  if (schema.identity.kind !== 'serverId' && value !== null) {
     throw new Error(`Offline replica source "${schema.sourceKey}" does not define a serverId field.`);
+  }
+}
+
+/** Extracts and validates an entity's natural key in declared component order. */
+export function offlineNaturalKeyFromValues(
+  schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+  values: unknown,
+): OfflineNaturalKey | null {
+  if (schema.identity.kind !== 'naturalKey') return null;
+  if (!isPlainObject(values)) {
+    throw new Error(`Offline replica values for "${schema.sourceKey}" must be a plain object.`);
+  }
+  return Object.fromEntries(
+    schema.identity.sourceKeys.map((sourceKey) => {
+      const value = values[sourceKey];
+      const field = schema.fields.find((candidate) => candidate.sourceKey === sourceKey)!;
+      if (
+        (field.storageKind === 'text' && typeof value !== 'string') ||
+        (field.storageKind === 'integer' && (typeof value !== 'number' || !Number.isSafeInteger(value) || !Number.isFinite(value)))
+      ) {
+        throw new Error(`Offline replica naturalKey field "${sourceKey}" has an invalid value.`);
+      }
+      if (typeof value === 'string') assertNaturalKeyText(sourceKey, value);
+      return [sourceKey, value as OfflineNaturalKeyValue];
+    }),
+  );
+}
+
+/** Validates a supplied natural key and returns it in schema-declared order. */
+export function normalizeOfflineNaturalKey(
+  schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+  naturalKey: OfflineNaturalKey,
+): OfflineNaturalKey {
+  if (schema.identity.kind !== 'naturalKey') {
+    throw new Error(`Offline replica source "${schema.sourceKey}" does not define a naturalKey identity.`);
+  }
+  if (!isPlainObject(naturalKey)) {
+    throw new Error(`Offline replica naturalKey for "${schema.sourceKey}" must be a plain object.`);
+  }
+  const actualKeys = Object.keys(naturalKey);
+  if (
+    actualKeys.length !== schema.identity.sourceKeys.length ||
+    actualKeys.some((key) => !(schema.identity.sourceKeys as readonly string[]).includes(key))
+  ) {
+    throw new Error(`Offline replica naturalKey for "${schema.sourceKey}" must contain exactly its declared fields.`);
+  }
+  return offlineNaturalKeyFromValues(schema, naturalKey)!;
+}
+
+/** Stable, type-tagged identity key used by web uniqueness and pull collapse. */
+export function canonicalOfflineRemoteIdentity(
+  schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+  identity: OfflineReplicaRemoteIdentity,
+): string {
+  if (schema.identity.kind === 'serverId') {
+    if (!('serverId' in identity) || 'naturalKey' in identity) {
+      throw new Error(`Offline replica source "${schema.sourceKey}" requires serverId identity.`);
+    }
+    assertPositiveServerId(identity.serverId);
+    return `serverId:n:${identity.serverId}`;
+  }
+  if (schema.identity.kind === 'naturalKey') {
+    if (!('naturalKey' in identity) || 'serverId' in identity) {
+      throw new Error(`Offline replica source "${schema.sourceKey}" requires naturalKey identity.`);
+    }
+    const key = normalizeOfflineNaturalKey(schema, identity.naturalKey);
+    return `naturalKey:${JSON.stringify(
+      schema.identity.sourceKeys.map((sourceKey) => {
+        const value = key[sourceKey]!;
+        return [sourceKey, typeof value === 'number' ? 'n' : 's', value];
+      }),
+    )}`;
+  }
+  throw new Error(`Offline replica source "${schema.sourceKey}" is local-only.`);
+}
+
+/** Enforces one immutable natural identity across optimistic and confirmed row values. */
+export function assertOfflineReplicaNaturalKeyBaseline(
+  schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+  values: unknown,
+  confirmedValues: unknown | null,
+): void {
+  if (schema.identity.kind !== 'naturalKey' || confirmedValues === null) return;
+  const current = canonicalOfflineRemoteIdentity(schema, { naturalKey: offlineNaturalKeyFromValues(schema, values)! });
+  const confirmed = canonicalOfflineRemoteIdentity(schema, {
+    naturalKey: offlineNaturalKeyFromValues(schema, confirmedValues)!,
+  });
+  if (current !== confirmed) {
+    throw new Error(`Offline replica confirmedValues naturalKey must match values for "${schema.sourceKey}".`);
+  }
+}
+
+function assertPositiveServerId(value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('Offline replica serverId must be a positive integer.');
+  }
+}
+
+function assertNaturalKeyText(sourceKey: string, value: string): void {
+  if (value.includes('\0')) {
+    throw new Error(`Offline replica naturalKey field "${sourceKey}" must not contain NUL.`);
+  }
+  if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value)) {
+    throw new Error(`Offline replica naturalKey field "${sourceKey}" must contain well-formed Unicode.`);
+  }
+  if (new TextEncoder().encode(value).byteLength > MAX_OFFLINE_NATURAL_KEY_TEXT_BYTES) {
+    throw new Error(`Offline replica naturalKey field "${sourceKey}" must not exceed ${MAX_OFFLINE_NATURAL_KEY_TEXT_BYTES} UTF-8 bytes.`);
   }
 }
 
@@ -235,6 +374,7 @@ function buildOfflineReplicaEntitySchema<TSelect extends Record<string, unknown>
   readonly table: string;
   readonly sourceKey: string;
   readonly scope: OfflineReplicaEntityScope;
+  readonly identity?: OfflineReplicaNaturalKeyDef;
   readonly fields: Record<string, OfflineReplicaFieldDef>;
 }): OfflineReplicaEntitySchema<TSelect> {
   validateIdentifier(definition.table, 'table');
@@ -243,23 +383,46 @@ function buildOfflineReplicaEntitySchema<TSelect extends Record<string, unknown>
   const sourceKeys = Object.keys(definition.fields).sort();
   const serverIdCount = sourceKeys.filter((sourceKey) => definition.fields[sourceKey]?.kind === 'serverId').length;
   if (serverIdCount > 1) throw new Error('Replica entity must define at most one serverId field.');
-  const hasServerId = serverIdCount === 1;
   const fields: OfflineReplicaFieldDescriptor[] = sourceKeys.map((sourceKey) => {
     const fieldDef = definition.fields[sourceKey as keyof TSelect] as OfflineReplicaFieldDef;
     return materializeFieldDescriptor(sourceKey, fieldDef);
   });
+  const identity = materializeIdentity(definition.identity, fields);
 
-  const createTableSql = buildCreateTableSql(definition.table, definition.scope, fields, hasServerId);
-  const schemaFingerprintInput = buildSchemaFingerprintInput(definition.table, definition.sourceKey, definition.scope, fields, hasServerId);
+  const createTableSql = buildCreateTableSql(definition.table, definition.scope, fields, identity);
+  const schemaFingerprintInput = buildSchemaFingerprintInput(definition.table, definition.sourceKey, definition.scope, fields, identity);
 
   return {
     tableName: definition.table,
     sourceKey: definition.sourceKey,
     scope: definition.scope,
+    identity,
     fields,
     createTableSql,
     schemaFingerprintInput,
   };
+}
+
+function materializeIdentity(
+  definition: OfflineReplicaNaturalKeyDef | undefined,
+  fields: readonly OfflineReplicaFieldDescriptor[],
+): OfflineReplicaIdentityDescriptor {
+  const serverField = fields.find((field) => field.policy === 'serverId');
+  if (definition && serverField) throw new Error('Replica entity cannot define both serverId and naturalKey identity.');
+  if (serverField) return { kind: 'serverId', sourceKeys: [serverField.sourceKey] };
+  if (!definition) return { kind: 'localOnly', sourceKeys: [] };
+  if (definition.sourceKeys.length === 0) throw new Error('Replica naturalKey must contain at least one source field.');
+  if (new Set(definition.sourceKeys).size !== definition.sourceKeys.length) {
+    throw new Error('Replica naturalKey source fields must be unique.');
+  }
+  for (const sourceKey of definition.sourceKeys) {
+    const field = fields.find((candidate) => candidate.sourceKey === sourceKey);
+    if (!field) throw new Error(`Replica naturalKey field "${sourceKey}" is not defined.`);
+    if (field.policy !== 'column' || field.nullable || !['text', 'integer'].includes(field.storageKind ?? '')) {
+      throw new Error(`Replica naturalKey field "${sourceKey}" must be a required text or integer column.`);
+    }
+  }
+  return { kind: 'naturalKey', sourceKeys: [...definition.sourceKeys] };
 }
 
 function materializeFieldDescriptor(sourceKey: string, fieldDef: OfflineReplicaFieldDef): OfflineReplicaFieldDescriptor {
@@ -309,13 +472,13 @@ function buildCreateTableSql(
   tableName: string,
   scope: OfflineReplicaEntityScope,
   fields: readonly OfflineReplicaFieldDescriptor[],
-  hasServerId: boolean,
+  identity: OfflineReplicaIdentityDescriptor,
 ): readonly string[] {
   const columnLines = ['local_id TEXT NOT NULL', '_offline_user_id INTEGER NOT NULL'];
   if (scope === 'partition') {
     columnLines.push('_offline_scope_id TEXT NOT NULL');
   }
-  if (hasServerId) {
+  if (identity.kind === 'serverId') {
     columnLines.push('server_id INTEGER');
   }
   columnLines.push(
@@ -335,11 +498,17 @@ function buildCreateTableSql(
 
   const statements = [`CREATE TABLE IF NOT EXISTS ${tableName} (\n  ${columnLines.join(',\n  ')},\n  PRIMARY KEY (local_id)\n)`];
 
-  if (hasServerId) {
+  if (identity.kind === 'serverId') {
     const indexColumns = scope === 'partition' ? '_offline_user_id, _offline_scope_id, server_id' : '_offline_user_id, server_id';
     statements.push(
       `CREATE UNIQUE INDEX IF NOT EXISTS uq_${tableName}_server_id ON ${tableName} (${indexColumns}) WHERE server_id IS NOT NULL`,
     );
+  } else if (identity.kind === 'naturalKey') {
+    const naturalKeyColumns = identity.sourceKeys.map(
+      (sourceKey) => fields.find((field) => field.sourceKey === sourceKey)!.sqliteColumnName!,
+    );
+    const indexColumns = ['_offline_user_id', ...(scope === 'partition' ? ['_offline_scope_id'] : []), ...naturalKeyColumns].join(', ');
+    statements.push(`CREATE UNIQUE INDEX IF NOT EXISTS uq_${tableName}_natural_key ON ${tableName} (${indexColumns})`);
   }
 
   return statements;
@@ -350,7 +519,7 @@ function buildSchemaFingerprintInput(
   sourceKey: string,
   scope: OfflineReplicaEntityScope,
   fields: readonly OfflineReplicaFieldDescriptor[],
-  hasServerId: boolean,
+  identity: OfflineReplicaIdentityDescriptor,
 ): string {
   const fieldParts = fields.map((field) => {
     if (field.policy === 'ignored') {
@@ -366,7 +535,9 @@ function buildSchemaFingerprintInput(
     `table=${tableName}`,
     `source=${sourceKey}`,
     `scope=${scope}`,
-    `hasServerId=${hasServerId ? '1' : '0'}`,
+    ...(identity.kind === 'naturalKey'
+      ? [`hasServerId=0`, `identity=naturalKey:${identity.sourceKeys.join(',')}`, 'identityCodec=v1']
+      : [`hasServerId=${identity.kind === 'serverId' ? '1' : '0'}`]),
     `fields=${fieldParts.join(';')}`,
   ].join('|');
 }

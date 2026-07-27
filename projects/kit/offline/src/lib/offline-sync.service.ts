@@ -11,6 +11,12 @@ import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
 import type { OfflineCommand, OfflineReplicaSyncState, OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
 import { OFFLINE_REPOSITORY } from './offline-repository';
+import {
+  canonicalOfflineRemoteIdentity,
+  offlineNaturalKeyFromValues,
+  type OfflineReplicaRemoteIdentity,
+  type OfflineReplicaEntitySchema,
+} from './offline-replica-schema';
 
 /** Aggregate synchronization state exposed to application UI. */
 export type OfflineSyncState = 'idle' | 'pending' | 'syncing' | 'attention';
@@ -195,12 +201,37 @@ export class OfflineSyncService {
     };
     await this.#assertOutboxCapacity(userId, command);
     const entityType = this.#entityType(command);
+    const schema = this.#entitySchema(entityType);
     const existing = await this.#repository.getReplicaRow(scope, entityType, aggregateLocalId);
     const initialServerId = this.#initialServerId(existing?.serverId ?? null, request.serverId);
-    if (initialServerId !== null) {
-      const mapped = await this.#repository.getReplicaRowByServerId(scope, entityType, initialServerId);
+    const naturalKey = offlineNaturalKeyFromValues(schema, optimisticValue);
+    const remoteIdentity: OfflineReplicaRemoteIdentity | null =
+      schema.identity.kind === 'serverId'
+        ? initialServerId === null
+          ? null
+          : { serverId: initialServerId }
+        : schema.identity.kind === 'naturalKey'
+          ? { naturalKey: naturalKey! }
+          : null;
+    if (schema.identity.kind === 'naturalKey' && request.serverId != null) {
+      throw new Error(`Offline replica source "${entityType}" does not define a serverId field.`);
+    }
+    if (schema.identity.kind === 'naturalKey') {
+      const canonicalValuesKey = canonicalOfflineRemoteIdentity(schema, remoteIdentity!);
+      if (
+        existing &&
+        canonicalOfflineRemoteIdentity(schema, { naturalKey: offlineNaturalKeyFromValues(schema, existing.values)! }) !== canonicalValuesKey
+      ) {
+        throw new Error(`Offline replica naturalKey is immutable and must match optimistic values for "${entityType}".`);
+      }
+    }
+    if (remoteIdentity !== null) {
+      const mapped = await this.#repository.getReplicaRowByRemoteIdentity(scope, entityType, remoteIdentity);
       if (mapped !== null && mapped.localId !== aggregateLocalId) {
-        throw new Error(`Offline replica serverId ${String(initialServerId)} is already mapped to localId ${mapped.localId}.`);
+        if (remoteIdentity.serverId !== undefined) {
+          throw new Error(`Offline replica serverId ${String(remoteIdentity.serverId)} is already mapped to localId ${mapped.localId}.`);
+        }
+        throw new Error(`Offline replica remote identity is already mapped to localId ${mapped.localId}.`);
       }
     }
     const optimisticRow: OfflineReplicaRow = {
@@ -226,7 +257,11 @@ export class OfflineSyncService {
   async #assertOutboxCapacity(userId: number, command: OfflineCommand): Promise<void> {
     const commands = this.#repository.getCommandsForUser
       ? await this.#repository.getCommandsForUser(userId)
-      : (await Promise.all([...this.#knownScopes.values()].filter((scope) => scope.userId === userId).map((scope) => this.#repository.getCommands(scope)))).flat();
+      : (
+          await Promise.all(
+            [...this.#knownScopes.values()].filter((scope) => scope.userId === userId).map((scope) => this.#repository.getCommands(scope)),
+          )
+        ).flat();
     const maxCommands = this.#options.outboxLimits?.maxCommandsPerUser ?? DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER;
     const maxBytes = this.#options.outboxLimits?.maxBytesPerUser ?? DEFAULT_MAX_OUTBOX_BYTES_PER_USER;
     const currentBytes = this.#serializedOutboxBytes(commands);
@@ -345,7 +380,13 @@ export class OfflineSyncService {
       if (!row) throw new Error(`Offline replica row not found: ${sending.aggregateType}/${sending.aggregateLocalId}`);
       let result: OfflineCommandResult;
       try {
-        result = await this.#executor.execute(sending, { localId: row.localId, serverId: row.serverId });
+        const schema = this.#entitySchema(row.sourceKey);
+        const naturalKey = offlineNaturalKeyFromValues(schema, row.values);
+        result = await this.#executor.execute(sending, {
+          localId: row.localId,
+          serverId: row.serverId,
+          ...(naturalKey !== null ? { naturalKey } : {}),
+        });
       } catch (error) {
         if (!this.#isCurrent(generation)) return;
         if (!this.#isClassifiableTransportError(error)) throw error;
@@ -399,6 +440,8 @@ export class OfflineSyncService {
     }
     this.#assertServerRevision(result.serverRevision);
     const confirmedValues = result.confirmedValues ?? command.optimisticValue;
+    const schema = this.#entitySchema(current.sourceKey);
+    this.#assertCommandResultIdentity(schema, current, result);
     const serverId = this.#resolvedServerId(current.serverId, result.serverId);
     const row = {
       ...current,
@@ -431,6 +474,12 @@ export class OfflineSyncService {
 
   #entityType(command: Pick<OfflineCommand, 'operation' | 'aggregateType'>): string {
     return this.#hooks.entityType(command);
+  }
+
+  #entitySchema(sourceKey: string): OfflineReplicaEntitySchema<Record<string, unknown>> {
+    const schema = this.#options.replicaSchema.entities.find((entity) => entity.sourceKey === sourceKey);
+    if (!schema) throw new Error(`Unknown offline replica source key "${sourceKey}".`);
+    return schema;
   }
 
   async #discardCommands(discarded: readonly OfflineCommand[]): Promise<void> {
@@ -511,6 +560,30 @@ export class OfflineSyncService {
 
   #initialServerId(current: number | null, incoming: number | null | undefined): number | null {
     return incoming === null || incoming === undefined ? current : this.#resolvedServerId(current, incoming);
+  }
+
+  #assertCommandResultIdentity(
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+    current: OfflineReplicaRow,
+    result: OfflineCommandResult,
+  ): void {
+    if (schema.identity.kind === 'naturalKey' && result.serverId !== undefined) {
+      throw new Error(`Offline command returned serverId for naturalKey source "${schema.sourceKey}".`);
+    }
+    if (schema.identity.kind !== 'serverId' && result.serverId !== undefined) {
+      throw new Error(`Offline command returned serverId for source "${schema.sourceKey}" without serverId identity.`);
+    }
+    if (schema.identity.kind === 'naturalKey') {
+      const confirmedValues = result.confirmedValues ?? current.values;
+      const currentKey = offlineNaturalKeyFromValues(schema, current.values)!;
+      const confirmedKey = offlineNaturalKeyFromValues(schema, confirmedValues)!;
+      if (
+        canonicalOfflineRemoteIdentity(schema, { naturalKey: currentKey }) !==
+        canonicalOfflineRemoteIdentity(schema, { naturalKey: confirmedKey })
+      ) {
+        throw new Error(`Offline replica naturalKey is immutable for "${schema.sourceKey}".`);
+      }
+    }
   }
 
   async #discoverScopes(generation = this.#generation): Promise<boolean> {

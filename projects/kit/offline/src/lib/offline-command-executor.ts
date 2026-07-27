@@ -1,5 +1,6 @@
 import { InjectionToken } from '@angular/core';
 import type { OfflineCommand, OfflineScope } from './offline-repository';
+import type { OfflineNaturalKey } from './offline-replica-schema';
 
 /** Server acknowledgement used to reconcile one optimistic local mutation. */
 export interface OfflineCommandResult {
@@ -17,6 +18,8 @@ export interface OfflineCommandResult {
 export interface OfflineCommandTarget {
   localId: string;
   serverId: number | null;
+  /** Composite identity derived from current replica values for a natural-key entity. */
+  naturalKey?: OfflineNaturalKey;
 }
 
 /** 不透明なoperationを製品APIへ送信し、local replicaへ投影するadapter。 */

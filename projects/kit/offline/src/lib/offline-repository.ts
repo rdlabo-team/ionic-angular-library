@@ -3,10 +3,14 @@ import { KitStorageService } from '@rdlabo/ionic-angular-kit';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
   assertOfflineReplicaServerId,
+  assertOfflineReplicaNaturalKeyBaseline,
+  canonicalOfflineRemoteIdentity,
   encodeOfflineReplicaValues,
+  offlineNaturalKeyFromValues,
   projectOfflineReplicaValues,
   sha256OfflineReplicaSchema,
   type OfflineReplicaEntitySchema,
+  type OfflineReplicaRemoteIdentity,
   type OfflineReplicaWebMigrationRow,
 } from './offline-replica-schema';
 
@@ -94,6 +98,11 @@ export interface OfflineRepository {
     scope: OfflineScope,
     sourceKey: string,
     serverId: number,
+  ): Promise<OfflineReplicaRow<TValues> | null>;
+  getReplicaRowByRemoteIdentity<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaRemoteIdentity,
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
@@ -229,6 +238,25 @@ export class IonicOfflineRepository implements OfflineRepository {
     const row = Object.values(rows).find((row) => {
       if (row.sourceKey !== sourceKey || row.userId !== scope.userId || row.serverId !== serverId) return false;
       return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
+    });
+    return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
+  }
+
+  async getReplicaRowByRemoteIdentity<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaRemoteIdentity,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
+    await this.initialize();
+    await this.#writes;
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const canonical = canonicalOfflineRemoteIdentity(schema, identity);
+    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    const row = Object.values(rows).find((candidate) => {
+      if (candidate.sourceKey !== sourceKey || candidate.userId !== scope.userId) return false;
+      if (schema.scope === 'partition' && candidate.scopeId !== scope.scopeId) return false;
+      const candidateIdentity = this.#rowRemoteIdentity(schema, candidate);
+      return candidateIdentity !== null && canonicalOfflineRemoteIdentity(schema, candidateIdentity) === canonical;
     });
     return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
@@ -502,7 +530,9 @@ export class IonicOfflineRepository implements OfflineRepository {
     ]);
     const identityCheckRows = { ...rows };
     for (const row of transaction.putRows ?? []) {
-      this.#assertUniqueReplicaServerId(identityCheckRows, row);
+      const existing = identityCheckRows[this.#rowKey(row, row.sourceKey, row.localId)];
+      if (existing) this.#assertReplicaIdentityAssignment(existing, row);
+      this.#assertUniqueReplicaIdentity(identityCheckRows, row);
       identityCheckRows[this.#rowKey(row, row.sourceKey, row.localId)] = row;
     }
     if (journal) await this.#storage.set(REPLICA_TRANSACTION_KEY, transaction);
@@ -579,7 +609,7 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   #schemaHasServerId(schema: OfflineReplicaEntitySchema<Record<string, unknown>>): boolean {
-    return schema.fields.some((field) => field.policy === 'serverId');
+    return schema.identity.kind === 'serverId';
   }
 
   #validateReplicaRow(row: OfflineReplicaRow): void {
@@ -587,22 +617,56 @@ export class IonicOfflineRepository implements OfflineRepository {
     assertOfflineReplicaServerId(schema, row.serverId);
     encodeOfflineReplicaValues(schema, row.values);
     if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
+    assertOfflineReplicaNaturalKeyBaseline(schema, row.values, row.confirmedValues);
   }
 
-  #assertUniqueReplicaServerId(rows: Record<string, OfflineReplicaRow>, incoming: OfflineReplicaRow): void {
-    if (incoming.serverId === null) return;
+  #assertUniqueReplicaIdentity(rows: Record<string, OfflineReplicaRow>, incoming: OfflineReplicaRow): void {
     const schema = this.#resolveReplicaEntitySchema(incoming.sourceKey);
+    const identity = this.#rowRemoteIdentity(schema, incoming);
+    if (identity === null) return;
+    const canonical = canonicalOfflineRemoteIdentity(schema, identity);
     const incomingKey = this.#rowKey(incoming, incoming.sourceKey, incoming.localId);
     const collision = Object.entries(rows).find(([key, row]) => {
       if (key === incomingKey) return false;
-      if (row.userId !== incoming.userId || row.sourceKey !== incoming.sourceKey || row.serverId !== incoming.serverId) {
-        return false;
-      }
-      return schema.scope === 'user' || row.scopeId === incoming.scopeId;
+      if (row.userId !== incoming.userId || row.sourceKey !== incoming.sourceKey) return false;
+      if (schema.scope === 'partition' && row.scopeId !== incoming.scopeId) return false;
+      const rowIdentity = this.#rowRemoteIdentity(schema, row);
+      return rowIdentity !== null && canonicalOfflineRemoteIdentity(schema, rowIdentity) === canonical;
     });
     if (collision) {
-      throw new Error(`Offline replica serverId ${String(incoming.serverId)} is already mapped to localId ${collision[1].localId}.`);
+      if (schema.identity.kind === 'serverId') {
+        throw new Error(`Offline replica serverId ${String(incoming.serverId)} is already mapped to localId ${collision[1].localId}.`);
+      }
+      throw new Error(`Offline replica remote identity is already mapped to localId ${collision[1].localId}.`);
     }
+  }
+
+  #assertReplicaIdentityAssignment(existing: OfflineReplicaRow, incoming: OfflineReplicaRow): void {
+    const schema = this.#resolveReplicaEntitySchema(incoming.sourceKey);
+    if (schema.identity.kind === 'serverId') {
+      if (existing.serverId !== null && existing.serverId !== incoming.serverId) {
+        throw new Error(`Offline replica serverId is immutable: current=${existing.serverId}, incoming=${String(incoming.serverId)}.`);
+      }
+      return;
+    }
+    if (schema.identity.kind === 'naturalKey') {
+      const current = canonicalOfflineRemoteIdentity(schema, {
+        naturalKey: offlineNaturalKeyFromValues(schema, existing.values)!,
+      });
+      const next = canonicalOfflineRemoteIdentity(schema, {
+        naturalKey: offlineNaturalKeyFromValues(schema, incoming.values)!,
+      });
+      if (current !== next) throw new Error(`Offline replica naturalKey is immutable for "${schema.sourceKey}".`);
+    }
+  }
+
+  #rowRemoteIdentity(
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+    row: OfflineReplicaRow,
+  ): OfflineReplicaRemoteIdentity | null {
+    if (schema.identity.kind === 'serverId') return row.serverId === null ? null : { serverId: row.serverId };
+    if (schema.identity.kind === 'naturalKey') return { naturalKey: offlineNaturalKeyFromValues(schema, row.values)! };
+    return null;
   }
 
   #resolveReplicaEntitySchema(sourceKey: string): OfflineReplicaEntitySchema<Record<string, unknown>> {

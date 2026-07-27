@@ -350,14 +350,20 @@ describe('OfflineReplicaPullService', () => {
 
     it('non-positive serverIdはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(
-        () => pull.mockResolvedValueOnce(page([{ ...itemChange(42, 'Created'), serverId: 0 }], { nextCursor: 'cursor-v1' })),
+        () =>
+          pull.mockResolvedValueOnce(
+            page([{ ...itemChange(42, 'Created'), serverId: 0 } as unknown as OfflineReplicaChange], { nextCursor: 'cursor-v1' }),
+          ),
         'Offline replica pull page changes[0].serverId must be a positive integer.',
       );
     });
 
     it('non-integer serverIdはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(
-        () => pull.mockResolvedValueOnce(page([{ ...itemChange(42, 'Created'), serverId: 42.5 }], { nextCursor: 'cursor-v1' })),
+        () =>
+          pull.mockResolvedValueOnce(
+            page([{ ...itemChange(42, 'Created'), serverId: 42.5 } as unknown as OfflineReplicaChange], { nextCursor: 'cursor-v1' }),
+          ),
         'Offline replica pull page changes[0].serverId must be a positive integer.',
       );
     });
@@ -1120,6 +1126,10 @@ describe('OfflineReplicaPullService', () => {
             transactReplica: vi.fn(async () => undefined),
             getReplicaRow: vi.fn(async () => null),
             getReplicaRowByServerId: vi.fn(async () => null),
+            getReplicaRowByRemoteIdentity: vi.fn(async (_scope, _sourceKey, identity) => {
+              if (identity.serverId === undefined) throw new Error('Natural identity unsupported');
+              return null;
+            }),
           },
         },
       ],
