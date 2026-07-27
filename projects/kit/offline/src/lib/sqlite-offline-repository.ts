@@ -20,6 +20,7 @@ import {
   type OfflineReplicaCursor,
   type OfflineReplicaRow,
   type OfflineReplicaRowKey,
+  type OfflineReplicaServerIdRelease,
   type OfflineRepository,
   type OfflineReplicaTransaction,
   type OfflineScope,
@@ -352,7 +353,25 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async transactReplica(transaction: OfflineReplicaTransaction): Promise<void> {
     await this.#transaction(async (databaseId) => {
-      for (const row of transaction.putRows ?? []) await this.#putReplicaRow(databaseId, row);
+      const releases = new Map<string, OfflineReplicaServerIdRelease>();
+      for (const release of transaction.releaseServerIds ?? []) {
+        if (!Number.isSafeInteger(release.serverId) || release.serverId <= 0) {
+          throw new Error(`Offline replica release has invalid serverId ${String(release.serverId)}.`);
+        }
+        const key = this.#replicaRowKey(release);
+        if (releases.has(key)) throw new Error(`Offline replica serverId release is duplicated for ${release.sourceKey}/${release.localId}.`);
+        releases.set(key, release);
+      }
+      const consumedReleases = new Set<string>();
+      for (const row of transaction.putRows ?? []) {
+        const key = this.#replicaRowKey(row);
+        const release = releases.get(key);
+        await this.#putReplicaRow(databaseId, row, release);
+        if (release) consumedReleases.add(key);
+      }
+      if (consumedReleases.size !== releases.size) {
+        throw new Error('Offline replica serverId release must match an existing row in putRows.');
+      }
       for (const row of transaction.removeRows ?? []) await this.#removeReplicaRow(databaseId, row);
       for (const command of transaction.putCommands ?? []) await this.#putCommand(databaseId, command);
       for (const commandId of transaction.removeCommandIds ?? []) {
@@ -575,14 +594,21 @@ export class SqliteOfflineRepository implements OfflineRepository {
     );
   }
 
-  async #putReplicaRow(databaseId: string, row: OfflineReplicaRow): Promise<void> {
+  async #putReplicaRow(
+    databaseId: string,
+    row: OfflineReplicaRow,
+    release: OfflineReplicaServerIdRelease | undefined,
+  ): Promise<void> {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
     assertOfflineReplicaServerId(schema, row.serverId);
     const encoded = encodeOfflineReplicaValues(schema, row.values);
     if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
     assertOfflineReplicaNaturalKeyBaseline(schema, row.values, row.confirmedValues);
     const existing = await this.getReplicaRowIncludingPendingDelete(row, row.sourceKey, row.localId);
-    if (existing) this.#assertReplicaIdentityAssignment(schema, existing, row);
+    if (!existing && release) {
+      throw new Error(`Offline replica serverId release requires an existing row for ${row.sourceKey}/${row.localId}.`);
+    }
+    if (existing) this.#assertReplicaIdentityAssignment(schema, existing, row, release);
     const confirmedValues = row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues);
     const { sql, domainColumns } = this.#buildReplicaUpsertStatement(schema);
     const values: SQLiteValue[] = [
@@ -695,12 +721,29 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return schema.identity.kind === 'serverId';
   }
 
+  #replicaRowKey(row: OfflineReplicaRowKey): string {
+    const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
+    return `${row.userId}:${schema.scope === 'user' ? 'user' : row.scopeId}:${row.sourceKey}:${row.localId}`;
+  }
+
   #assertReplicaIdentityAssignment(
     schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
     existing: OfflineReplicaRow,
     incoming: OfflineReplicaRow,
+    release: OfflineReplicaServerIdRelease | undefined,
   ): void {
+    if (release && schema.identity.kind !== 'serverId') {
+      throw new Error(`Offline replica serverId release is unsupported for source "${incoming.sourceKey}".`);
+    }
     if (schema.identity.kind === 'serverId') {
+      if (release) {
+        if (existing.serverId !== release.serverId || incoming.serverId !== null) {
+          throw new Error(
+            `Offline replica serverId release must transition current=${existing.serverId} to incoming=null for ${incoming.sourceKey}/${incoming.localId}.`,
+          );
+        }
+        return;
+      }
       if (existing.serverId !== null && existing.serverId !== incoming.serverId) {
         throw new Error(`Offline replica serverId is immutable: current=${existing.serverId}, incoming=${String(incoming.serverId)}.`);
       }

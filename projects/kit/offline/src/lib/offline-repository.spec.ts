@@ -701,6 +701,26 @@ describe('IonicOfflineRepository', () => {
       ).rejects.toThrow('Offline replica serverId is immutable: current=42, incoming=43.');
     });
 
+    it('明示したidentity releaseだけがserverIdをnullへ戻して後続createの再割当を許可する', async () => {
+      const released = {
+        ...userRow,
+        ...scopeG10,
+        serverId: null,
+        values: { id: 42, title: 'Recreate pending' },
+        confirmedValues: null,
+        syncState: 'pending' as const,
+      };
+      await repository.transactReplica({
+        putRows: [released],
+        releaseServerIds: [{ ...scopeG10, sourceKey: 'test_items', localId: '019d-cross', serverId: 42 }],
+      });
+      await expect(repository.getReplicaRow(scopeG10, 'test_items', '019d-cross')).resolves.toMatchObject({ serverId: null });
+      await repository.transactReplica({
+        putRows: [{ ...released, serverId: 43, values: { id: 43, title: 'Recreated' }, syncState: 'confirmed' }],
+      });
+      await expect(repository.getReplicaRow(scopeG11, 'test_items', '019d-cross')).resolves.toMatchObject({ serverId: 43 });
+    });
+
     beforeEach(async () => {
       await repository.transactReplica({
         putRows: [

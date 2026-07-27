@@ -445,8 +445,16 @@ export class OfflineSyncService {
     if (result.clearServerId === true && result.serverRevision !== undefined) {
       throw new Error('Offline command cannot return serverRevision and clearServerId together.');
     }
+    // An enqueue may have completed while transport was in flight. Re-read the
+    // aggregate immediately before the atomic acknowledgement transaction so a
+    // delete ACK cannot remove a row that has already been re-added locally.
+    const latestCommands = (await this.#readKnownCommands()).filter(
+      (candidate) => this.#aggregateKey(candidate) === this.#aggregateKey(command),
+    );
+    const latestIndex = latestCommands.findIndex((candidate) => candidate.commandId === command.commandId);
+    if (latestIndex < 0) return;
     const revision = result.serverRevision;
-    const following = commands.slice(index + 1);
+    const following = latestCommands.slice(latestIndex + 1);
     const rebased =
       result.clearServerId === true
         ? following.map((item) => {
@@ -458,7 +466,7 @@ export class OfflineSyncService {
         : revision === undefined
           ? following
           : following.map((item) => this.#executor.withServerRevision(item, revision));
-    for (let offset = 0; offset < rebased.length; offset++) commands[index + 1 + offset] = rebased[offset]!;
+    latestCommands.splice(latestIndex + 1, rebased.length, ...rebased);
     const current = await this.#rowForCommand(command);
     if (!this.#isCurrent(generation)) return;
     if (!current) {
@@ -490,10 +498,23 @@ export class OfflineSyncService {
     if (!this.#isCurrent(generation)) return;
     await this.#repository.transactReplica({
       putRows: removesReplica && rebased.length === 0 ? undefined : [row],
+      releaseServerIds:
+        result.clearServerId === true && current.serverId !== null && !(removesReplica && rebased.length === 0)
+          ? [
+              {
+                userId: current.userId,
+                scopeId: current.scopeId,
+                sourceKey: current.sourceKey,
+                localId: current.localId,
+                serverId: current.serverId,
+              },
+            ]
+          : undefined,
       removeRows: removesReplica && rebased.length === 0 ? [current] : undefined,
       putCommands: rebased,
       removeCommandIds: [command.commandId],
     });
+    commands.splice(0, commands.length, ...latestCommands);
   }
 
   async #rowForCommand(command: OfflineCommand): Promise<OfflineReplicaRow | null> {

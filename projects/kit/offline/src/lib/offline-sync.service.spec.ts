@@ -1167,6 +1167,69 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
+  it('delete送信中にenqueueされたrecreateをACK完了時に保持する', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: 'race-local-id',
+      serverId: 42,
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    let resolveDelete!: (result: OfflineCommandResult) => void;
+    execute
+      .mockImplementationOnce(() => new Promise<OfflineCommandResult>((resolve) => (resolveDelete = resolve)))
+      .mockResolvedValueOnce({ serverId: 43, confirmedValues: { name: 'recreated' }, response: null });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'race-local-id',
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: { name: 'confirmed' },
+        replicaMutation: 'delete',
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    const flush = service.flush();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'race-local-id',
+        operation: 'documents.create',
+        payload: {},
+        optimisticValue: { name: 'recreated' },
+      },
+      { flush: false },
+    );
+    resolveDelete({ removeReplica: true, clearServerId: true, response: null });
+    await flush;
+
+    expect(execute.mock.calls.map((call) => call[1])).toEqual([
+      { localId: 'race-local-id', serverId: 42 },
+      { localId: 'race-local-id', serverId: null },
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        localId: 'race-local-id',
+        serverId: 43,
+        values: { name: 'recreated' },
+        syncState: 'confirmed',
+      }),
+    ]);
+    expect(commands).toEqual([]);
+  });
+
   it('clearServerIdはconfirmed delete以外では拒否する', async () => {
     rows.push({
       userId: 1,
