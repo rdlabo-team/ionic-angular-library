@@ -84,7 +84,18 @@ export class OfflineReplicaPullService {
           ? { userId: acknowledgedCommand.userId, scopeId: acknowledgedCommand.scopeId }
           : scope;
         const acknowledgedRow = acknowledgedCommand
-          ? await this.#repository.getReplicaRow(acknowledgedScope, change.sourceKey, acknowledgedCommand.aggregateLocalId)
+          ? await (
+              this.#repository.getReplicaRowIncludingPendingDelete?.(
+                acknowledgedScope,
+                change.sourceKey,
+                acknowledgedCommand.aggregateLocalId,
+              ) ??
+              this.#repository.getReplicaRow(
+                acknowledgedScope,
+                change.sourceKey,
+                acknowledgedCommand.aggregateLocalId,
+              )
+            )
           : null;
         if (acknowledgedCommand && !acknowledgedRow) {
           throw new Error(`Acknowledged command "${acknowledgedCommand.commandId}" has no local replica row.`);
@@ -106,6 +117,7 @@ export class OfflineReplicaPullService {
         const hasPending = related.length > 0;
 
         if (acknowledgedCommand) {
+          this.#assertIdentityAssignment(schema, existing!, identity);
           this.#applyAcknowledgement(change, existing!, related, putRows, removeRows, putCommands, removeCommandIds);
           continue;
         }
@@ -116,7 +128,13 @@ export class OfflineReplicaPullService {
             removeRows.push(existing);
             continue;
           }
-          putRows.push({ ...existing, serverRevision: change.serverRevision, syncState: 'conflict', fetchedAt: Date.now() });
+          putRows.push({
+            ...existing,
+            confirmedValues: null,
+            serverRevision: change.serverRevision,
+            syncState: 'conflict',
+            fetchedAt: Date.now(),
+          });
           for (const command of related) {
             putCommands.set(command.commandId, { ...command, state: 'conflict', retryAt: null, lastErrorCode: 'remote_deleted' });
           }
@@ -322,9 +340,27 @@ export class OfflineReplicaPullService {
 
     if (change.deleted) {
       if (following.length > 0) {
-        putRows.push({ ...row, serverRevision: change.serverRevision, syncState: 'conflict', fetchedAt: Date.now() });
-        for (const command of following) {
-          putCommands.set(command.commandId, { ...command, state: 'conflict', lastErrorCode: 'remote_deleted' });
+        if (acknowledgementSuperseded) {
+          putRows.push({
+            ...row,
+            confirmedValues: null,
+            serverRevision: change.serverRevision,
+            syncState: 'conflict',
+            fetchedAt: Date.now(),
+          });
+          for (const command of following) {
+            putCommands.set(command.commandId, { ...command, state: 'conflict', lastErrorCode: 'remote_deleted' });
+          }
+        } else {
+          putRows.push({
+            ...row,
+            values: following.at(-1)!.optimisticValue,
+            confirmedValues: null,
+            serverRevision: change.serverRevision,
+            syncState: 'pending',
+            visibility: following.at(-1)!.replicaMutation === 'delete' ? 'pending_delete' : 'present',
+            fetchedAt: Date.now(),
+          });
         }
       } else {
         removeRows.push(row);
@@ -343,6 +379,7 @@ export class OfflineReplicaPullService {
       serverRevision: change.serverRevision,
       fetchedAt: Date.now(),
       syncState: following.length > 0 ? (acknowledgementSuperseded ? 'conflict' : 'pending') : 'confirmed',
+      visibility: following.at(-1)?.replicaMutation === 'delete' ? 'pending_delete' : 'present',
     });
   }
 

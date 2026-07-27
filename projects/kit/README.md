@@ -523,6 +523,31 @@ The write lifecycle is: update the replica immediately → append an outbox comm
 the optimistic value → replay in the background → validate the server revision → store the confirmed value and
 revision. The server remains authoritative; SQLite is the durable local working database, not an HTTP response cache.
 
+For a DB row whose deletion is represented by absence, enqueue the same full row values with
+`replicaMutation: 'delete'`. The runtime stores a library-owned durable tombstone: normal `getReplicaRow()` and
+`getReplicaRows()` reads stop returning the row immediately, while synchronization retains its immutable `localId`,
+remote identity, confirmed baseline, and Outbox command. A successful tombstone acknowledgement removes the row
+physically; retry, authorization failure, and conflict keep it hidden; discarding restores the latest confirmed
+baseline unless the server has also deleted it.
+
+Custom `OfflineRepository` implementations must implement `getReplicaRowIncludingPendingDelete()` before they can
+accept `replicaMutation: 'delete'`; the runtime rejects that enqueue otherwise. This is intentional: ordinary product
+reads stay hidden, while the library's remote-identity lookup and synchronization path must still resolve the durable
+tombstone for replay, lost-ACK reconciliation, conflict handling, and discard.
+
+```ts
+await offlineSync.enqueue({
+  scopeId,
+  aggregateType: 'favorites',
+  aggregateLocalId: favorite.localId,
+  operation: 'favorite.delete',
+  payload: { favTo: favorite.values.favTo },
+  optimisticValue: favorite.values,
+  baseRevision: favorite.serverRevision,
+  replicaMutation: 'delete',
+});
+```
+
 The runtime retains pending, rejected, and conflicted commands until synchronization or an explicit user discard;
 it never evicts an unconfirmed mutation because of age or storage pressure. To keep a device that remains offline for
 months from exhausting SQLite, enqueue applies backpressure at 1,000 commands or 10 MiB per user by default. Products

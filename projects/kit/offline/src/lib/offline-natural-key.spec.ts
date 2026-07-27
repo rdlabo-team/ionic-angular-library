@@ -50,7 +50,7 @@ const schema = defineOfflineReplicaSchema({ version: 1, entities: [entity], migr
 const scope: OfflineScope = { userId: 1, scopeId: '10' };
 
 describe('natural-key pull reconciliation', () => {
-  it('same-page lost ACK keeps UUID, pending tombstone conflicts, and wrong identity kind rejects', async () => {
+  it('same-page lost ACK keeps UUID, pending tombstone conflicts, and same-kind natural identity reassignment rejects', async () => {
     const storage = new MemoryStorage();
     const schemaHash = await sha256OfflineReplicaSchema(schema);
     storage.values.set('offline:metadata', {
@@ -104,8 +104,9 @@ describe('natural-key pull reconciliation', () => {
         changes: [
           {
             sourceKey: 'natural_favorites',
-            serverId: 7,
+            naturalKey: { favFrom: 7, favTo: '43' },
             serverRevision: 4,
+            acknowledgedCommandIds: ['update-1'],
             values: null,
             deleted: true,
           },
@@ -220,7 +221,7 @@ describe('natural-key pull reconciliation', () => {
       expect.objectContaining({ commandId: 'update-1', state: 'conflict', lastErrorCode: 'remote_deleted' }),
     ]);
 
-    await expect(service.pull(scope)).rejects.toThrow('requires naturalKey identity');
+    await expect(service.pull(scope)).rejects.toThrow('Replica naturalKey is immutable for "natural_favorites".');
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: '2' });
   });
 });

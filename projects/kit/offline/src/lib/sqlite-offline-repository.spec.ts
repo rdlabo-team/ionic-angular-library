@@ -308,6 +308,112 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(userQuery?.statement).toBe('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC');
   });
 
+  it('v4 SQLiteをopenするとcommand mutationとentity visibilityをlosslessに追加する', async () => {
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return { columns: ['version', 'schema_hash'], rows: [[replicaSchemaV1.version, replicaSchemaV1Hash]] };
+      }
+      if (statement === 'PRAGMA table_info(offline_sync_commands)') {
+        return { rows: [{ name: 'aggregate_local_id' }, { name: 'optimistic_value_json' }] };
+      }
+      if (statement === 'PRAGMA table_info(test_items)') return { rows: [{ name: 'local_id' }] };
+      return { rows: [] };
+    });
+
+    await createRepository().initialize();
+
+    const statements = plugin.execute.mock.calls.map(([options]) => (options as { statement: string }).statement);
+    expect(statements).toContain("ALTER TABLE offline_sync_commands ADD COLUMN replica_mutation TEXT NOT NULL DEFAULT 'upsert'");
+    expect(statements).toContain("ALTER TABLE test_items ADD COLUMN _offline_visibility TEXT NOT NULL DEFAULT 'present'");
+  });
+
+  it.each([
+    {
+      label: 'command replica_mutation ALTER',
+      failureStatement: 'ALTER TABLE offline_sync_commands ADD COLUMN replica_mutation',
+    },
+    {
+      label: 'core metadata v5 update',
+      failureStatement: 'INSERT INTO offline_metadata',
+    },
+    {
+      label: 'product entity visibility ALTER',
+      failureStatement: 'ALTER TABLE test_items ADD COLUMN _offline_visibility',
+    },
+  ])('$labelが一度失敗してもreopenでv5 repairを完遂する', async ({ failureStatement }) => {
+    const commandColumns = new Set(['aggregate_local_id', 'optimistic_value_json']);
+    const entityColumns = new Set(['local_id']);
+    let coreMetadataVersion = 4;
+    let failOnce = true;
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return { columns: ['version', 'schema_hash'], rows: [[replicaSchemaV1.version, replicaSchemaV1Hash]] };
+      }
+      if (statement === 'PRAGMA table_info(offline_sync_commands)') {
+        return { rows: [...commandColumns].map((name) => ({ name })) };
+      }
+      if (statement === 'PRAGMA table_info(test_items)') {
+        return { rows: [...entityColumns].map((name) => ({ name })) };
+      }
+      return { rows: [] };
+    });
+    plugin.execute.mockImplementation(async ({ statement, values }: { statement: string; values?: unknown[] }) => {
+      if (failOnce && statement.startsWith(failureStatement)) {
+        failOnce = false;
+        throw new Error(`injected ${failureStatement} failure`);
+      }
+      if (statement.startsWith('ALTER TABLE offline_sync_commands ADD COLUMN replica_mutation')) {
+        commandColumns.add('replica_mutation');
+      }
+      if (statement.startsWith('INSERT INTO offline_metadata')) {
+        coreMetadataVersion = values?.[0] as number;
+      }
+      if (statement.startsWith('ALTER TABLE test_items ADD COLUMN _offline_visibility')) {
+        entityColumns.add('_offline_visibility');
+      }
+      return {};
+    });
+
+    await expect(createRepository().initialize()).rejects.toThrow(`injected ${failureStatement} failure`);
+    TestBed.resetTestingModule();
+    await expect(createRepository().initialize()).resolves.toBeUndefined();
+
+    expect(commandColumns).toContain('replica_mutation');
+    expect(coreMetadataVersion).toBe(5);
+    expect(entityColumns).toContain('_offline_visibility');
+    const statements = plugin.execute.mock.calls.map(([options]) => (options as { statement: string }).statement);
+    expect(statements.filter((statement) => statement.startsWith(failureStatement))).toHaveLength(2);
+  });
+
+  it('delete command persists replica_mutation in the SQLite outbox row', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    await repository.putCommand({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'delete-command',
+      aggregateType: 'test_items',
+      aggregateLocalId: 'delete-uuid',
+      operation: 'test_items.delete',
+      payload: { id: 42 },
+      optimisticValue: { title: 'confirmed' },
+      payloadHash: 'hash',
+      baseRevision: 4,
+      replicaMutation: 'delete',
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+
+    const insert = plugin.execute.mock.calls
+      .map(([options]) => options as { statement: string; values?: unknown[] })
+      .find(({ statement }) => statement.startsWith('INSERT INTO offline_sync_commands'));
+    expect(insert?.statement).toContain('replica_mutation');
+    expect(insert?.values).toContain('delete');
+  });
+
   it('replicaとoutboxを単一transactionで更新する', async () => {
     const repository = createRepository();
     await repository.initialize();
@@ -539,6 +645,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     '_offline_confirmed_json',
     '_offline_server_revision_json',
     '_offline_sync_state',
+    '_offline_visibility',
     '_offline_fetched_at',
     'title',
   ];
@@ -551,6 +658,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     '_offline_confirmed_json',
     '_offline_server_revision_json',
     '_offline_sync_state',
+    '_offline_visibility',
     '_offline_fetched_at',
     'name',
   ];
@@ -561,6 +669,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     '_offline_confirmed_json',
     '_offline_server_revision_json',
     '_offline_sync_state',
+    '_offline_visibility',
     '_offline_fetched_at',
     'feed_key',
   ];
@@ -571,6 +680,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     '_offline_confirmed_json',
     '_offline_server_revision_json',
     '_offline_sync_state',
+    '_offline_visibility',
     '_offline_fetched_at',
     'fav_from',
     'fav_to',
@@ -769,7 +879,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     )?.[0] as { statement: string; values?: unknown[] };
     expect(upsert?.statement).toContain('title');
     expect(upsert?.statement).not.toContain('value_json');
-    expect(upsert?.values).toEqual(['019d-bbbb', 1, null, null, null, 'pending', 1, 'Local item']);
+    expect(upsert?.values).toEqual(['019d-bbbb', 1, null, null, null, 'pending', 'present', 1, 'Local item']);
     expect(
       plugin.execute.mock.calls.some(([options]) =>
         (options as { statement: string }).statement.startsWith('INSERT INTO offline_sync_commands'),

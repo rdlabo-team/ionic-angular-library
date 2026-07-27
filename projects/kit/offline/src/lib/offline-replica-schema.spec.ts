@@ -162,6 +162,16 @@ describe('offline-replica-schema runtime', () => {
     );
   });
 
+  it('hidden tombstone storage is a core migration and intentionally does not alter product DDL or schema fingerprint', async () => {
+    expect(sampleSchema.createTableSql[0]).not.toContain('_offline_visibility');
+    expect(sampleSchema.schemaFingerprintInput).toBe(
+      'table=sample_items|source=sample_items|scope=partition|hasServerId=1|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:serverId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
+    );
+    expect(await sha256OfflineReplicaSchema(defineOfflineReplicaSchema({ version: 2, entities: [sampleSchema, userNotesSchema], migrations: [
+      { fromVersion: 1, statements: ['ALTER TABLE sample_items ADD COLUMN legacy_flag INTEGER NOT NULL DEFAULT 0'], migrateWebRow: (row) => row },
+    ] }))).toBe('7da9ce9faa5b749cc66827c70e11eb68d9c2ba660304468086fb6ba401dc672e');
+  });
+
   it('rejects invalid table and reserved column identifiers', () => {
     type MinimalSelect = { id: number; title: string };
     expect(() =>

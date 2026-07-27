@@ -128,6 +128,7 @@ const SCHEMA = [
   operation TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   optimistic_value_json TEXT NOT NULL,
+  replica_mutation TEXT NOT NULL DEFAULT 'upsert',
   payload_hash TEXT NOT NULL,
   base_revision_json TEXT,
   state TEXT NOT NULL,
@@ -206,8 +207,25 @@ export class SqliteOfflineRepository implements OfflineRepository {
     }
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
     const row = rows[0];
-    if (!row) return null;
+    if (!row || (row['_offline_visibility'] ?? 'present') === 'pending_delete') return null;
     return this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, localId, row);
+  }
+
+  async getReplicaRowIncludingPendingDelete<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    localId: string,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const predicates = ['local_id = ?', '_offline_user_id = ?'];
+    const values: SQLiteValue[] = [localId, scope.userId];
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
+    }
+    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
+    const row = rows[0];
+    return row ? this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, localId, row) : null;
   }
 
   async getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
@@ -219,7 +237,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       values.push(scope.scopeId);
     }
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY local_id ASC`, values);
-    return rows.map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row));
+    return rows
+      .filter((row) => (row['_offline_visibility'] ?? 'present') !== 'pending_delete')
+      .map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row));
   }
 
   async getReplicaRowByServerId<TValues = unknown>(
@@ -358,6 +378,12 @@ export class SqliteOfflineRepository implements OfflineRepository {
     if (!commandColumns.some((column) => column['name'] === 'optimistic_value_json')) {
       await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_value_json TEXT');
     }
+    if (!commandColumns.some((column) => column['name'] === 'replica_mutation')) {
+      await this.#execute(
+        databaseId,
+        "ALTER TABLE offline_sync_commands ADD COLUMN replica_mutation TEXT NOT NULL DEFAULT 'upsert'",
+      );
+    }
     // Keep this repair outside the ADD-column branch so a process/database
     // failure after ALTER but before backfill is retried on every open.
     await this.#execute(
@@ -371,6 +397,15 @@ export class SqliteOfflineRepository implements OfflineRepository {
       [OFFLINE_SCHEMA_VERSION],
     );
     await this.#initializeReplicaSchema(databaseId);
+    for (const entity of this.#options.replicaSchema.entities) {
+      const columns = await this.#queryDatabase(databaseId, `PRAGMA table_info(${entity.tableName})`);
+      if (!columns.some((column) => column['name'] === '_offline_visibility')) {
+        await this.#execute(
+          databaseId,
+          `ALTER TABLE ${entity.tableName} ADD COLUMN _offline_visibility TEXT NOT NULL DEFAULT 'present'`,
+        );
+      }
+    }
   }
 
   async #initializeReplicaSchema(databaseId: string): Promise<void> {
@@ -494,6 +529,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       operation: this.#string(row['operation']),
       payload: this.#parse(row['payload_json']),
       optimisticValue: this.#parse(row['optimistic_value_json']),
+      replicaMutation: this.#string(row['replica_mutation']) as 'upsert' | 'delete',
       payloadHash: this.#string(row['payload_hash']),
       baseRevision: this.#parseNullable(row['base_revision_json']),
       state: this.#string(row['state']) as OfflineCommand['state'],
@@ -509,12 +545,13 @@ export class SqliteOfflineRepository implements OfflineRepository {
       databaseId,
       `INSERT INTO offline_sync_commands
         (command_id, user_id, scope_id, aggregate_type, aggregate_local_id, operation, payload_json, optimistic_value_json,
-         payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
         user_id = excluded.user_id, scope_id = excluded.scope_id, aggregate_type = excluded.aggregate_type,
         aggregate_local_id = excluded.aggregate_local_id, operation = excluded.operation, payload_json = excluded.payload_json,
-        optimistic_value_json = excluded.optimistic_value_json, payload_hash = excluded.payload_hash,
+        optimistic_value_json = excluded.optimistic_value_json, replica_mutation = excluded.replica_mutation,
+        payload_hash = excluded.payload_hash,
         base_revision_json = excluded.base_revision_json, state = excluded.state, attempts = excluded.attempts,
         retry_at = excluded.retry_at, created_at = excluded.created_at, last_error_code = excluded.last_error_code`,
       [
@@ -526,6 +563,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         command.operation,
         JSON.stringify(command.payload),
         JSON.stringify(command.optimisticValue),
+        command.replicaMutation ?? 'upsert',
         command.payloadHash,
         this.#stringifyNullable(command.baseRevision),
         command.state,
@@ -543,7 +581,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const encoded = encodeOfflineReplicaValues(schema, row.values);
     if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
     assertOfflineReplicaNaturalKeyBaseline(schema, row.values, row.confirmedValues);
-    const existing = await this.getReplicaRow(row, row.sourceKey, row.localId);
+    const existing = await this.getReplicaRowIncludingPendingDelete(row, row.sourceKey, row.localId);
     if (existing) this.#assertReplicaIdentityAssignment(schema, existing, row);
     const confirmedValues = row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues);
     const { sql, domainColumns } = this.#buildReplicaUpsertStatement(schema);
@@ -555,6 +593,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       confirmedValues === null ? null : JSON.stringify(confirmedValues),
       row.serverRevision == null ? null : JSON.stringify(row.serverRevision),
       row.syncState,
+      row.visibility ?? 'present',
       row.fetchedAt,
       ...domainColumns.map((column) => encoded[column] ?? null),
     ];
@@ -595,11 +634,18 @@ export class SqliteOfflineRepository implements OfflineRepository {
       insertColumns.push('server_id');
       updateSets.push('server_id = excluded.server_id');
     }
-    insertColumns.push('_offline_confirmed_json', '_offline_server_revision_json', '_offline_sync_state', '_offline_fetched_at');
+    insertColumns.push(
+      '_offline_confirmed_json',
+      '_offline_server_revision_json',
+      '_offline_sync_state',
+      '_offline_visibility',
+      '_offline_fetched_at',
+    );
     updateSets.push(
       '_offline_confirmed_json = excluded._offline_confirmed_json',
       '_offline_server_revision_json = excluded._offline_server_revision_json',
       '_offline_sync_state = excluded._offline_sync_state',
+      '_offline_visibility = excluded._offline_visibility',
       '_offline_fetched_at = excluded._offline_fetched_at',
     );
     const domainColumns: string[] = [];
@@ -635,6 +681,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       serverRevision: this.#parseNullable<string | number>(row['_offline_server_revision_json']),
       fetchedAt: this.#number(row['_offline_fetched_at']),
       syncState: this.#string(row['_offline_sync_state']) as OfflineReplicaRow['syncState'],
+      visibility: (row['_offline_visibility'] ?? 'present') as 'present' | 'pending_delete',
     };
   }
 
