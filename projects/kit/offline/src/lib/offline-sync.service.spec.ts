@@ -980,7 +980,7 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('Offline replica serverId is immutable');
   });
 
-  it('existing rowが無いenqueueはstale serverId hintを採用しない', async () => {
+  it('enqueue時のserverId採用は初回pull前にreplica rowへ永続化する', async () => {
     await service.enqueue(
       {
         scopeId: '10',
@@ -995,13 +995,13 @@ describe('OfflineSyncService', () => {
     );
     expect(rows[0]).toMatchObject({
       localId: '019d-adopted',
-      serverId: null,
+      serverId: 38142,
       confirmedValues: null,
       syncState: 'pending',
     });
   });
 
-  it('existing rowが無いdelete requestのserverId hintはexecutor targetへ復活させない', async () => {
+  it('採用済みserverIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
     await service.enqueue(
       {
         scopeId: '10',
@@ -1017,7 +1017,7 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     execute.mockResolvedValueOnce({ removeReplica: true, response: null });
     await service.flush();
-    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: null });
+    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: 38142 });
   });
 
   it('confirmed rowのdeleteはOutbox markerとhidden baselineを原子的に残し、ACKでphysical removeする', async () => {
@@ -1303,7 +1303,7 @@ describe('OfflineSyncService', () => {
     ]);
   });
 
-  it('delete ACKが先なら後続enqueueはserverIdを解放済みのrowからrecreateする', async () => {
+  it('delete ACK後のstale serverIdHintは採用せずrecreateをserverId nullから開始する', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
@@ -1341,6 +1341,7 @@ describe('OfflineSyncService', () => {
         scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: 'complete-first-local-id',
+        serverIdHint: 42,
         operation: 'documents.create',
         payload: {},
         optimisticValue: { name: 'recreated' },
@@ -1636,7 +1637,7 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([]);
   });
 
-  it('別localIdのstale serverId hintは既存remote mappingを奪わない', async () => {
+  it('別localIdへ既存serverIdを割り当てようとするとrejectする', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
@@ -1649,24 +1650,21 @@ describe('OfflineSyncService', () => {
       fetchedAt: 1,
       syncState: 'confirmed',
     });
-    await service.enqueue(
-      {
-        scopeId: '10',
-        aggregateType: 'documents',
-        aggregateLocalId: '019d-new',
-        serverId: 38142,
-        operation: 'documents.update',
-        payload: {},
-        optimisticValue: {},
-      },
-      { flush: false },
-    );
-    expect(rows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ localId: '019d-existing', serverId: 38142 }),
-        expect.objectContaining({ localId: '019d-new', serverId: null }),
-      ]),
-    );
+    await expect(
+      service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          aggregateLocalId: '019d-new',
+          serverId: 38142,
+          operation: 'documents.update',
+          payload: {},
+          optimisticValue: {},
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('Offline replica serverId 38142 is already mapped to localId 019d-existing.');
+    expect(commands).toEqual([]);
   });
 
   it('同一localIdへのserverId再指定は許容する', async () => {
