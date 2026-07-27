@@ -2,10 +2,15 @@ import { inject, Injectable, InjectionToken } from '@angular/core';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
   assertOfflineReplicaServerId,
+  assertOfflineReplicaNaturalKeyBaseline,
+  canonicalOfflineRemoteIdentity,
   decodeOfflineReplicaValues,
   encodeOfflineReplicaValues,
+  normalizeOfflineNaturalKey,
+  offlineNaturalKeyFromValues,
   projectOfflineReplicaValues,
   type OfflineReplicaEntitySchema,
+  type OfflineReplicaRemoteIdentity,
   type OfflineReplicaSchemaBundle,
   sha256OfflineReplicaSchema,
 } from './offline-replica-schema';
@@ -229,6 +234,34 @@ export class SqliteOfflineRepository implements OfflineRepository {
     if (schema.scope === 'partition') {
       predicates.push('_offline_scope_id = ?');
       values.push(scope.scopeId);
+    }
+    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
+    const row = rows[0];
+    if (!row) return null;
+    return this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row);
+  }
+
+  async getReplicaRowByRemoteIdentity<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaRemoteIdentity,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    canonicalOfflineRemoteIdentity(schema, identity);
+    if (schema.identity.kind === 'serverId') {
+      return this.getReplicaRowByServerId(scope, sourceKey, identity.serverId!);
+    }
+    const naturalKey = normalizeOfflineNaturalKey(schema, identity.naturalKey!);
+    const predicates = ['_offline_user_id = ?'];
+    const values: SQLiteValue[] = [scope.userId];
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
+    }
+    for (const sourceKeyPart of schema.identity.sourceKeys) {
+      const field = schema.fields.find((candidate) => candidate.sourceKey === sourceKeyPart)!;
+      predicates.push(`${field.sqliteColumnName!} = ?`);
+      values.push(naturalKey[sourceKeyPart]!);
     }
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
     const row = rows[0];
@@ -504,10 +537,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
     );
   }
 
-  #putReplicaRow(databaseId: string, row: OfflineReplicaRow): Promise<void> {
+  async #putReplicaRow(databaseId: string, row: OfflineReplicaRow): Promise<void> {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
     assertOfflineReplicaServerId(schema, row.serverId);
     const encoded = encodeOfflineReplicaValues(schema, row.values);
+    if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
+    assertOfflineReplicaNaturalKeyBaseline(schema, row.values, row.confirmedValues);
+    const existing = await this.getReplicaRow(row, row.sourceKey, row.localId);
+    if (existing) this.#assertReplicaIdentityAssignment(schema, existing, row);
     const confirmedValues = row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues);
     const { sql, domainColumns } = this.#buildReplicaUpsertStatement(schema);
     const values: SQLiteValue[] = [
@@ -521,7 +558,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       row.fetchedAt,
       ...domainColumns.map((column) => encoded[column] ?? null),
     ];
-    return this.#execute(databaseId, sql, values);
+    await this.#execute(databaseId, sql, values);
   }
 
   #removeReplicaRow(databaseId: string, key: OfflineReplicaRowKey): Promise<void> {
@@ -608,7 +645,29 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   #schemaHasServerId(schema: OfflineReplicaEntitySchema<Record<string, unknown>>): boolean {
-    return schema.fields.some((field) => field.policy === 'serverId');
+    return schema.identity.kind === 'serverId';
+  }
+
+  #assertReplicaIdentityAssignment(
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+    existing: OfflineReplicaRow,
+    incoming: OfflineReplicaRow,
+  ): void {
+    if (schema.identity.kind === 'serverId') {
+      if (existing.serverId !== null && existing.serverId !== incoming.serverId) {
+        throw new Error(`Offline replica serverId is immutable: current=${existing.serverId}, incoming=${String(incoming.serverId)}.`);
+      }
+      return;
+    }
+    if (schema.identity.kind === 'naturalKey') {
+      const current = canonicalOfflineRemoteIdentity(schema, {
+        naturalKey: offlineNaturalKeyFromValues(schema, existing.values)!,
+      });
+      const next = canonicalOfflineRemoteIdentity(schema, {
+        naturalKey: offlineNaturalKeyFromValues(schema, incoming.values)!,
+      });
+      if (current !== next) throw new Error(`Offline replica naturalKey is immutable for "${schema.sourceKey}".`);
+    }
   }
 
   async #execute(databaseId: string, statement: string, values: SQLiteValue[] = []): Promise<void> {

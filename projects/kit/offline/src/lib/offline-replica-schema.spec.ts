@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   booleanColumn,
+  canonicalOfflineRemoteIdentity,
   datetime,
   decodeOfflineReplicaValues,
   defineOfflineReplicaSchema,
@@ -10,12 +11,14 @@ import {
   ignored,
   integer,
   json,
+  naturalKey,
   nullable,
   projectOfflineReplicaValues,
   real,
   serverId,
   sha256OfflineReplicaSchema,
   text,
+  type OfflineReplicaNaturalKeyDef,
 } from './offline-replica-schema';
 
 type SampleSelect = {
@@ -225,6 +228,64 @@ describe('offline-replica-schema runtime', () => {
     ]);
     expect(schema.createTableSql[0]).not.toContain('server_id');
     expect(schema.schemaFingerprintInput).toContain('hasServerId=0');
+  });
+
+  it('materializes ordered naturalKey identity with a scope-unique physical-column index', () => {
+    type Select = { favFrom: number; favTo: string; label: string };
+    const schema = defineReplicaEntity<Select>()({
+      table: 'favorites',
+      sourceKey: 'favorites',
+      scope: 'partition',
+      identity: naturalKey(['favFrom', 'favTo']),
+      fields: { favFrom: integer(), favTo: text(), label: text() },
+    });
+
+    expect(schema.identity).toEqual({ kind: 'naturalKey', sourceKeys: ['favFrom', 'favTo'] });
+    expect(schema.createTableSql[0]).not.toContain('server_id');
+    expect(schema.createTableSql[1]).toBe(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_favorites_natural_key ON favorites (_offline_user_id, _offline_scope_id, fav_from, fav_to)',
+    );
+    expect(schema.schemaFingerprintInput).toContain('identity=naturalKey:favFrom,favTo');
+    expect(schema.schemaFingerprintInput).toContain('identityCodec=v1');
+    expect(canonicalOfflineRemoteIdentity(schema, { naturalKey: { favTo: '42', favFrom: 7 } })).toBe(
+      'naturalKey:[["favFrom","n",7],["favTo","s","42"]]',
+    );
+    expect(() => canonicalOfflineRemoteIdentity(schema, { naturalKey: { favFrom: 7, favTo: '42', extra: 'x' } })).toThrow(
+      'must contain exactly its declared fields',
+    );
+    expect(() => canonicalOfflineRemoteIdentity(schema, { naturalKey: { favFrom: 7, favTo: 'bad\0key' } })).toThrow('must not contain NUL');
+    expect(() => canonicalOfflineRemoteIdentity(schema, { naturalKey: { favFrom: 7, favTo: '\ud800' } })).toThrow('well-formed Unicode');
+    expect(() => canonicalOfflineRemoteIdentity(schema, { naturalKey: { favFrom: 7, favTo: 'x'.repeat(1025) } })).toThrow(
+      'must not exceed 1024 UTF-8 bytes',
+    );
+  });
+
+  it('rejects invalid naturalKey declarations', () => {
+    type Select = { id: number; optional: string | null; payload: { id: string }; ignoredValue: string };
+    const fields = {
+      id: integer(),
+      optional: nullable(text()),
+      payload: json<{ id: string }>(),
+      ignoredValue: ignored('not persisted'),
+    } as const;
+    const define = (identity: OfflineReplicaNaturalKeyDef<keyof Select>) =>
+      defineReplicaEntity<Select>()({ table: 'natural_items', sourceKey: 'natural_items', scope: 'user', identity, fields });
+
+    expect(() => define(naturalKey([]))).toThrow('must contain at least one');
+    expect(() => define(naturalKey(['id', 'id']))).toThrow('must be unique');
+    expect(() => define(naturalKey(['optional']))).toThrow('must be a required text or integer column');
+    expect(() => define(naturalKey(['payload']))).toThrow('must be a required text or integer column');
+    expect(() => define(naturalKey(['ignoredValue']))).toThrow('must be a required text or integer column');
+
+    expect(() =>
+      defineReplicaEntity<{ id: number; code: string }>()({
+        table: 'mixed_identity',
+        sourceKey: 'mixed_identity',
+        scope: 'user',
+        identity: naturalKey(['code']),
+        fields: { id: serverId(), code: text() },
+      }),
+    ).toThrow('cannot define both serverId and naturalKey identity');
   });
 });
 

@@ -3,7 +3,15 @@ import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OFFLINE_REPLICA_PULLER, type OfflineReplicaChange, type OfflineReplicaPullPage } from './offline-replica-puller';
-import { projectOfflineReplicaValues, sha256OfflineReplicaSchema, type OfflineReplicaEntitySchema } from './offline-replica-schema';
+import {
+  canonicalOfflineRemoteIdentity,
+  normalizeOfflineNaturalKey,
+  offlineNaturalKeyFromValues,
+  projectOfflineReplicaValues,
+  sha256OfflineReplicaSchema,
+  type OfflineReplicaRemoteIdentity,
+  type OfflineReplicaEntitySchema,
+} from './offline-replica-schema';
 import {
   OFFLINE_REPOSITORY,
   type OfflineCommand,
@@ -12,12 +20,12 @@ import {
   type OfflineScope,
 } from './offline-repository';
 
-interface CollapsedOfflineReplicaChange extends OfflineReplicaChange {
+type CollapsedOfflineReplicaChange = OfflineReplicaChange & {
   /** Last position in this page at which each command id was acknowledged. */
   acknowledgementOrdinals: Readonly<Record<string, number>>;
   /** Position of the authoritative last change retained by the collapse. */
   collapsedOrdinal: number;
-}
+};
 
 /** Pulls authoritative server deltas into one durable local replica partition. */
 @Injectable({ providedIn: 'root' })
@@ -81,9 +89,13 @@ export class OfflineReplicaPullService {
         if (acknowledgedCommand && !acknowledgedRow) {
           throw new Error(`Acknowledged command "${acknowledgedCommand.commandId}" has no local replica row.`);
         }
-        const serverRow = await this.#repository.getReplicaRowByServerId(scope, change.sourceKey, change.serverId);
+        const identity = this.#identity(change);
+        const serverRow = await this.#repository.getReplicaRowByRemoteIdentity(scope, change.sourceKey, identity);
         if (acknowledgedRow && serverRow && acknowledgedRow.localId !== serverRow.localId) {
-          throw new Error(`Server id ${change.serverId} is already mapped to another local replica row.`);
+          if (identity.serverId !== undefined) {
+            throw new Error(`Server id ${identity.serverId} is already mapped to another local replica row.`);
+          }
+          throw new Error(`Remote identity for "${change.sourceKey}" is already mapped to another local replica row.`);
         }
         const existing = acknowledgedRow ?? serverRow;
         const related = existing
@@ -117,7 +129,7 @@ export class OfflineReplicaPullService {
             ...scope,
             sourceKey: change.sourceKey,
             localId: crypto.randomUUID(),
-            serverId: change.serverId,
+            serverId: identity.serverId ?? null,
             values: confirmedValues,
             confirmedValues,
             serverRevision: change.serverRevision,
@@ -186,9 +198,20 @@ export class OfflineReplicaPullService {
     if (typeof change['deleted'] !== 'boolean') {
       throw new Error(`${label}.deleted must be a boolean.`);
     }
-    const serverId = change['serverId'];
-    if (typeof serverId !== 'number' || !Number.isFinite(serverId) || !Number.isSafeInteger(serverId) || serverId <= 0) {
-      throw new Error(`${label}.serverId must be a positive integer.`);
+    const schema = this.#entitySchema(change['sourceKey']);
+    if (schema.identity.kind === 'serverId') {
+      const serverId = change['serverId'];
+      if (typeof serverId !== 'number' || !Number.isSafeInteger(serverId) || serverId <= 0) {
+        throw new Error(`${label}.serverId must be a positive integer.`);
+      }
+      if (change['naturalKey'] !== undefined) {
+        throw new Error(`${label}.naturalKey must be omitted for a serverId entity.`);
+      }
+    }
+    try {
+      canonicalOfflineRemoteIdentity(schema, change as unknown as OfflineReplicaRemoteIdentity);
+    } catch (error) {
+      throw new Error(`${label} has invalid remote identity: ${error instanceof Error ? error.message : String(error)}`);
     }
     const revision = change['serverRevision'];
     if (typeof revision !== 'string' && (typeof revision !== 'number' || !Number.isFinite(revision))) {
@@ -225,15 +248,31 @@ export class OfflineReplicaPullService {
 
   #validatedValues(schema: OfflineReplicaEntitySchema<Record<string, unknown>>, change: OfflineReplicaChange): unknown {
     if (change.values === null) {
-      throw new Error(`Offline replica change "${change.sourceKey}"/${change.serverId} is missing values.`);
+      throw new Error(
+        change.serverId === undefined
+          ? `Offline replica change "${change.sourceKey}" is missing values.`
+          : `Offline replica change "${change.sourceKey}"/${change.serverId} is missing values.`,
+      );
     }
-    return projectOfflineReplicaValues(schema, change.values);
+    const values = projectOfflineReplicaValues(schema, change.values);
+    if (schema.identity.kind === 'naturalKey') {
+      const expected = offlineNaturalKeyFromValues(schema, values)!;
+      const incoming = normalizeOfflineNaturalKey(schema, change.naturalKey!);
+      if (
+        canonicalOfflineRemoteIdentity(schema, { naturalKey: expected }) !==
+        canonicalOfflineRemoteIdentity(schema, { naturalKey: incoming })
+      ) {
+        throw new Error(`Offline replica change "${change.sourceKey}" naturalKey does not match values.`);
+      }
+    }
+    return values;
   }
 
   #collapseChanges(changes: readonly OfflineReplicaChange[]): CollapsedOfflineReplicaChange[] {
     const collapsed = new Map<string, CollapsedOfflineReplicaChange>();
     for (const [ordinal, change] of changes.entries()) {
-      const key = `${change.sourceKey}:${change.serverId}`;
+      const schema = this.#entitySchema(change.sourceKey);
+      const key = `${change.sourceKey}:${canonicalOfflineRemoteIdentity(schema, this.#identity(change))}`;
       const previous = collapsed.get(key);
       const acknowledgedCommandIds = [...new Set([...(previous?.acknowledgedCommandIds ?? []), ...(change.acknowledgedCommandIds ?? [])])];
       const acknowledgementOrdinals = { ...(previous?.acknowledgementOrdinals ?? {}) };
@@ -295,10 +334,10 @@ export class OfflineReplicaPullService {
 
     const schema = this.#entitySchema(change.sourceKey);
     const confirmedValues = this.#validatedValues(schema, change);
-    this.#assertServerIdAssignment(row.serverId, change.serverId);
+    this.#assertIdentityAssignment(schema, row, this.#identity(change));
     putRows.push({
       ...row,
-      serverId: change.serverId,
+      serverId: change.serverId ?? null,
       values: following.length > 0 ? following.at(-1)!.optimisticValue : confirmedValues,
       confirmedValues,
       serverRevision: change.serverRevision,
@@ -307,9 +346,28 @@ export class OfflineReplicaPullService {
     });
   }
 
-  #assertServerIdAssignment(current: number | null, incoming: number): void {
-    if (current !== null && current !== incoming) {
-      throw new Error(`Replica serverId is immutable: current=${current}, incoming=${incoming}.`);
+  #identity(change: OfflineReplicaChange): OfflineReplicaRemoteIdentity {
+    return change.serverId !== undefined ? { serverId: change.serverId } : { naturalKey: change.naturalKey! };
+  }
+
+  #assertIdentityAssignment(
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+    row: OfflineReplicaRow,
+    incoming: OfflineReplicaRemoteIdentity,
+  ): void {
+    if (schema.identity.kind === 'serverId') {
+      const serverId = incoming.serverId!;
+      if (row.serverId !== null && row.serverId !== serverId) {
+        throw new Error(`Replica serverId is immutable: current=${row.serverId}, incoming=${serverId}.`);
+      }
+      return;
+    }
+    const current = offlineNaturalKeyFromValues(schema, row.values);
+    if (
+      current !== null &&
+      canonicalOfflineRemoteIdentity(schema, { naturalKey: current }) !== canonicalOfflineRemoteIdentity(schema, incoming)
+    ) {
+      throw new Error(`Replica naturalKey is immutable for "${schema.sourceKey}".`);
     }
   }
 }

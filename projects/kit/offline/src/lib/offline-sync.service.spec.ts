@@ -10,7 +10,7 @@ import {
 import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
-import { defineOfflineReplicaSchema, defineReplicaEntity, serverId, text } from './offline-replica-schema';
+import { defineOfflineReplicaSchema, defineReplicaEntity, integer, naturalKey, serverId, text } from './offline-replica-schema';
 import {
   OFFLINE_REPOSITORY,
   type OfflineCommand,
@@ -31,6 +31,20 @@ const replicaSchema = defineOfflineReplicaSchema({
         id: serverId(),
         title: text(),
       },
+    }),
+  ],
+  migrations: [],
+});
+
+const naturalReplicaSchema = defineOfflineReplicaSchema({
+  version: 1,
+  entities: [
+    defineReplicaEntity<{ favFrom: number; favTo: string; title: string }>()({
+      table: 'natural_documents',
+      sourceKey: 'natural_documents',
+      scope: 'partition',
+      identity: naturalKey(['favFrom', 'favTo']),
+      fields: { favFrom: integer(), favTo: text(), title: text() },
     }),
   ],
   migrations: [],
@@ -101,6 +115,28 @@ describe('OfflineSyncService', () => {
               item.userId === scope.userId && item.scopeId === scope.scopeId && item.sourceKey === sourceKey && item.serverId === serverId,
           ) ?? null,
       ),
+      getReplicaRowByRemoteIdentity: vi.fn(async (scope: OfflineScope, sourceKey: string, identity) => {
+        if (identity.naturalKey !== undefined) {
+          return (
+            rows.find(
+              (item) =>
+                item.userId === scope.userId &&
+                item.scopeId === scope.scopeId &&
+                item.sourceKey === sourceKey &&
+                Object.entries(identity.naturalKey).every(([key, value]) => (item.values as Record<string, unknown>)[key] === value),
+            ) ?? null
+          );
+        }
+        return (
+          rows.find(
+            (item) =>
+              item.userId === scope.userId &&
+              item.scopeId === scope.scopeId &&
+              item.sourceKey === sourceKey &&
+              item.serverId === identity.serverId,
+          ) ?? null
+        );
+      }),
       getReplicaCursor: vi.fn(async () => null),
       transactReplica: vi.fn(async (transaction) => {
         for (const row of transaction.putRows ?? []) {
@@ -839,6 +875,29 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('Offline command returned invalid serverId 0.');
   });
 
+  it('naturalKey entityへのserverId応答はcompleteCommand境界でhard failする', async () => {
+    options.replicaSchema = naturalReplicaSchema;
+    execute.mockResolvedValueOnce({
+      serverId: 99,
+      serverRevision: 1,
+      confirmedValues: { favFrom: 7, favTo: '42', title: 'confirmed' },
+      response: null,
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'natural_documents',
+        aggregateLocalId: 'immutable-uuid',
+        operation: 'natural_documents.create',
+        payload: {},
+        optimisticValue: { favFrom: 7, favTo: '42', title: 'local' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('Offline command returned serverId for naturalKey source "natural_documents".');
+  });
+
   it('reassigned serverIdはhard failする', async () => {
     rows.push({
       userId: 1,
@@ -1128,6 +1187,14 @@ describe('OfflineSyncService', () => {
         getReplicaRowByServerId: vi.fn(async (scope: OfflineScope, sourceKey: string, serverId: number) => {
           const row = rows.find((item) => {
             if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.serverId !== serverId) return false;
+            return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
+          });
+          return row ? projectReplicaRow(row, scope) : null;
+        }),
+        getReplicaRowByRemoteIdentity: vi.fn(async (scope: OfflineScope, sourceKey: string, identity) => {
+          if (identity.serverId === undefined) throw new Error(`Natural identity is unsupported by this test repository.`);
+          const row = rows.find((item) => {
+            if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.serverId !== identity.serverId) return false;
             return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
           });
           return row ? projectReplicaRow(row, scope) : null;

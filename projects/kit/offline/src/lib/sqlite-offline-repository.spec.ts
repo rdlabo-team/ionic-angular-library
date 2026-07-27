@@ -5,6 +5,8 @@ import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
   defineOfflineReplicaSchema,
   defineReplicaEntity,
+  integer,
+  naturalKey,
   serverId,
   sha256OfflineReplicaSchema,
   text,
@@ -61,6 +63,20 @@ const localProjectionEntity = defineReplicaEntity<LocalProjectionSelect>()({
   fields: {
     feedKey: text(),
   },
+});
+
+const naturalFavoriteEntity = defineReplicaEntity<{ favFrom: number; favTo: string; label: string }>()({
+  table: 'natural_favorites',
+  sourceKey: 'natural_favorites',
+  scope: 'partition',
+  identity: naturalKey(['favFrom', 'favTo']),
+  fields: { favFrom: integer(), favTo: text(), label: text() },
+});
+
+const naturalFavoriteSchema = defineOfflineReplicaSchema({
+  version: 1,
+  entities: [naturalFavoriteEntity],
+  migrations: [],
 });
 
 const localProjectionSchema = defineOfflineReplicaSchema({
@@ -548,6 +564,18 @@ describe('SqliteOfflineRepository replica rows', () => {
     '_offline_fetched_at',
     'feed_key',
   ];
+  const naturalFavoriteColumns = [
+    'local_id',
+    '_offline_user_id',
+    '_offline_scope_id',
+    '_offline_confirmed_json',
+    '_offline_server_revision_json',
+    '_offline_sync_state',
+    '_offline_fetched_at',
+    'fav_from',
+    'fav_to',
+    'label',
+  ];
 
   function replicaRowMatrix(tableName: string, stored: { values: unknown[] }): unknown[] {
     return tableName === 'test_group_items' ? [...stored.values] : [...stored.values];
@@ -557,9 +585,11 @@ describe('SqliteOfflineRepository replica rows', () => {
     const columns =
       tableName === 'test_group_items'
         ? testGroupItemColumns
-        : tableName === 'local_projections'
-          ? localProjectionColumns
-          : testItemColumns;
+        : tableName === 'natural_favorites'
+          ? naturalFavoriteColumns
+          : tableName === 'local_projections'
+            ? localProjectionColumns
+            : testItemColumns;
     const entries = Object.entries(storedReplicaRows).filter(([, stored]) => stored.tableName === tableName);
     if (statement.includes('server_id = ?')) {
       const serverId = values?.[0];
@@ -628,7 +658,7 @@ describe('SqliteOfflineRepository replica rows', () => {
             delete storedReplicaCursors[`${userId}:${scopeId}`];
           }
         }
-        for (const tableName of ['test_items', 'test_group_items', 'local_projections'] as const) {
+        for (const tableName of ['test_items', 'test_group_items', 'local_projections', 'natural_favorites'] as const) {
           if (statement.startsWith(`INSERT INTO ${tableName}`)) {
             const localId = values?.[0];
             if (typeof localId === 'string') {
@@ -671,7 +701,7 @@ describe('SqliteOfflineRepository replica rows', () => {
             typeof userId === 'number' && typeof scopeId === 'string' ? storedReplicaCursors[`${userId}:${scopeId}`] : undefined;
           return cursor === undefined ? { rows: [] } : { columns: ['cursor'], rows: [[cursor]] };
         }
-        for (const tableName of ['test_items', 'test_group_items', 'local_projections'] as const) {
+        for (const tableName of ['test_items', 'test_group_items', 'local_projections', 'natural_favorites'] as const) {
           if (statement.startsWith(`SELECT * FROM ${tableName}`)) {
             return queryStoredReplicaRows(tableName, statement, values);
           }
@@ -1209,6 +1239,97 @@ describe('SqliteOfflineRepository replica rows', () => {
         localId: '019d-user',
       });
       expect(await repository.getReplicaRow(scopeG10, 'test_group_items', '019d-group')).toBeNull();
+    });
+
+    it('naturalKey lookupはscopeと宣言順の実列predicateを使う', async () => {
+      storedReplicaMetadata = null;
+      const repository = createRepository(naturalFavoriteSchema);
+      await repository.initialize();
+      plugin.query.mockClear();
+
+      await repository.getReplicaRowByRemoteIdentity({ userId: 7, scopeId: 'scope-a' }, 'natural_favorites', {
+        naturalKey: { favTo: '42', favFrom: 9 },
+      });
+
+      expect(plugin.query).toHaveBeenCalledWith({
+        databaseId: 'offline-db',
+        statement: 'SELECT * FROM natural_favorites WHERE _offline_user_id = ? AND _offline_scope_id = ? AND fav_from = ? AND fav_to = ?',
+        values: [7, 'scope-a', 9, '42'],
+      });
+    });
+
+    it('同一localIdのnaturalKey再割当をSQLite upsert前にrejectする', async () => {
+      storedReplicaMetadata = null;
+      const repository = createRepository(naturalFavoriteSchema);
+      await repository.initialize();
+      const base = {
+        userId: 7,
+        scopeId: 'scope-a',
+        sourceKey: 'natural_favorites',
+        localId: 'uuid-a',
+        serverId: null,
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'pending' as const,
+      };
+      await repository.transactReplica({
+        putRows: [{ ...base, values: { favFrom: 9, favTo: '42', label: 'A' } }],
+      });
+      await expect(
+        repository.transactReplica({
+          putRows: [{ ...base, values: { favFrom: 10, favTo: '42', label: 'B' } }],
+        }),
+      ).rejects.toThrow('Offline replica naturalKey is immutable for "natural_favorites".');
+    });
+
+    it('confirmedValuesのnaturalKeyがvaluesと異なるrowをSQLiteへ書かない', async () => {
+      storedReplicaMetadata = null;
+      const repository = createRepository(naturalFavoriteSchema);
+      await repository.initialize();
+      plugin.execute.mockClear();
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              userId: 7,
+              scopeId: 'scope-a',
+              sourceKey: 'natural_favorites',
+              localId: 'uuid-mismatch',
+              serverId: null,
+              values: { favFrom: 9, favTo: '42', label: 'optimistic' },
+              confirmedValues: { favFrom: 10, favTo: '42', label: 'confirmed' },
+              serverRevision: 1,
+              fetchedAt: 1,
+              syncState: 'pending',
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica confirmedValues naturalKey must match values for "natural_favorites".');
+      expect(
+        plugin.execute.mock.calls.some(([options]) =>
+          (options as { statement: string }).statement.startsWith('INSERT INTO natural_favorites'),
+        ),
+      ).toBe(false);
+    });
+
+    it('同一localIdのserverId再割当をSQLite upsert前にrejectする', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      const base = {
+        userId: 1,
+        scopeId: '10',
+        sourceKey: 'test_items',
+        localId: 'uuid-a',
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'confirmed' as const,
+      };
+      await repository.transactReplica({ putRows: [{ ...base, serverId: 42, values: { id: 42, title: 'A' } }] });
+      await expect(repository.transactReplica({ putRows: [{ ...base, serverId: 43, values: { id: 43, title: 'B' } }] })).rejects.toThrow(
+        'Offline replica serverId is immutable: current=42, incoming=43.',
+      );
     });
   });
 

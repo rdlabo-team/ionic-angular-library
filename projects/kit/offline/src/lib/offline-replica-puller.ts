@@ -1,5 +1,6 @@
 import { InjectionToken } from '@angular/core';
 import type { OfflineScope } from './offline-repository';
+import type { OfflineReplicaRemoteIdentity } from './offline-replica-schema';
 
 /** Server pull request for one user or partition-scoped replica. */
 export interface OfflineReplicaPullRequest {
@@ -10,9 +11,8 @@ export interface OfflineReplicaPullRequest {
 }
 
 /** One server-side replica mutation returned by an explicit pull page. */
-export interface OfflineReplicaChange {
+interface OfflineReplicaChangeBase {
   sourceKey: string;
-  serverId: number;
   serverRevision: string | number;
   /**
    * Idempotency command ids durably recorded by the server and reflected in this final row state.
@@ -22,6 +22,9 @@ export interface OfflineReplicaChange {
   values: unknown | null;
   deleted: boolean;
 }
+
+/** One server-side mutation with the identity kind declared by its replica schema. */
+export type OfflineReplicaChange = OfflineReplicaChangeBase & OfflineReplicaRemoteIdentity;
 
 /** One explicit replica pull response page from the application backend. */
 export interface OfflineReplicaPullPage {
