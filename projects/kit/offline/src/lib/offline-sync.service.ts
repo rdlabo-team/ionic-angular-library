@@ -450,19 +450,25 @@ export class OfflineSyncService {
     }
     this.#assertServerRevision(result.serverRevision);
     const removesReplica = result.removeReplica === true || command.replicaMutation === 'delete';
+    if (result.clearServerId === true && !removesReplica) {
+      throw new Error('Offline command can clear serverId only for a confirmed replica removal.');
+    }
     const confirmedValues = removesReplica ? null : (result.confirmedValues ?? command.optimisticValue);
     const schema = this.#entitySchema(current.sourceKey);
     this.#assertCommandResultIdentity(schema, current, result);
-    const serverId = this.#resolvedServerId(current.serverId, result.serverId);
+    const serverId = result.clearServerId === true ? null : this.#resolvedServerId(current.serverId, result.serverId);
     const row = {
       ...current,
-      values: rebased.length > 0 ? rebased.at(-1)!.optimisticValue : confirmedValues,
+      // The row may have received a local-only patch (for example, a UI
+      // projection was integrated) while this command was in flight. Keep the
+      // current durable optimistic state instead of restoring the stale
+      // command snapshot when later commands remain queued.
+      values: rebased.length > 0 ? current.values : confirmedValues,
       confirmedValues,
       serverId,
       serverRevision: revision ?? current.serverRevision,
       fetchedAt: Date.now(),
-      syncState:
-        rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
+      syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
       visibility: rebased.at(-1)?.replicaMutation === 'delete' ? ('pending_delete' as const) : ('present' as const),
     };
     if (!this.#isCurrent(generation)) return;
@@ -480,11 +486,7 @@ export class OfflineSyncService {
     return this.#getReplicaRowForSync(scope, entityType, command.aggregateLocalId);
   }
 
-  #getReplicaRowForSync(
-    scope: OfflineScope,
-    sourceKey: string,
-    localId: string,
-  ): Promise<OfflineReplicaRow | null> {
+  #getReplicaRowForSync(scope: OfflineScope, sourceKey: string, localId: string): Promise<OfflineReplicaRow | null> {
     return (
       this.#repository.getReplicaRowIncludingPendingDelete?.(scope, sourceKey, localId) ??
       this.#repository.getReplicaRow(scope, sourceKey, localId)
@@ -592,6 +594,12 @@ export class OfflineSyncService {
     current: OfflineReplicaRow,
     result: OfflineCommandResult,
   ): void {
+    if (result.clearServerId === true && result.serverId !== undefined) {
+      throw new Error('Offline command cannot return serverId and clearServerId together.');
+    }
+    if (result.clearServerId === true && schema.identity.kind !== 'serverId') {
+      throw new Error(`Offline command cannot clear serverId for source "${schema.sourceKey}".`);
+    }
     if (schema.identity.kind === 'naturalKey' && result.serverId !== undefined) {
       throw new Error(`Offline command returned serverId for naturalKey source "${schema.sourceKey}".`);
     }

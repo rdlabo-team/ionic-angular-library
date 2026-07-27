@@ -11,6 +11,11 @@ export interface OfflineCommandResult {
   confirmedValues?: unknown;
   /** Removes the local replica row after a confirmed server delete. */
   removeReplica?: boolean;
+  /**
+   * Releases the deleted row's remote AUTO_INCREMENT identity while keeping
+   * its immutable local id for a queued recreate of the same logical target.
+   */
+  clearServerId?: boolean;
   response?: unknown;
 }
 

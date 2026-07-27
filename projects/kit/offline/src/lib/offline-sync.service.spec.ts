@@ -630,15 +630,28 @@ describe('OfflineSyncService', () => {
     [422, 'rejected'],
   ] as const)('hidden deleteはHTTP %s後もvisibilityを維持する', async (status, state) => {
     rows.push({
-      userId: 1, scopeId: '10', sourceKey: 'documents', localId: `delete-${status}`, serverId: 42,
-      values: { name: 'confirmed' }, confirmedValues: { name: 'confirmed' }, serverRevision: 1,
-      fetchedAt: 1, syncState: 'confirmed', visibility: 'present',
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: `delete-${status}`,
+      serverId: 42,
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
     });
     execute.mockRejectedValueOnce({ status });
     await service.enqueue(
       {
-        scopeId: '10', aggregateType: 'documents', aggregateLocalId: `delete-${status}`, operation: 'documents.delete',
-        payload: {}, optimisticValue: { name: 'confirmed' }, replicaMutation: 'delete',
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: `delete-${status}`,
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: { name: 'confirmed' },
+        replicaMutation: 'delete',
       },
       { flush: false },
     );
@@ -1078,6 +1091,107 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
+  it('delete後のqueued recreateはlocalIdを維持してserverIdを再割当できる', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: 'stable-local-id',
+      serverId: 42,
+      values: { name: 'confirmed', presentation: 'pending' },
+      confirmedValues: { name: 'confirmed', presentation: 'pending' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'stable-local-id',
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: rows[0]!.values,
+        replicaMutation: 'delete',
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'stable-local-id',
+        operation: 'documents.create',
+        payload: {},
+        optimisticValue: { name: 'recreated', presentation: 'pending' },
+      },
+      { flush: false },
+    );
+    // A feed/cache integration may patch local-only values while delete is in flight.
+    rows[0] = { ...rows[0]!, values: { name: 'recreated', presentation: null } };
+
+    execute.mockResolvedValueOnce({ removeReplica: true, clearServerId: true, response: null }).mockImplementationOnce(async () => {
+      expect(rows[0]).toMatchObject({
+        localId: 'stable-local-id',
+        serverId: null,
+        values: { name: 'recreated', presentation: null },
+      });
+      return {
+        serverId: 43,
+        confirmedValues: { name: 'recreated', presentation: null },
+        response: null,
+      };
+    });
+    connected.set(true);
+
+    await service.flush();
+
+    expect(execute.mock.calls.map((call) => call[1])).toEqual([
+      { localId: 'stable-local-id', serverId: 42 },
+      { localId: 'stable-local-id', serverId: null },
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        localId: 'stable-local-id',
+        serverId: 43,
+        values: { name: 'recreated', presentation: null },
+        syncState: 'confirmed',
+      }),
+    ]);
+    expect(commands).toEqual([]);
+  });
+
+  it('clearServerIdはconfirmed delete以外では拒否する', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: 'invalid-clear',
+      serverId: 42,
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'invalid-clear',
+        operation: 'documents.update',
+        payload: {},
+        optimisticValue: { name: 'updated' },
+      },
+      { flush: false },
+    );
+    execute.mockResolvedValueOnce({ clearServerId: true, response: null });
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('Offline command can clear serverId only for a confirmed replica removal.');
+  });
+
   it('pending deleteのdiscardはconfirmed baselineとpresent visibilityを復元する', async () => {
     rows.push({
       userId: 1,
@@ -1198,15 +1312,24 @@ describe('OfflineSyncService', () => {
     });
     await service.enqueue(
       {
-        scopeId: '10', aggregateType: 'documents', aggregateLocalId: 'delete-then-upsert', operation: 'documents.delete',
-        payload: {}, optimisticValue: { name: 'confirmed' }, replicaMutation: 'delete',
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'delete-then-upsert',
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: { name: 'confirmed' },
+        replicaMutation: 'delete',
       },
       { flush: false },
     );
     const followingId = await service.enqueue(
       {
-        scopeId: '10', aggregateType: 'documents', aggregateLocalId: 'delete-then-upsert', operation: 'documents.update',
-        payload: {}, optimisticValue: { name: 'later optimistic' },
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'delete-then-upsert',
+        operation: 'documents.update',
+        payload: {},
+        optimisticValue: { name: 'later optimistic' },
       },
       { flush: false },
     );
@@ -1228,8 +1351,13 @@ describe('OfflineSyncService', () => {
       await expect(
         service.enqueue(
           {
-            scopeId: '10', aggregateType: 'documents', aggregateLocalId: 'missing-tombstone-api', operation: 'documents.delete',
-            payload: {}, optimisticValue: {}, replicaMutation: 'delete',
+            scopeId: '10',
+            aggregateType: 'documents',
+            aggregateLocalId: 'missing-tombstone-api',
+            operation: 'documents.delete',
+            payload: {},
+            optimisticValue: {},
+            replicaMutation: 'delete',
           },
           { flush: false },
         ),
