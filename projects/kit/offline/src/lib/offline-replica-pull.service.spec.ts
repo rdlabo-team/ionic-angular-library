@@ -772,6 +772,125 @@ describe('OfflineReplicaPullService', () => {
       expect(await repository.getCommands(scope)).toEqual([]);
     });
 
+    it('同一pageでdelete ACKの後にtombstoneが続く場合はfollowing commandをconflictにして旧baselineを残さない', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-delete-superseded',
+            serverId: 42,
+            values: { id: 42, title: 'Following upsert' },
+            confirmedValues: { id: 42, title: 'Old confirmed baseline' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-delete-ack',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-delete-superseded',
+            operation: 'test_items.delete',
+            payload: {},
+            optimisticValue: { id: 42, title: 'Pending delete' },
+            replicaMutation: 'delete',
+            payloadHash: 'hash-delete',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 1,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+          {
+            ...scope,
+            commandId: 'cmd-following-upsert',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-delete-superseded',
+            operation: 'test_items.update',
+            payload: { title: 'Following upsert' },
+            optimisticValue: { id: 42, title: 'Following upsert' },
+            replicaMutation: 'upsert',
+            payloadHash: 'hash-following-upsert',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 2,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      pull.mockResolvedValueOnce(
+        page([
+          itemChange(42, 'Delete acknowledged', { deleted: true, serverRevision: 2, acknowledgedCommandIds: ['cmd-delete-ack'] }),
+          itemChange(42, 'Remote tombstone', { deleted: true, serverRevision: 3 }),
+        ]),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', '019d-delete-superseded')).resolves.toMatchObject({
+        values: { title: 'Following upsert' },
+        confirmedValues: null,
+        serverRevision: 3,
+        syncState: 'conflict',
+      });
+      expect(await repository.getCommands(scope)).toEqual([
+        expect.objectContaining({ commandId: 'cmd-following-upsert', state: 'conflict', lastErrorCode: 'remote_deleted' }),
+      ]);
+    });
+
+    it('same-kind serverId tombstone ACKが別idを返した場合はlocal identityを再割当しない', async () => {
+      await repository.transactReplica({
+        putRows: [
+          {
+            ...scope,
+            sourceKey: 'test_items',
+            localId: '019d-server-id-immutable',
+            serverId: 42,
+            values: { id: 42, title: 'Pending delete' },
+            confirmedValues: { id: 42, title: 'Confirmed' },
+            serverRevision: 1,
+            fetchedAt: 1,
+            syncState: 'pending',
+            visibility: 'pending_delete',
+          },
+        ],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'cmd-server-id-immutable',
+            aggregateType: 'test_items',
+            aggregateLocalId: '019d-server-id-immutable',
+            operation: 'test_items.delete',
+            payload: {},
+            optimisticValue: { id: 42, title: 'Pending delete' },
+            replicaMutation: 'delete',
+            payloadHash: 'hash',
+            baseRevision: 1,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+        ],
+      });
+      pull.mockResolvedValueOnce(
+        page([itemChange(43, 'Wrong identity', { deleted: true, serverRevision: 2, acknowledgedCommandIds: ['cmd-server-id-immutable'] })]),
+      );
+
+      await expect(service.pull(scope)).rejects.toThrow('Replica serverId is immutable: current=42, incoming=43.');
+      await expect(repository.getReplicaRowIncludingPendingDelete?.(scope, 'test_items', '019d-server-id-immutable')).resolves.toMatchObject({
+        serverId: 42,
+        visibility: 'pending_delete',
+      });
+    });
+
     it('duplicate deltaはacknowledgedCommandIdsをマージする', async () => {
       await seedPendingCreate();
       pull.mockResolvedValueOnce(

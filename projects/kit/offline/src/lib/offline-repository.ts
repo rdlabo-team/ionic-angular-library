@@ -15,7 +15,7 @@ import {
 } from './offline-replica-schema';
 
 /** Current durable storage schema used by both web and native repositories. */
-export const OFFLINE_SCHEMA_VERSION = 4;
+export const OFFLINE_SCHEMA_VERSION = 5;
 
 /** User and partition scope of all local offline data. */
 export interface OfflineScope {
@@ -25,6 +25,8 @@ export interface OfflineScope {
 
 /** Synchronization state of a locally materialized product replica row. */
 export type OfflineReplicaSyncState = 'confirmed' | 'pending' | 'blocked_auth' | 'rejected' | 'conflict';
+export type OfflineReplicaVisibility = 'present' | 'pending_delete';
+export type OfflineReplicaMutation = 'upsert' | 'delete';
 
 /** Durable processing state of an outbox command. */
 export type OfflineCommandState = 'pending' | 'sending' | 'retry_wait' | 'blocked_auth' | 'rejected' | 'conflict';
@@ -39,6 +41,8 @@ export interface OfflineCommand<T = unknown> extends OfflineScope {
   payload: T;
   /** Full optimistic entity value displayed while this command is pending. */
   optimisticValue: unknown;
+  /** Durable intent used to preserve a hidden tombstone across restart and replay. */
+  replicaMutation?: OfflineReplicaMutation;
   payloadHash: string;
   baseRevision: string | number | null;
   state: OfflineCommandState;
@@ -63,6 +67,8 @@ export interface OfflineReplicaRow<TValues = unknown> extends OfflineScope {
   serverRevision: string | number | null;
   fetchedAt: number;
   syncState: OfflineReplicaSyncState;
+  /** Library-owned visibility; pending deletes remain durable but are hidden from product reads. */
+  visibility?: OfflineReplicaVisibility;
 }
 
 /** Stable address of a product replica row inside a user or partition-scoped replica. */
@@ -93,6 +99,12 @@ export interface OfflineRepository {
   getSessionManifest<T>(userId: number): Promise<T | null>;
   putSessionManifest<T>(userId: number, value: T): Promise<void>;
   getReplicaRow<TValues = unknown>(scope: OfflineScope, sourceKey: string, localId: string): Promise<OfflineReplicaRow<TValues> | null>;
+  /** Internal durable lookup used by synchronization; includes pending-delete tombstones. */
+  getReplicaRowIncludingPendingDelete?<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    localId: string,
+  ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
   getReplicaRowByServerId<TValues = unknown>(
     scope: OfflineScope,
@@ -208,6 +220,20 @@ export class IonicOfflineRepository implements OfflineRepository {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
     const row = rows[this.#rowKey(scope, sourceKey, localId)];
+    if (!row || (row.visibility ?? 'present') === 'pending_delete') return null;
+    return this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>;
+  }
+
+  async getReplicaRowIncludingPendingDelete<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    localId: string,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
+    await this.initialize();
+    await this.#writes;
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    const row = rows[this.#rowKey(scope, sourceKey, localId)];
     return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
 
@@ -219,6 +245,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     return Object.values(rows)
       .filter((row) => {
         if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
+        if ((row.visibility ?? 'present') === 'pending_delete') return false;
         return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
       })
       .map((row) => this.#rowForScope(row, schema, scope))
@@ -346,7 +373,26 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   async #migrate(): Promise<void> {
-    const metadata = await this.#storage.get<Partial<OfflineMetadata>>(METADATA_KEY);
+    let metadata = await this.#storage.get<Partial<OfflineMetadata>>(METADATA_KEY);
+    if (metadata?.schemaVersion === 4) {
+      const rows = await this.#readRecord<OfflineReplicaRow>(ROWS_KEY);
+      const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
+      await this.#storage.set(
+        ROWS_KEY,
+        Object.fromEntries(Object.entries(rows).map(([key, row]) => [key, { ...row, visibility: row.visibility ?? 'present' }])),
+      );
+      await this.#storage.set(
+        OUTBOX_KEY,
+        Object.fromEntries(
+          Object.entries(commands).map(([key, command]) => [
+            key,
+            { ...command, replicaMutation: command.replicaMutation ?? 'upsert' },
+          ]),
+        ),
+      );
+      metadata = { ...metadata, schemaVersion: OFFLINE_SCHEMA_VERSION };
+      await this.#storage.set(METADATA_KEY, metadata);
+    }
     if (metadata?.schemaVersion !== undefined && metadata.schemaVersion !== OFFLINE_SCHEMA_VERSION) {
       throw new Error(
         `Unsupported offline storage schema version ${metadata.schemaVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
@@ -601,7 +647,8 @@ export class IonicOfflineRepository implements OfflineRepository {
     schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
     scope: OfflineScope,
   ): OfflineReplicaRow<TValues> {
-    return schema.scope === 'user' ? { ...row, scopeId: scope.scopeId } : row;
+    const normalized = { ...row, visibility: row.visibility ?? ('present' as const) };
+    return schema.scope === 'user' ? { ...normalized, scopeId: scope.scopeId } : normalized;
   }
 
   #cursorKey(scope: OfflineScope): string {

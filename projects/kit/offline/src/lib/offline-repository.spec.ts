@@ -918,7 +918,7 @@ describe('IonicOfflineRepository', () => {
     storage.values.set('offline:metadata', { schemaVersion: 999, lastUserId: 1 });
     storage.values.set('offline:outbox:commands', { stale: {} });
     storage.values.set('firebaseToken', { token: 'keep' });
-    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999; expected 4');
+    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999; expected 5');
     expect(storage.values.get('offline:outbox:commands')).toEqual({ stale: {} });
     expect(storage.values.get('offline:metadata')).toEqual({ schemaVersion: 999, lastUserId: 1 });
     expect(storage.values.get('firebaseToken')).toEqual({ token: 'keep' });
@@ -965,6 +965,187 @@ describe('IonicOfflineRepository', () => {
       values: { title: 'Local item' },
     });
     expect(await repository.getCommands(scope)).toHaveLength(1);
+  });
+
+  it('pending_deleteはproduct readから隠しつつ、sync readとremote identityでbaselineを保持する', async () => {
+    const scope = { userId: 1, scopeId: '10' };
+    const row: OfflineReplicaRow = {
+      ...scope,
+      sourceKey: 'test_items',
+      localId: 'delete-uuid',
+      serverId: 42,
+      values: { id: 42, title: 'visible before delete' },
+      confirmedValues: { id: 42, title: 'confirmed baseline' },
+      serverRevision: 7,
+      fetchedAt: 1,
+      syncState: 'pending',
+      visibility: 'pending_delete',
+    };
+    const command: OfflineCommand = {
+      ...scope,
+      commandId: 'delete-command',
+      aggregateType: 'test_items',
+      aggregateLocalId: row.localId,
+      operation: 'test_items.delete',
+      payload: { id: 42 },
+      optimisticValue: row.values,
+      payloadHash: 'delete-hash',
+      baseRevision: 7,
+      replicaMutation: 'delete',
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    };
+
+    await repository.transactReplica({ putRows: [row], putCommands: [command] });
+
+    await expect(repository.getReplicaRow(scope, 'test_items', row.localId)).resolves.toBeNull();
+    await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toEqual([]);
+    await expect(repository.getReplicaRowIncludingPendingDelete?.(scope, 'test_items', row.localId)).resolves.toMatchObject({
+      localId: row.localId,
+      serverId: 42,
+      visibility: 'pending_delete',
+      confirmedValues: { title: 'confirmed baseline' },
+      serverRevision: 7,
+    });
+    await expect(repository.getReplicaRowByRemoteIdentity(scope, 'test_items', { serverId: 42 })).resolves.toMatchObject({
+      localId: row.localId,
+      visibility: 'pending_delete',
+    });
+    await expect(repository.getCommands(scope)).resolves.toEqual([
+      expect.objectContaining({ commandId: 'delete-command', replicaMutation: 'delete' }),
+    ]);
+  });
+
+  it('core v4をv5へlosslessに移行し、既存row/commandへdelete metadataのdefaultを付与する', async () => {
+    const scope = { userId: 1, scopeId: '10' };
+    const schemaHash = await sha256OfflineReplicaSchema(replicaSchemaV1);
+    storage.values.set('offline:metadata', {
+      schemaVersion: 4,
+      lastUserId: 1,
+      replicaSchemaVersion: replicaSchemaV1.version,
+      replicaSchemaHash: schemaHash,
+    });
+    storage.values.set('offline:replica:rows', {
+      '1:user:test_items:legacy': {
+        ...scope,
+        sourceKey: 'test_items',
+        localId: 'legacy',
+        serverId: 42,
+        values: { title: 'legacy' },
+        confirmedValues: { title: 'legacy' },
+        serverRevision: 1,
+        fetchedAt: 1,
+        syncState: 'confirmed',
+      },
+    });
+    storage.values.set('offline:outbox:commands', {
+      legacy: {
+        ...scope,
+        commandId: 'legacy',
+        aggregateType: 'test_items',
+        aggregateLocalId: 'legacy',
+        operation: 'test_items.update',
+        payload: {},
+        optimisticValue: { title: 'legacy' },
+        payloadHash: 'hash',
+        baseRevision: 1,
+        state: 'pending',
+        attempts: 0,
+        retryAt: null,
+        createdAt: 1,
+        lastErrorCode: null,
+      },
+    });
+    repository = createRepository(replicaSchemaV1, { preserveStorage: true });
+
+    await repository.initialize();
+
+    await expect(repository.getReplicaRow(scope, 'test_items', 'legacy')).resolves.toMatchObject({ visibility: 'present' });
+    await expect(repository.getCommands(scope)).resolves.toEqual([expect.objectContaining({ replicaMutation: 'upsert' })]);
+    expect(storage.values.get('offline:metadata')).toMatchObject({ schemaVersion: OFFLINE_SCHEMA_VERSION });
+  });
+
+  it('core v4→v5でROWS保存後にOUTBOX保存が一度失敗しても、reopenで全defaultとmetadataをrepairする', async () => {
+    const scope = { userId: 1, scopeId: '10' };
+    const schemaHash = await sha256OfflineReplicaSchema(replicaSchemaV1);
+    storage.values.set('offline:metadata', {
+      schemaVersion: 4,
+      lastUserId: 1,
+      replicaSchemaVersion: replicaSchemaV1.version,
+      replicaSchemaHash: schemaHash,
+    });
+    storage.values.set('offline:replica:rows', {
+      '1:user:test_items:legacy': {
+        ...scope,
+        sourceKey: 'test_items',
+        localId: 'legacy',
+        serverId: 42,
+        values: { title: 'legacy' },
+        confirmedValues: { title: 'legacy' },
+        serverRevision: 1,
+        fetchedAt: 1,
+        syncState: 'confirmed',
+      },
+    });
+    storage.values.set('offline:outbox:commands', {
+      legacy: {
+        ...scope,
+        commandId: 'legacy',
+        aggregateType: 'test_items',
+        aggregateLocalId: 'legacy',
+        operation: 'test_items.update',
+        payload: {},
+        optimisticValue: { title: 'legacy' },
+        payloadHash: 'hash',
+        baseRevision: 1,
+        state: 'pending',
+        attempts: 0,
+        retryAt: null,
+        createdAt: 1,
+        lastErrorCode: null,
+      },
+    });
+    repository = createRepository(replicaSchemaV1, { preserveStorage: true });
+    const kitStorage = TestBed.inject(KitStorageService) as MemoryStorage & KitStorageService;
+    const originalSet = kitStorage.set.bind(kitStorage);
+    let failOutboxOnce = true;
+    vi.spyOn(kitStorage, 'set').mockImplementation(async (key, value) => {
+      if (failOutboxOnce && key === 'offline:outbox:commands') {
+        failOutboxOnce = false;
+        throw new Error('injected v5 outbox failure');
+      }
+      return originalSet(key, value) as Promise<void>;
+    });
+
+    await expect(repository.initialize()).rejects.toThrow('injected v5 outbox failure');
+    expect(storage.values.get('offline:replica:rows')).toMatchObject({
+      '1:user:test_items:legacy': expect.objectContaining({ visibility: 'present' }),
+    });
+    expect(storage.values.get('offline:outbox:commands')).toMatchObject({
+      legacy: expect.not.objectContaining({ replicaMutation: expect.anything() }),
+    });
+    expect(storage.values.get('offline:metadata')).toMatchObject({ schemaVersion: 4 });
+
+    vi.restoreAllMocks();
+    repository = createRepository(replicaSchemaV1, { preserveStorage: true });
+    await repository.initialize();
+
+    await expect(repository.getReplicaRow(scope, 'test_items', 'legacy')).resolves.toMatchObject({
+      visibility: 'present',
+    });
+    await expect(repository.getCommands(scope)).resolves.toEqual([
+      expect.objectContaining({ commandId: 'legacy', replicaMutation: 'upsert' }),
+    ]);
+    expect(storage.values.get('offline:replica:rows')).toMatchObject({
+      '1:user:test_items:legacy': expect.objectContaining({ visibility: 'present' }),
+    });
+    expect(storage.values.get('offline:outbox:commands')).toMatchObject({
+      legacy: expect.objectContaining({ replicaMutation: 'upsert' }),
+    });
+    expect(storage.values.get('offline:metadata')).toMatchObject({ schemaVersion: OFFLINE_SCHEMA_VERSION });
   });
 
   it('putRowsはvaluesとconfirmedValuesからserverId列を投影で除去する', async () => {

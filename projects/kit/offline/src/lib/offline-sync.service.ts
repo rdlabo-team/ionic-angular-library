@@ -33,6 +33,11 @@ export interface EnqueueOfflineCommand<T = unknown> {
   payload: T;
   /** Full local entity value committed to the replica before the command is exposed to the UI. */
   optimisticValue: unknown;
+  /**
+   * Optimistically hides an existing DB row while retaining its identity and
+   * confirmed baseline for durable replay, conflict handling, and discard.
+   */
+  replicaMutation?: 'upsert' | 'delete';
   baseRevision?: string | number | null;
 }
 
@@ -191,6 +196,7 @@ export class OfflineSyncService {
       operation: request.operation,
       payload: normalized.payload,
       optimisticValue,
+      replicaMutation: request.replicaMutation ?? 'upsert',
       payloadHash: await this.#payloadHash(normalized.payload),
       baseRevision: normalized.baseRevision,
       state: 'pending',
@@ -202,7 +208,10 @@ export class OfflineSyncService {
     await this.#assertOutboxCapacity(userId, command);
     const entityType = this.#entityType(command);
     const schema = this.#entitySchema(entityType);
-    const existing = await this.#repository.getReplicaRow(scope, entityType, aggregateLocalId);
+    if (request.replicaMutation === 'delete' && !this.#repository.getReplicaRowIncludingPendingDelete) {
+      throw new Error('Offline repository does not support durable replica delete tombstones.');
+    }
+    const existing = await this.#getReplicaRowForSync(scope, entityType, aggregateLocalId);
     const initialServerId = this.#initialServerId(existing?.serverId ?? null, request.serverId);
     const naturalKey = offlineNaturalKeyFromValues(schema, optimisticValue);
     const remoteIdentity: OfflineReplicaRemoteIdentity | null =
@@ -244,6 +253,7 @@ export class OfflineSyncService {
       serverRevision: existing?.serverRevision ?? normalized.baseRevision,
       fetchedAt: Date.now(),
       syncState: 'pending',
+      visibility: request.replicaMutation === 'delete' ? 'pending_delete' : 'present',
     };
     if (generation !== this.#generation) {
       throw new Error('Offline session changed before the command could be persisted');
@@ -410,7 +420,7 @@ export class OfflineSyncService {
     let baseRevision = request.baseRevision ?? null;
     let payload = request.payload;
     const aggregateLocalId = request.aggregateLocalId;
-    const row = await this.#repository.getReplicaRow(scope, this.#entityType(request), aggregateLocalId);
+    const row = await this.#getReplicaRowForSync(scope, this.#entityType(request), aggregateLocalId);
     if (row?.serverRevision != null && row.serverRevision !== baseRevision) {
       const rebased = this.#executor.withServerRevision(
         { ...scope, ...request, aggregateLocalId, payload, baseRevision } as OfflineCommand,
@@ -439,7 +449,8 @@ export class OfflineSyncService {
       throw new Error(`Offline replica row disappeared while completing command ${command.commandId}.`);
     }
     this.#assertServerRevision(result.serverRevision);
-    const confirmedValues = result.confirmedValues ?? command.optimisticValue;
+    const removesReplica = result.removeReplica === true || command.replicaMutation === 'delete';
+    const confirmedValues = removesReplica ? null : (result.confirmedValues ?? command.optimisticValue);
     const schema = this.#entitySchema(current.sourceKey);
     this.#assertCommandResultIdentity(schema, current, result);
     const serverId = this.#resolvedServerId(current.serverId, result.serverId);
@@ -450,12 +461,14 @@ export class OfflineSyncService {
       serverId,
       serverRevision: revision ?? current.serverRevision,
       fetchedAt: Date.now(),
-      syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
+      syncState:
+        rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
+      visibility: rebased.at(-1)?.replicaMutation === 'delete' ? ('pending_delete' as const) : ('present' as const),
     };
     if (!this.#isCurrent(generation)) return;
     await this.#repository.transactReplica({
-      putRows: result.removeReplica ? undefined : [row],
-      removeRows: result.removeReplica ? [current] : undefined,
+      putRows: removesReplica && rebased.length === 0 ? undefined : [row],
+      removeRows: removesReplica && rebased.length === 0 ? [current] : undefined,
       putCommands: rebased,
       removeCommandIds: [command.commandId],
     });
@@ -464,7 +477,18 @@ export class OfflineSyncService {
   async #rowForCommand(command: OfflineCommand): Promise<OfflineReplicaRow | null> {
     const scope = { userId: command.userId, scopeId: command.scopeId };
     const entityType = this.#entityType(command);
-    return this.#repository.getReplicaRow(scope, entityType, command.aggregateLocalId);
+    return this.#getReplicaRowForSync(scope, entityType, command.aggregateLocalId);
+  }
+
+  #getReplicaRowForSync(
+    scope: OfflineScope,
+    sourceKey: string,
+    localId: string,
+  ): Promise<OfflineReplicaRow | null> {
+    return (
+      this.#repository.getReplicaRowIncludingPendingDelete?.(scope, sourceKey, localId) ??
+      this.#repository.getReplicaRow(scope, sourceKey, localId)
+    );
   }
 
   #replicaState(state: OfflineCommand['state']): OfflineReplicaSyncState {
@@ -500,6 +524,7 @@ export class OfflineSyncService {
           ...row,
           values: remaining.length > 0 ? remaining.at(-1)!.optimisticValue : row.confirmedValues,
           syncState: remaining.length > 0 ? 'pending' : 'confirmed',
+          visibility: remaining.at(-1)?.replicaMutation === 'delete' ? 'pending_delete' : 'present',
         });
       }
     }
