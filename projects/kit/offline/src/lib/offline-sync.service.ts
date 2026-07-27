@@ -273,7 +273,7 @@ export class OfflineSyncService {
         : schema.identity.kind === 'naturalKey'
           ? { naturalKey: naturalKey! }
           : null;
-    if (schema.identity.kind === 'naturalKey' && request.serverId != null) {
+    if (schema.identity.kind === 'naturalKey' && (request.serverId != null || request.serverIdHint != null)) {
       throw new Error(`Offline replica source "${entityType}" does not define a serverId field.`);
     }
     if (schema.identity.kind === 'naturalKey') {

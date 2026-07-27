@@ -950,6 +950,24 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('Offline command returned serverId for naturalKey source "natural_documents".');
   });
 
+  it('naturalKey entityへのserverIdHint指定はenqueue境界でhard failする', async () => {
+    options.replicaSchema = naturalReplicaSchema;
+    await expect(
+      service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'natural_documents',
+          aggregateLocalId: 'immutable-uuid',
+          serverIdHint: 99,
+          operation: 'natural_documents.create',
+          payload: {},
+          optimisticValue: { favFrom: 7, favTo: '42', title: 'local' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('Offline replica source "natural_documents" does not define a serverId field.');
+  });
+
   it('reassigned serverIdはhard failする', async () => {
     rows.push({
       userId: 1,
@@ -1285,7 +1303,11 @@ describe('OfflineSyncService', () => {
     await vi.waitFor(() => expect(ackReadStarted).toHaveBeenCalledOnce());
 
     const cacheProjection = service.runSerializedReplicaMutation(async (repository) => {
-      const current = await repository.getReplicaRowIncludingPendingDelete!({ userId: 1, scopeId: '10' }, 'documents', 'serialized-cache-local-id');
+      const current = await repository.getReplicaRowIncludingPendingDelete!(
+        { userId: 1, scopeId: '10' },
+        'documents',
+        'serialized-cache-local-id',
+      );
       expect(current).toMatchObject({ serverId: null, values: { name: 'recreated', presentation: 'pending' } });
       await repository.transactReplica({
         putRows: [{ ...current!, values: { name: 'recreated', presentation: null } }],
@@ -1354,9 +1376,7 @@ describe('OfflineSyncService', () => {
       { localId: 'complete-first-local-id', serverId: 42 },
       { localId: 'complete-first-local-id', serverId: null },
     ]);
-    expect(rows).toEqual([
-      expect.objectContaining({ localId: 'complete-first-local-id', serverId: 43, values: { name: 'recreated' } }),
-    ]);
+    expect(rows).toEqual([expect.objectContaining({ localId: 'complete-first-local-id', serverId: 43, values: { name: 'recreated' } })]);
   });
 
   it('clearServerIdはconfirmed delete以外では拒否する', async () => {
