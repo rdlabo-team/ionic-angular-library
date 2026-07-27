@@ -88,7 +88,8 @@ export class OfflineSyncService {
   readonly #flushTransitions = new Set<Promise<void>>();
   #generation = 0;
   readonly #sendingTransitions = new Set<Promise<void>>();
-  #enqueueTail: Promise<void> = Promise.resolve();
+  /** Serializes enqueue and acknowledgement projection over the same local replica. */
+  #replicaMutationTail: Promise<void> = Promise.resolve();
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   #initialized = false;
   #lastCommandCreatedAt = 0;
@@ -152,7 +153,7 @@ export class OfflineSyncService {
 
   async resetSession(): Promise<void> {
     this.revokeSession();
-    await Promise.allSettled([this.#enqueueTail, ...this.#flushTransitions]);
+    await Promise.allSettled([this.#replicaMutationTail, ...this.#flushTransitions]);
     await this.#waitForSendingTransitions();
     await this.#restoreInterruptedCommands();
     this.#activeUserId = null;
@@ -168,12 +169,16 @@ export class OfflineSyncService {
 
   enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean } = {}): Promise<string> {
     const generation = this.#generation;
-    const enqueue = this.#enqueueTail.then(() => this.#enqueue(request, options, generation));
-    this.#enqueueTail = enqueue.then(
+    return this.#serializeReplicaMutation(() => this.#enqueue(request, options, generation));
+  }
+
+  #serializeReplicaMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const mutation = this.#replicaMutationTail.then(operation);
+    this.#replicaMutationTail = mutation.then(
       () => undefined,
       () => undefined,
     );
-    return enqueue;
+    return mutation;
   }
 
   async #enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean }, generation: number): Promise<string> {
@@ -370,9 +375,8 @@ export class OfflineSyncService {
   }
 
   async #sendAggregate(commands: OfflineCommand[], generation: number): Promise<void> {
-    for (let index = 0; index < commands.length; index++) {
+    for (const command of commands) {
       if (!this.#isCurrent(generation)) return;
-      const command = commands[index]!;
       if (command.state === 'retry_wait' && (command.retryAt ?? 0) > Date.now()) break;
       if (!['pending', 'retry_wait'].includes(command.state)) break;
       const sending: OfflineCommand = {
@@ -409,7 +413,7 @@ export class OfflineSyncService {
         break;
       }
       if (!this.#isCurrent(generation)) return;
-      await this.#completeCommand(commands, index, sending, result, generation);
+      await this.#completeCommand(commands, sending, result, generation);
     }
   }
 
@@ -434,7 +438,15 @@ export class OfflineSyncService {
 
   async #completeCommand(
     commands: OfflineCommand[],
-    index: number,
+    command: OfflineCommand,
+    result: OfflineCommandResult,
+    generation: number,
+  ): Promise<void> {
+    return this.#serializeReplicaMutation(() => this.#completeCommandLocked(commands, command, result, generation));
+  }
+
+  async #completeCommandLocked(
+    commands: OfflineCommand[],
     command: OfflineCommand,
     result: OfflineCommandResult,
     generation: number,

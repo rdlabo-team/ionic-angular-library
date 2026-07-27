@@ -1230,6 +1230,61 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
+  it('delete ACKが先なら後続enqueueはserverIdを解放済みのrowからrecreateする', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: 'complete-first-local-id',
+      serverId: 42,
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    execute
+      .mockResolvedValueOnce({ removeReplica: true, clearServerId: true, response: null })
+      .mockResolvedValueOnce({ serverId: 43, confirmedValues: { name: 'recreated' }, response: null });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'complete-first-local-id',
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: { name: 'confirmed' },
+        replicaMutation: 'delete',
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(rows).toEqual([]);
+
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'complete-first-local-id',
+        operation: 'documents.create',
+        payload: {},
+        optimisticValue: { name: 'recreated' },
+      },
+      { flush: false },
+    );
+    await service.flush();
+
+    expect(execute.mock.calls.map((call) => call[1])).toEqual([
+      { localId: 'complete-first-local-id', serverId: 42 },
+      { localId: 'complete-first-local-id', serverId: null },
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({ localId: 'complete-first-local-id', serverId: 43, values: { name: 'recreated' } }),
+    ]);
+  });
+
   it('clearServerIdはconfirmed delete以外では拒否する', async () => {
     rows.push({
       userId: 1,
