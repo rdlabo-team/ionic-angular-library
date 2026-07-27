@@ -11,6 +11,11 @@ export interface OfflineCommandResult {
   confirmedValues?: unknown;
   /** Removes the local replica row after a confirmed server delete. */
   removeReplica?: boolean;
+  /**
+   * Releases the deleted row's remote AUTO_INCREMENT identity while keeping
+   * its immutable local id for a queued recreate of the same logical target.
+   */
+  clearServerId?: boolean;
   response?: unknown;
 }
 
@@ -28,6 +33,11 @@ export interface OfflineCommandExecutor {
   /** Sends the command using `command.commandId` as its durable server-side idempotency key. */
   execute(command: OfflineCommand, target: OfflineCommandTarget): Promise<OfflineCommandResult>;
   withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
+  /**
+   * Removes the deleted remote row's revision from a queued recreate.
+   * Required only when `clearServerId` completes while later commands remain.
+   */
+  withoutServerRevision?(command: OfflineCommand): OfflineCommand;
 }
 
 /** DI token for the product-specific command transport adapter. */

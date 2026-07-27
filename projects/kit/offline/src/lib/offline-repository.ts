@@ -77,6 +77,12 @@ export interface OfflineReplicaRowKey extends OfflineScope {
   localId: string;
 }
 
+/** Explicit one-way release of a server-generated identity during a replica delete acknowledgement. */
+export interface OfflineReplicaServerIdRelease extends OfflineReplicaRowKey {
+  /** The current server id being released; the matching put row must set `serverId` to null. */
+  serverId: number;
+}
+
 /** Scope partition plus the durable replica pull cursor for that partition. */
 export interface OfflineReplicaCursor extends OfflineScope {
   cursor: string;
@@ -85,6 +91,11 @@ export interface OfflineReplicaCursor extends OfflineScope {
 /** Atomic changes applied to the local replica and durable outbox together. */
 export interface OfflineReplicaTransaction {
   putRows?: readonly OfflineReplicaRow[];
+  /**
+   * Allows only the matching `serverId: current -> null` transition in `putRows`.
+   * All other server-id changes remain immutable.
+   */
+  releaseServerIds?: readonly OfflineReplicaServerIdRelease[];
   removeRows?: readonly OfflineReplicaRowKey[];
   putCommands?: readonly OfflineCommand[];
   removeCommandIds?: readonly string[];
@@ -575,11 +586,30 @@ export class IonicOfflineRepository implements OfflineRepository {
       this.#readRecord<string>(CURSORS_KEY),
     ]);
     const identityCheckRows = { ...rows };
+    const releases = new Map<string, OfflineReplicaServerIdRelease>();
+    for (const release of transaction.releaseServerIds ?? []) {
+      if (!Number.isSafeInteger(release.serverId) || release.serverId <= 0) {
+        throw new Error(`Offline replica release has invalid serverId ${String(release.serverId)}.`);
+      }
+      const key = this.#rowKey(release, release.sourceKey, release.localId);
+      if (releases.has(key)) throw new Error(`Offline replica serverId release is duplicated for ${release.sourceKey}/${release.localId}.`);
+      releases.set(key, release);
+    }
+    const consumedReleases = new Set<string>();
     for (const row of transaction.putRows ?? []) {
-      const existing = identityCheckRows[this.#rowKey(row, row.sourceKey, row.localId)];
-      if (existing) this.#assertReplicaIdentityAssignment(existing, row);
+      const key = this.#rowKey(row, row.sourceKey, row.localId);
+      const existing = identityCheckRows[key];
+      const release = releases.get(key);
+      if (!existing && release) {
+        throw new Error(`Offline replica serverId release requires an existing row for ${row.sourceKey}/${row.localId}.`);
+      }
+      if (existing) this.#assertReplicaIdentityAssignment(existing, row, release);
+      if (release) consumedReleases.add(key);
       this.#assertUniqueReplicaIdentity(identityCheckRows, row);
-      identityCheckRows[this.#rowKey(row, row.sourceKey, row.localId)] = row;
+      identityCheckRows[key] = row;
+    }
+    if (consumedReleases.size !== releases.size) {
+      throw new Error('Offline replica serverId release must match an existing row in putRows.');
     }
     if (journal) await this.#storage.set(REPLICA_TRANSACTION_KEY, transaction);
     for (const row of transaction.putRows ?? []) {
@@ -688,9 +718,24 @@ export class IonicOfflineRepository implements OfflineRepository {
     }
   }
 
-  #assertReplicaIdentityAssignment(existing: OfflineReplicaRow, incoming: OfflineReplicaRow): void {
+  #assertReplicaIdentityAssignment(
+    existing: OfflineReplicaRow,
+    incoming: OfflineReplicaRow,
+    release: OfflineReplicaServerIdRelease | undefined,
+  ): void {
     const schema = this.#resolveReplicaEntitySchema(incoming.sourceKey);
+    if (release && schema.identity.kind !== 'serverId') {
+      throw new Error(`Offline replica serverId release is unsupported for source "${incoming.sourceKey}".`);
+    }
     if (schema.identity.kind === 'serverId') {
+      if (release) {
+        if (existing.serverId !== release.serverId || incoming.serverId !== null) {
+          throw new Error(
+            `Offline replica serverId release must transition current=${existing.serverId} to incoming=null for ${incoming.sourceKey}/${incoming.localId}.`,
+          );
+        }
+        return;
+      }
       if (existing.serverId !== null && existing.serverId !== incoming.serverId) {
         throw new Error(`Offline replica serverId is immutable: current=${existing.serverId}, incoming=${String(incoming.serverId)}.`);
       }

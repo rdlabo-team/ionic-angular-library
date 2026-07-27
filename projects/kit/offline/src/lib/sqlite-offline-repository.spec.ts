@@ -1441,6 +1441,35 @@ describe('SqliteOfflineRepository replica rows', () => {
         'Offline replica serverId is immutable: current=42, incoming=43.',
       );
     });
+
+    it('明示したidentity releaseだけがSQLiteのserverIdをnullへ戻して後続createの再割当を許可する', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      const base = {
+        userId: 1,
+        scopeId: '10',
+        sourceKey: 'test_items',
+        localId: 'uuid-release',
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'confirmed' as const,
+      };
+      await repository.transactReplica({ putRows: [{ ...base, serverId: 42, values: { id: 42, title: 'A' } }] });
+      await repository.transactReplica({
+        putRows: [{ ...base, serverId: null, values: { id: 42, title: 'Recreate pending' }, syncState: 'pending' }],
+        releaseServerIds: [{ userId: 1, scopeId: '10', sourceKey: 'test_items', localId: 'uuid-release', serverId: 42 }],
+      });
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', 'uuid-release')).resolves.toMatchObject({
+        serverId: null,
+      });
+      await repository.transactReplica({
+        putRows: [{ ...base, serverId: 43, values: { id: 43, title: 'Recreated' } }],
+      });
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', 'uuid-release')).resolves.toMatchObject({
+        serverId: 43,
+      });
+    });
   });
 
   function createRepository(replicaSchema: OfflineReplicaSchemaBundle = replicaSchemaV1WithGroup): SqliteOfflineRepository {
