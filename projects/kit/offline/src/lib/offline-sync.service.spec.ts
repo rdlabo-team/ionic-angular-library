@@ -192,7 +192,11 @@ describe('OfflineSyncService', () => {
         },
         {
           provide: OFFLINE_COMMAND_EXECUTOR,
-          useValue: { execute, withServerRevision: (command: OfflineCommand) => command },
+          useValue: {
+            execute,
+            withServerRevision: (command: OfflineCommand) => command,
+            withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
+          },
         },
       ],
     });
@@ -1155,6 +1159,7 @@ describe('OfflineSyncService', () => {
       expect.objectContaining({
         localId: 'stable-local-id',
         serverId: 43,
+        serverRevision: null,
         values: { name: 'recreated', presentation: null },
         syncState: 'confirmed',
       }),
@@ -1190,6 +1195,58 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValueOnce({ clearServerId: true, response: null });
     connected.set(true);
     await expect(service.flush()).rejects.toThrow('Offline command can clear serverId only for a confirmed replica removal.');
+  });
+
+  it('clearServerIdとserverRevisionの同時返却は後続commandをrebaseせず拒否する', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: 'invalid-clear-revision',
+      serverId: 42,
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'invalid-clear-revision',
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: rows[0]!.values,
+        replicaMutation: 'delete',
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'invalid-clear-revision',
+        operation: 'documents.create',
+        payload: {},
+        optimisticValue: { name: 'recreated' },
+      },
+      { flush: false },
+    );
+    const rebase = vi.spyOn(TestBed.inject(OFFLINE_COMMAND_EXECUTOR), 'withServerRevision');
+    rebase.mockClear();
+    execute.mockResolvedValueOnce({
+      removeReplica: true,
+      clearServerId: true,
+      serverRevision: 5,
+      response: null,
+    });
+    connected.set(true);
+
+    await expect(service.flush()).rejects.toThrow('Offline command cannot return serverRevision and clearServerId together.');
+    expect(rebase).not.toHaveBeenCalled();
+    expect(commands[1]).toMatchObject({ baseRevision: 4 });
   });
 
   it('pending deleteのdiscardはconfirmed baselineとpresent visibilityを復元する', async () => {

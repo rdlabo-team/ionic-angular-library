@@ -439,9 +439,25 @@ export class OfflineSyncService {
     result: OfflineCommandResult,
     generation: number,
   ): Promise<void> {
+    if (result.clearServerId === true && result.serverId !== undefined) {
+      throw new Error('Offline command cannot return serverId and clearServerId together.');
+    }
+    if (result.clearServerId === true && result.serverRevision !== undefined) {
+      throw new Error('Offline command cannot return serverRevision and clearServerId together.');
+    }
     const revision = result.serverRevision;
     const following = commands.slice(index + 1);
-    const rebased = revision === undefined ? following : following.map((item) => this.#executor.withServerRevision(item, revision));
+    const rebased =
+      result.clearServerId === true
+        ? following.map((item) => {
+            if (!this.#executor.withoutServerRevision) {
+              throw new Error('Offline command executor must implement withoutServerRevision to recreate a deleted serverId row.');
+            }
+            return this.#executor.withoutServerRevision(item);
+          })
+        : revision === undefined
+          ? following
+          : following.map((item) => this.#executor.withServerRevision(item, revision));
     for (let offset = 0; offset < rebased.length; offset++) commands[index + 1 + offset] = rebased[offset]!;
     const current = await this.#rowForCommand(command);
     if (!this.#isCurrent(generation)) return;
@@ -466,7 +482,7 @@ export class OfflineSyncService {
       values: rebased.length > 0 ? current.values : confirmedValues,
       confirmedValues,
       serverId,
-      serverRevision: revision ?? current.serverRevision,
+      serverRevision: result.clearServerId === true ? null : (revision ?? current.serverRevision),
       fetchedAt: Date.now(),
       syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
       visibility: rebased.at(-1)?.replicaMutation === 'delete' ? ('pending_delete' as const) : ('present' as const),
@@ -594,9 +610,6 @@ export class OfflineSyncService {
     current: OfflineReplicaRow,
     result: OfflineCommandResult,
   ): void {
-    if (result.clearServerId === true && result.serverId !== undefined) {
-      throw new Error('Offline command cannot return serverId and clearServerId together.');
-    }
     if (result.clearServerId === true && schema.identity.kind !== 'serverId') {
       throw new Error(`Offline command cannot clear serverId for source "${schema.sourceKey}".`);
     }
