@@ -12,7 +12,15 @@ import {
   type OfflineReplicaPullRequest,
 } from './offline-replica-puller';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
-import { defineOfflineReplicaSchema, defineReplicaEntity, serverId, sha256OfflineReplicaSchema, text } from './offline-replica-schema';
+import { generatedCommandIdentity, generatedReplicaIdentity } from './offline-test-helpers';
+import {
+  defineOfflineReplicaSchema,
+  defineReplicaEntity,
+  integer,
+  generatedId,
+  sha256OfflineReplicaSchema,
+  text,
+} from './offline-replica-schema';
 import {
   IonicOfflineRepository,
   OFFLINE_REPOSITORY,
@@ -30,7 +38,7 @@ const testItemEntity = defineReplicaEntity<TestItemSelect>()({
   sourceKey: 'test_items',
   scope: 'user',
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     title: text(),
   },
 });
@@ -62,16 +70,16 @@ class MemoryStorage {
 }
 
 function itemChange(
-  serverIdValue: number,
+  remoteIdValue: number,
   title: string,
   options: Partial<Pick<OfflineReplicaChange, 'serverRevision' | 'deleted' | 'values' | 'acknowledgedCommandIds'>> = {},
 ): OfflineReplicaChange {
   return {
     sourceKey: 'test_items',
-    serverId: serverIdValue,
+    remoteId: remoteIdValue,
     serverRevision: options.serverRevision ?? 1,
     acknowledgedCommandIds: options.acknowledgedCommandIds ?? [],
-    values: options.deleted ? null : (options.values ?? { id: serverIdValue, title }),
+    values: options.deleted ? null : (options.values ?? { id: remoteIdValue, title }),
     deleted: options.deleted ?? false,
   };
 }
@@ -193,10 +201,10 @@ describe('OfflineReplicaPullService', () => {
 
     expect(pull.mock.calls.map(([request]) => request.cursor)).toEqual(['cursor-v0', 'cursor-v1']);
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v2' });
-    await expect(repository.getReplicaRowByServerId(scope, 'test_items', 42)).resolves.toMatchObject({
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).resolves.toMatchObject({
       confirmedValues: { title: 'Page 1' },
     });
-    await expect(repository.getReplicaRowByServerId(scope, 'test_items', 43)).resolves.toMatchObject({
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 43)).resolves.toMatchObject({
       confirmedValues: { title: 'Page 2' },
     });
   });
@@ -209,7 +217,12 @@ describe('OfflineReplicaPullService', () => {
 
     expect(transactReplica).toHaveBeenCalledOnce();
     expect(transactReplica.mock.calls[0]?.[0]).toMatchObject({
-      putRows: [expect.objectContaining({ serverId: 42, confirmedValues: { title: 'Created' } })],
+      putRows: [
+        expect.objectContaining({
+          identity: expect.objectContaining({ kind: 'generated', remoteId: 42 }),
+          confirmedValues: { title: 'Created' },
+        }),
+      ],
       putCursors: [{ ...scope, cursor: 'cursor-v1' }],
     });
   });
@@ -220,9 +233,10 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    await expect(repository.getReplicaRow(scope, 'test_items', '019d0000-0000-7000-8000-000000000001')).resolves.toMatchObject({
-      localId: '019d0000-0000-7000-8000-000000000001',
-      serverId: 42,
+    await expect(
+      repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d0000-0000-7000-8000-000000000001')),
+    ).resolves.toMatchObject({
+      identity: { kind: 'generated', localId: '019d0000-0000-7000-8000-000000000001', remoteId: 42 },
       sourceKey: 'test_items',
       syncState: 'confirmed',
       values: { title: 'Created' },
@@ -237,8 +251,7 @@ describe('OfflineReplicaPullService', () => {
         {
           ...scope,
           sourceKey: 'test_items',
-          localId: '019d-existing',
-          serverId: 42,
+          identity: { kind: 'generated', localId: '019d-existing', remoteId: 42 },
           values: { id: 42, title: 'Old' },
           confirmedValues: { id: 42, title: 'Old' },
           serverRevision: 1,
@@ -251,9 +264,8 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    await expect(repository.getReplicaRow(scope, 'test_items', '019d-existing')).resolves.toMatchObject({
-      localId: '019d-existing',
-      serverId: 42,
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-existing'))).resolves.toMatchObject({
+      identity: { kind: 'generated', localId: '019d-existing', remoteId: 42 },
       serverRevision: 2,
       values: { title: 'Updated' },
       confirmedValues: { title: 'Updated' },
@@ -267,8 +279,7 @@ describe('OfflineReplicaPullService', () => {
         {
           ...scope,
           sourceKey: 'test_items',
-          localId: '019d-delete',
-          serverId: 42,
+          identity: { kind: 'generated', localId: '019d-delete', remoteId: 42 },
           values: { id: 42, title: 'Gone' },
           confirmedValues: { id: 42, title: 'Gone' },
           serverRevision: 1,
@@ -281,8 +292,8 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    expect(await repository.getReplicaRow(scope, 'test_items', '019d-delete')).toBeNull();
-    expect(await repository.getReplicaRowByServerId(scope, 'test_items', 42)).toBeNull();
+    expect(await repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-delete'))).toBeNull();
+    expect(await repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).toBeNull();
   });
 
   it('duplicate changeはlast-winsでcollapseする', async () => {
@@ -348,23 +359,23 @@ describe('OfflineReplicaPullService', () => {
       );
     });
 
-    it('non-positive serverIdはrejectしcursorを進めない', async () => {
+    it('non-positive remoteIdはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(
         () =>
           pull.mockResolvedValueOnce(
-            page([{ ...itemChange(42, 'Created'), serverId: 0 } as unknown as OfflineReplicaChange], { nextCursor: 'cursor-v1' }),
+            page([{ ...itemChange(42, 'Created'), remoteId: 0 } as unknown as OfflineReplicaChange], { nextCursor: 'cursor-v1' }),
           ),
-        'Offline replica pull page changes[0].serverId must be a positive integer.',
+        'Offline replica pull page changes[0].remoteId must be a valid generated remote id.',
       );
     });
 
-    it('non-integer serverIdはrejectしcursorを進めない', async () => {
+    it('non-integer remoteIdはrejectしcursorを進めない', async () => {
       await expectPullRejectsPreservingCursor(
         () =>
           pull.mockResolvedValueOnce(
-            page([{ ...itemChange(42, 'Created'), serverId: 42.5 } as unknown as OfflineReplicaChange], { nextCursor: 'cursor-v1' }),
+            page([{ ...itemChange(42, 'Created'), remoteId: 42.5 } as unknown as OfflineReplicaChange], { nextCursor: 'cursor-v1' }),
           ),
-        'Offline replica pull page changes[0].serverId must be a positive integer.',
+        'Offline replica pull page changes[0].remoteId must be a valid generated remote id.',
       );
     });
 
@@ -400,7 +411,7 @@ describe('OfflineReplicaPullService', () => {
         [
           {
             sourceKey: 'unknown_items',
-            serverId: 42,
+            remoteId: 42,
             serverRevision: 1,
             acknowledgedCommandIds: [],
             values: { id: 42, title: 'X' },
@@ -418,7 +429,7 @@ describe('OfflineReplicaPullService', () => {
   it('missing valuesはrejectしcursorを進めない', async () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
     pull.mockResolvedValueOnce(
-      page([{ sourceKey: 'test_items', serverId: 42, serverRevision: 1, acknowledgedCommandIds: [], values: null, deleted: false }], {
+      page([{ sourceKey: 'test_items', remoteId: 42, serverRevision: 1, acknowledgedCommandIds: [], values: null, deleted: false }], {
         nextCursor: 'cursor-v1',
       }),
     );
@@ -451,8 +462,7 @@ describe('OfflineReplicaPullService', () => {
         {
           ...scope,
           sourceKey: 'test_items',
-          localId: '019d-pending',
-          serverId: 42,
+          identity: { kind: 'generated', localId: '019d-pending', remoteId: 42 },
           values: { id: 42, title: 'Optimistic draft' },
           confirmedValues: { id: 42, title: 'Confirmed baseline' },
           serverRevision: 1,
@@ -465,7 +475,8 @@ describe('OfflineReplicaPullService', () => {
           ...scope,
           commandId: 'cmd-pending',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-pending',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-pending' },
           operation: 'test_items.update',
           payload: { title: 'Optimistic draft' },
           optimisticValue: { id: 42, title: 'Optimistic draft' },
@@ -483,7 +494,7 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    await expect(repository.getReplicaRow(scope, 'test_items', '019d-pending')).resolves.toMatchObject({
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-pending'))).resolves.toMatchObject({
       values: { title: 'Optimistic draft' },
       confirmedValues: { title: 'Server truth' },
       serverRevision: 2,
@@ -498,8 +509,7 @@ describe('OfflineReplicaPullService', () => {
         {
           ...scope,
           sourceKey: 'test_items',
-          localId: '019d-conflict',
-          serverId: 42,
+          identity: { kind: 'generated', localId: '019d-conflict', remoteId: 42 },
           values: { id: 42, title: 'Local edit' },
           confirmedValues: { id: 42, title: 'Old confirmed' },
           serverRevision: 1,
@@ -512,7 +522,8 @@ describe('OfflineReplicaPullService', () => {
           ...scope,
           commandId: 'cmd-conflict',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-conflict',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-conflict' },
           operation: 'test_items.update',
           payload: { title: 'Local edit' },
           optimisticValue: { id: 42, title: 'Local edit' },
@@ -530,7 +541,7 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    await expect(repository.getReplicaRow(scope, 'test_items', '019d-conflict')).resolves.toMatchObject({
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-conflict'))).resolves.toMatchObject({
       syncState: 'conflict',
       confirmedValues: { title: 'Remote truth' },
       serverRevision: 9,
@@ -551,8 +562,7 @@ describe('OfflineReplicaPullService', () => {
         {
           ...scope,
           sourceKey: 'test_items',
-          localId: '019d-tombstone',
-          serverId: 42,
+          identity: { kind: 'generated', localId: '019d-tombstone', remoteId: 42 },
           values: { id: 42, title: 'Pending delete' },
           confirmedValues: { id: 42, title: 'Confirmed' },
           serverRevision: 1,
@@ -565,7 +575,8 @@ describe('OfflineReplicaPullService', () => {
           ...scope,
           commandId: 'cmd-tombstone',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-tombstone',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-tombstone' },
           operation: 'test_items.delete',
           payload: {},
           optimisticValue: { id: 42, title: 'Pending delete' },
@@ -583,8 +594,8 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    await expect(repository.getReplicaRow(scope, 'test_items', '019d-tombstone')).resolves.toMatchObject({
-      localId: '019d-tombstone',
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-tombstone'))).resolves.toMatchObject({
+      identity: { kind: 'generated', localId: '019d-tombstone', remoteId: 42 },
       syncState: 'conflict',
       serverRevision: 2,
     });
@@ -596,7 +607,7 @@ describe('OfflineReplicaPullService', () => {
         retryAt: null,
       }),
     ]);
-    expect(await repository.getReplicaRowByServerId(scope, 'test_items', 42)).not.toBeNull();
+    expect(await repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).not.toBeNull();
   });
 
   describe('lost ACK correlation', () => {
@@ -606,8 +617,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId,
-            serverId: null,
+            identity: generatedReplicaIdentity(localId, null),
             values: { id: 0, title: 'Draft create' },
             confirmedValues: null,
             serverRevision: null,
@@ -620,7 +630,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-create',
             aggregateType: 'test_items',
-            aggregateLocalId: localId,
+            sourceKey: 'test_items',
+            identity: generatedCommandIdentity(localId),
             operation: 'test_items.create',
             payload: { title: 'Draft create' },
             optimisticValue: { id: 0, title: 'Draft create' },
@@ -636,7 +647,7 @@ describe('OfflineReplicaPullService', () => {
       });
     }
 
-    it('create lost ACKは既存localId行をreconcileしserverIdを割り当ててcommandを除去する', async () => {
+    it('create lost ACKは既存localId行をreconcileしremoteIdを割り当ててcommandを除去する', async () => {
       await seedPendingCreate();
       pull.mockResolvedValueOnce(
         page([itemChange(42, 'Created', { serverRevision: 1, acknowledgedCommandIds: ['cmd-create'] })], { nextCursor: 'cursor-v1' }),
@@ -644,9 +655,8 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      await expect(repository.getReplicaRow(scope, 'test_items', '019d-create')).resolves.toMatchObject({
-        localId: '019d-create',
-        serverId: 42,
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-create'))).resolves.toMatchObject({
+        identity: { kind: 'generated', localId: '019d-create', remoteId: 42 },
         confirmedValues: { title: 'Created' },
         syncState: 'confirmed',
       });
@@ -660,8 +670,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-update',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-update', remoteId: 42 },
             values: { id: 42, title: 'Follow-up edit' },
             confirmedValues: { id: 42, title: 'Confirmed baseline' },
             serverRevision: 1,
@@ -674,7 +683,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-update-1',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-update',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-update' },
             operation: 'test_items.update',
             payload: { title: 'First edit' },
             optimisticValue: { id: 42, title: 'First edit' },
@@ -690,7 +700,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-update-2',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-update',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-update' },
             operation: 'test_items.update',
             payload: { title: 'Follow-up edit' },
             optimisticValue: { id: 42, title: 'Follow-up edit' },
@@ -712,9 +723,8 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      await expect(repository.getReplicaRow(scope, 'test_items', '019d-update')).resolves.toMatchObject({
-        localId: '019d-update',
-        serverId: 42,
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-update'))).resolves.toMatchObject({
+        identity: { kind: 'generated', localId: '019d-update', remoteId: 42 },
         values: { title: 'Follow-up edit' },
         confirmedValues: { title: 'First edit applied' },
         serverRevision: 2,
@@ -731,8 +741,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-delete-ack',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-delete-ack', remoteId: 42 },
             values: { id: 42, title: 'Pending delete' },
             confirmedValues: { id: 42, title: 'Confirmed' },
             serverRevision: 1,
@@ -745,7 +754,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-delete',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-delete-ack',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-delete-ack' },
             operation: 'test_items.delete',
             payload: {},
             optimisticValue: { id: 42, title: 'Pending delete' },
@@ -767,8 +777,8 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      expect(await repository.getReplicaRow(scope, 'test_items', '019d-delete-ack')).toBeNull();
-      expect(await repository.getReplicaRowByServerId(scope, 'test_items', 42)).toBeNull();
+      expect(await repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-delete-ack'))).toBeNull();
+      expect(await repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).toBeNull();
       expect(await repository.getCommands(scope)).toEqual([]);
     });
 
@@ -778,8 +788,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-delete-superseded',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-delete-superseded', remoteId: 42 },
             values: { id: 42, title: 'Following upsert' },
             confirmedValues: { id: 42, title: 'Old confirmed baseline' },
             serverRevision: 1,
@@ -792,7 +801,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-delete-ack',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-delete-superseded',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-delete-superseded' },
             operation: 'test_items.delete',
             payload: {},
             optimisticValue: { id: 42, title: 'Pending delete' },
@@ -809,7 +819,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-following-upsert',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-delete-superseded',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-delete-superseded' },
             operation: 'test_items.update',
             payload: { title: 'Following upsert' },
             optimisticValue: { id: 42, title: 'Following upsert' },
@@ -833,7 +844,9 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      await expect(repository.getReplicaRow(scope, 'test_items', '019d-delete-superseded')).resolves.toMatchObject({
+      await expect(
+        repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-delete-superseded')),
+      ).resolves.toMatchObject({
         values: { title: 'Following upsert' },
         confirmedValues: null,
         serverRevision: 3,
@@ -844,14 +857,13 @@ describe('OfflineReplicaPullService', () => {
       ]);
     });
 
-    it('same-kind serverId tombstone ACKが別idを返した場合はlocal identityを再割当しない', async () => {
+    it('same-kind remoteId tombstone ACKが別idを返した場合はlocal identityを再割当しない', async () => {
       await repository.transactReplica({
         putRows: [
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-server-id-immutable',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-server-id-immutable', remoteId: 42 },
             values: { id: 42, title: 'Pending delete' },
             confirmedValues: { id: 42, title: 'Confirmed' },
             serverRevision: 1,
@@ -865,7 +877,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-server-id-immutable',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-server-id-immutable',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-server-id-immutable' },
             operation: 'test_items.delete',
             payload: {},
             optimisticValue: { id: 42, title: 'Pending delete' },
@@ -884,9 +897,11 @@ describe('OfflineReplicaPullService', () => {
         page([itemChange(43, 'Wrong identity', { deleted: true, serverRevision: 2, acknowledgedCommandIds: ['cmd-server-id-immutable'] })]),
       );
 
-      await expect(service.pull(scope)).rejects.toThrow('Replica serverId is immutable: current=42, incoming=43.');
-      await expect(repository.getReplicaRowIncludingPendingDelete?.(scope, 'test_items', '019d-server-id-immutable')).resolves.toMatchObject({
-        serverId: 42,
+      await expect(service.pull(scope)).rejects.toThrow('Replica remote id is immutable: current=42, incoming=43.');
+      await expect(
+        repository.getReplicaRowIncludingPendingDelete?.(scope, 'test_items', generatedCommandIdentity('019d-server-id-immutable')),
+      ).resolves.toMatchObject({
+        identity: { kind: 'generated', localId: '019d-server-id-immutable', remoteId: 42 },
         visibility: 'pending_delete',
       });
     });
@@ -905,7 +920,7 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      await expect(repository.getReplicaRow(scope, 'test_items', '019d-create')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-create'))).resolves.toMatchObject({
         confirmedValues: { title: 'Final' },
         serverRevision: 2,
         syncState: 'confirmed',
@@ -919,8 +934,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-lost-update',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-lost-update', remoteId: 42 },
             values: { id: 42, title: 'Follow-up edit' },
             confirmedValues: { id: 42, title: 'Baseline' },
             serverRevision: 1,
@@ -933,7 +947,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-ack-lost',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-lost-update',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-lost-update' },
             operation: 'test_items.update',
             payload: { title: 'First edit' },
             optimisticValue: { id: 42, title: 'First edit' },
@@ -949,7 +964,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-following',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-lost-update',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-lost-update' },
             operation: 'test_items.update',
             payload: { title: 'Follow-up edit' },
             optimisticValue: { id: 42, title: 'Follow-up edit' },
@@ -981,7 +997,7 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      await expect(repository.getReplicaRow(scope, 'test_items', '019d-lost-update')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-lost-update'))).resolves.toMatchObject({
         values: { title: 'Follow-up edit' },
         confirmedValues: { title: 'Other device edit' },
         serverRevision: 3,
@@ -1003,8 +1019,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-other-acks',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-other-acks', remoteId: 42 },
             values: { id: 42, title: 'Local edit' },
             confirmedValues: { id: 42, title: 'Baseline' },
             serverRevision: 1,
@@ -1017,7 +1032,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-local',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-other-acks',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-other-acks' },
             operation: 'test_items.update',
             payload: { title: 'Local edit' },
             optimisticValue: { id: 42, title: 'Local edit' },
@@ -1049,7 +1065,7 @@ describe('OfflineReplicaPullService', () => {
 
       await service.pull(scope);
 
-      await expect(repository.getReplicaRow(scope, 'test_items', '019d-other-acks')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-other-acks'))).resolves.toMatchObject({
         confirmedValues: { title: 'Other device edit 2' },
         serverRevision: 3,
         syncState: 'pending',
@@ -1065,8 +1081,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-skip',
-            serverId: 42,
+            identity: { kind: 'generated', localId: '019d-skip', remoteId: 42 },
             values: { id: 42, title: 'Second edit' },
             confirmedValues: { id: 42, title: 'Baseline' },
             serverRevision: 1,
@@ -1079,7 +1094,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-first',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-skip',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-skip' },
             operation: 'test_items.update',
             payload: { title: 'First edit' },
             optimisticValue: { id: 42, title: 'First edit' },
@@ -1095,7 +1111,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-second',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-skip',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-skip' },
             operation: 'test_items.update',
             payload: { title: 'Second edit' },
             optimisticValue: { id: 42, title: 'Second edit' },
@@ -1125,8 +1142,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-local-a',
-            serverId: null,
+            identity: { kind: 'generated', localId: '019d-local-a', remoteId: null },
             values: { id: 0, title: 'Pending create A' },
             confirmedValues: null,
             serverRevision: null,
@@ -1136,8 +1152,7 @@ describe('OfflineReplicaPullService', () => {
           {
             ...scope,
             sourceKey: 'test_items',
-            localId: '019d-local-b',
-            serverId: 99,
+            identity: { kind: 'generated', localId: '019d-local-b', remoteId: 99 },
             values: { id: 99, title: 'Existing remote' },
             confirmedValues: { id: 99, title: 'Existing remote' },
             serverRevision: 1,
@@ -1150,7 +1165,8 @@ describe('OfflineReplicaPullService', () => {
             ...scope,
             commandId: 'cmd-create-a',
             aggregateType: 'test_items',
-            aggregateLocalId: '019d-local-a',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: '019d-local-a' },
             operation: 'test_items.create',
             payload: { title: 'Pending create A' },
             optimisticValue: { id: 0, title: 'Pending create A' },
@@ -1180,8 +1196,7 @@ describe('OfflineReplicaPullService', () => {
         {
           ...scope,
           sourceKey: 'test_items',
-          localId: '019d-external',
-          serverId: 42,
+          identity: { kind: 'generated', localId: '019d-external', remoteId: 42 },
           values: { id: 42, title: 'Local baseline' },
           confirmedValues: { id: 42, title: 'Local baseline' },
           serverRevision: 1,
@@ -1195,7 +1210,7 @@ describe('OfflineReplicaPullService', () => {
         [
           {
             sourceKey: 'test_items',
-            serverId: 42,
+            remoteId: 42,
             serverRevision: 2,
             values: { id: 42, title: 'Remote edit' },
             deleted: false,
@@ -1207,7 +1222,7 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    await expect(repository.getReplicaRow(scope, 'test_items', '019d-external')).resolves.toMatchObject({
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-external'))).resolves.toMatchObject({
       values: { title: 'Remote edit' },
       confirmedValues: { title: 'Remote edit' },
       serverRevision: 2,
@@ -1244,9 +1259,9 @@ describe('OfflineReplicaPullService', () => {
             getCommands: vi.fn(async () => []),
             transactReplica: vi.fn(async () => undefined),
             getReplicaRow: vi.fn(async () => null),
-            getReplicaRowByServerId: vi.fn(async () => null),
+            getReplicaRowByRemoteId: vi.fn(async () => null),
             getReplicaRowByRemoteIdentity: vi.fn(async (_scope, _sourceKey, identity) => {
-              if (identity.serverId === undefined) throw new Error('Natural identity unsupported');
+              if (identity.remoteId === undefined) throw new Error('Natural identity unsupported');
               return null;
             }),
           },

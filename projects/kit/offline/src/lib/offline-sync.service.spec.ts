@@ -10,14 +10,18 @@ import {
 import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
-import { defineOfflineReplicaSchema, defineReplicaEntity, integer, naturalKey, serverId, text } from './offline-replica-schema';
+import { defineOfflineReplicaSchema, defineReplicaEntity, integer, naturalKey, generatedId, text } from './offline-replica-schema';
 import {
+  canonicalOfflineReplicaIdentity,
   OFFLINE_REPOSITORY,
   type OfflineCommand,
+  type OfflineCommandIdentity,
+  type OfflineReplicaAddress,
   type OfflineReplicaRow,
   type OfflineRepository,
   type OfflineScope,
 } from './offline-repository';
+import { generatedCommandIdentity } from './offline-test-helpers';
 import { OfflinePayloadValidationError, OfflineSyncService } from './offline-sync.service';
 
 const replicaSchema = defineOfflineReplicaSchema({
@@ -28,7 +32,7 @@ const replicaSchema = defineOfflineReplicaSchema({
       sourceKey: 'documents',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
       },
     }),
@@ -45,6 +49,19 @@ const naturalReplicaSchema = defineOfflineReplicaSchema({
       scope: 'partition',
       identity: naturalKey(['favFrom', 'favTo']),
       fields: { favFrom: integer(), favTo: text(), title: text() },
+    }),
+  ],
+  migrations: [],
+});
+
+const textReplicaSchema = defineOfflineReplicaSchema({
+  version: 1,
+  entities: [
+    defineReplicaEntity<{ id: string; title: string }>()({
+      table: 'text_documents',
+      sourceKey: 'text_documents',
+      scope: 'partition',
+      fields: { id: generatedId('text'), title: text() },
     }),
   ],
   migrations: [],
@@ -99,29 +116,39 @@ describe('OfflineSyncService', () => {
       removeCommand: vi.fn(async (commandId: string) => {
         commands = commands.filter((item) => item.commandId !== commandId);
       }),
-      getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, localId: string) => {
+      getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineCommandIdentity) => {
         await beforeGetReplicaRow?.();
         return (
-          rows.find(
-            (item) =>
-              item.userId === scope.userId && item.scopeId === scope.scopeId && item.sourceKey === sourceKey && item.localId === localId,
-          ) ?? null
+          rows.find((item) => {
+            if (item.userId !== scope.userId || item.scopeId !== scope.scopeId || item.sourceKey !== sourceKey) return false;
+            if (identity.kind === 'generated') {
+              return item.identity.kind === 'generated' && item.identity.localId === identity.localId;
+            }
+            return item.identity.kind === 'natural' && JSON.stringify(item.identity.naturalKey) === JSON.stringify(identity.naturalKey);
+          }) ?? null
         );
       }),
-      getReplicaRowIncludingPendingDelete: vi.fn(async (scope: OfflineScope, sourceKey: string, localId: string) => {
+      getReplicaRowIncludingPendingDelete: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineCommandIdentity) => {
         await beforeGetReplicaRow?.();
         return (
-          rows.find(
-            (item) =>
-              item.userId === scope.userId && item.scopeId === scope.scopeId && item.sourceKey === sourceKey && item.localId === localId,
-          ) ?? null
+          rows.find((item) => {
+            if (item.userId !== scope.userId || item.scopeId !== scope.scopeId || item.sourceKey !== sourceKey) return false;
+            if (identity.kind === 'generated') {
+              return item.identity.kind === 'generated' && item.identity.localId === identity.localId;
+            }
+            return item.identity.kind === 'natural' && JSON.stringify(item.identity.naturalKey) === JSON.stringify(identity.naturalKey);
+          }) ?? null
         );
       }),
-      getReplicaRowByServerId: vi.fn(
-        async (scope: OfflineScope, sourceKey: string, serverId: number) =>
+      getReplicaRowByRemoteId: vi.fn(
+        async (scope: OfflineScope, sourceKey: string, remoteId: number) =>
           rows.find(
             (item) =>
-              item.userId === scope.userId && item.scopeId === scope.scopeId && item.sourceKey === sourceKey && item.serverId === serverId,
+              item.userId === scope.userId &&
+              item.scopeId === scope.scopeId &&
+              item.sourceKey === sourceKey &&
+              item.identity.kind === 'generated' &&
+              item.identity.remoteId === remoteId,
           ) ?? null,
       ),
       getReplicaRowByRemoteIdentity: vi.fn(async (scope: OfflineScope, sourceKey: string, identity) => {
@@ -142,7 +169,8 @@ describe('OfflineSyncService', () => {
               item.userId === scope.userId &&
               item.scopeId === scope.scopeId &&
               item.sourceKey === sourceKey &&
-              item.serverId === identity.serverId,
+              item.identity.kind === 'generated' &&
+              item.identity.remoteId === identity.remoteId,
           ) ?? null
         );
       }),
@@ -154,7 +182,7 @@ describe('OfflineSyncService', () => {
               item.userId !== row.userId ||
               item.scopeId !== row.scopeId ||
               item.sourceKey !== row.sourceKey ||
-              item.localId !== row.localId,
+              canonicalOfflineReplicaIdentity(item.identity) !== canonicalOfflineReplicaIdentity(row.identity),
           );
           rows.push(structuredClone(row));
         }
@@ -164,7 +192,7 @@ describe('OfflineSyncService', () => {
               item.userId !== key.userId ||
               item.scopeId !== key.scopeId ||
               item.sourceKey !== key.sourceKey ||
-              item.localId !== key.localId,
+              canonicalOfflineReplicaIdentity(item.identity) !== canonicalOfflineReplicaIdentity(key.identity),
           );
         }
         for (const command of transaction.putCommands ?? []) {
@@ -209,7 +237,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'first',
+        identity: { kind: 'generated', localId: 'first' },
         operation: 'documents.create',
         payload: { title: 'first' },
         optimisticValue: { id: 0, title: 'first' },
@@ -222,7 +250,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'documents',
-          aggregateLocalId: 'second',
+          identity: { kind: 'generated', localId: 'second' },
           operation: 'documents.create',
           payload: { title: 'second' },
           optimisticValue: { id: 0, title: 'second' },
@@ -231,7 +259,7 @@ describe('OfflineSyncService', () => {
       ),
     ).rejects.toMatchObject({ name: 'OfflineOutboxCapacityError', reason: 'command_count' });
     expect(commands).toHaveLength(1);
-    expect(rows.map((row) => row.localId)).toEqual(['first']);
+    expect(rows.map((row) => (row.identity.kind === 'generated' ? row.identity.localId : ''))).toEqual(['first']);
   });
 
   it('Outbox容量上限では既存commandとreplicaを失わず新規enqueueを拒否する', async () => {
@@ -242,7 +270,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'documents',
-          aggregateLocalId: 'oversized',
+          identity: { kind: 'generated', localId: 'oversized' },
           operation: 'documents.create',
           payload: { title: 'too large' },
           optimisticValue: { id: 0, title: 'too large' },
@@ -263,7 +291,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'offline-local',
+        identity: { kind: 'generated', localId: 'offline-local' },
         operation: 'documents.create',
         payload: { title: 'offline' },
         optimisticValue: { id: 0, title: 'offline' },
@@ -278,13 +306,20 @@ describe('OfflineSyncService', () => {
     expect(service.pendingCount()).toBe(1);
   });
 
+  it('session principalと型まで一致しないscopeをactivation前に拒否する', async () => {
+    localSession = { userId: 7, scopes: [{ userId: '7', scopeId: '10' }] };
+
+    await expect(service.refreshLocalSession()).rejects.toThrow('Offline sync session scope belongs to a different principal.');
+    expect(service.pendingCount()).toBe(0);
+  });
+
   it('offline初期化後の再接続でpending outboxを自動送信する', async () => {
     await service.initialize();
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'reconnect-local',
+        identity: { kind: 'generated', localId: 'reconnect-local' },
         operation: 'documents.create',
         payload: { title: 'queued offline' },
         optimisticValue: { id: 0, title: 'queued offline' },
@@ -317,7 +352,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'revoked',
+        identity: { kind: 'generated', localId: 'revoked' },
         operation: 'documents.create',
         payload: { title: 'stale' },
         optimisticValue: { id: 0, title: 'stale' },
@@ -363,7 +398,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
         optimisticValue: { seq: 1 },
@@ -374,7 +409,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
         optimisticValue: { seq: 2 },
@@ -389,7 +424,7 @@ describe('OfflineSyncService', () => {
 
   it('local_idを不変主キーにして送信直前に最新server_idへ解決する', async () => {
     execute.mockResolvedValueOnce({
-      serverId: 38142,
+      remoteId: 38142,
       serverRevision: 1,
       confirmedValues: { name: 'draft' },
       response: { id: 38142 },
@@ -398,28 +433,27 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-aaaa',
+        identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'documents.create',
         payload: { name: 'draft' },
         optimisticValue: { name: 'draft' },
       },
       { flush: false },
     );
-    expect(rows[0]).toMatchObject({ localId: '019d-aaaa', serverId: null, syncState: 'pending' });
-    expect(commands[0]).toMatchObject({ aggregateLocalId: '019d-aaaa' });
-    expect('serverId' in commands[0]!).toBe(false);
+    expect(rows[0]).toMatchObject({ identity: { kind: 'generated', localId: '019d-aaaa', remoteId: null }, syncState: 'pending' });
+    expect(commands[0]).toMatchObject({ identity: { kind: 'generated', localId: '019d-aaaa' } });
+    expect('remoteId' in commands[0]!).toBe(false);
 
     connected.set(true);
     await service.flush();
-    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-aaaa', serverId: null });
+    expect(execute.mock.calls[0]?.[1]).toEqual({ kind: 'generated', localId: '019d-aaaa', remoteId: null });
     expect(rows[0]).toMatchObject({
-      localId: '019d-aaaa',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-aaaa', remoteId: 38142 },
       serverRevision: 1,
       syncState: 'confirmed',
       confirmedValues: { name: 'draft' },
     });
-    expect(commands.every((command) => !('serverId' in command))).toBe(true);
+    expect(commands.every((command) => !('remoteId' in command))).toBe(true);
 
     execute.mockResolvedValueOnce({
       serverRevision: 2,
@@ -430,7 +464,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-aaaa',
+        identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'documents.update',
         payload: { name: 'edited', revision: 1 },
         optimisticValue: { name: 'edited' },
@@ -439,14 +473,13 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     await service.flush();
-    expect(execute.mock.calls[1]?.[1]).toEqual({ localId: '019d-aaaa', serverId: 38142 });
+    expect(execute.mock.calls[1]?.[1]).toEqual({ kind: 'generated', localId: '019d-aaaa', remoteId: 38142 });
     expect(rows[0]).toMatchObject({
-      localId: '019d-aaaa',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-aaaa', remoteId: 38142 },
       serverRevision: 2,
       confirmedValues: { name: 'edited' },
     });
-    expect(commands.every((command) => !('serverId' in command))).toBe(true);
+    expect(commands.every((command) => !('remoteId' in command))).toBe(true);
   });
 
   it('session scope発見後に前回起動のsending commandをpendingへ復旧する', async () => {
@@ -455,8 +488,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-aaaa',
-      serverId: null,
+      identity: { kind: 'generated', localId: '019d-aaaa', remoteId: null },
       values: {},
       confirmedValues: null,
       serverRevision: null,
@@ -468,7 +500,8 @@ describe('OfflineSyncService', () => {
       scopeId: '10',
       commandId: 'interrupted',
       aggregateType: 'documents',
-      aggregateLocalId: '019d-aaaa',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'documents.create',
       payload: {},
       optimisticValue: {},
@@ -491,7 +524,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-new',
+        identity: { kind: 'generated', localId: '019d-new' },
         operation: 'documents.create',
         payload: { name: 'draft' },
         optimisticValue: { name: 'draft' },
@@ -508,8 +541,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-existing',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-existing', remoteId: 38142 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -520,7 +552,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-existing',
+        identity: { kind: 'generated', localId: '019d-existing' },
         operation: 'documents.update',
         payload: { name: 'draft', revision: 4 },
         optimisticValue: { name: 'draft' },
@@ -534,7 +566,7 @@ describe('OfflineSyncService', () => {
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       syncState: 'confirmed',
-      serverId: 38142,
+      identity: expect.objectContaining({ remoteId: 38142 }),
     });
   });
 
@@ -544,7 +576,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
         optimisticValue: { seq: 1 },
@@ -555,7 +587,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '2',
+        identity: { kind: 'generated', localId: '2' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
         optimisticValue: { seq: 2 },
@@ -573,7 +605,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { あ: 3, z: 1, ä: 2 },
         optimisticValue: {},
@@ -584,7 +616,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '2',
+        identity: { kind: 'generated', localId: '2' },
         operation: 'documents.upsert',
         payload: { ä: 2, あ: 3, z: 1 },
         optimisticValue: {},
@@ -600,7 +632,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'documents',
-          aggregateLocalId: '1',
+          identity: { kind: 'generated', localId: '1' },
           operation: 'documents.upsert',
           payload: { value: undefined },
           optimisticValue: {},
@@ -618,7 +650,14 @@ describe('OfflineSyncService', () => {
   ] as const)('HTTP %sを%sへ分類して操作を保持する', async (status, state, rowSyncState) => {
     execute.mockRejectedValueOnce({ status });
     await service.enqueue(
-      { scopeId: '10', aggregateType: 'documents', aggregateLocalId: '1', operation: 'documents.upsert', payload: {}, optimisticValue: {} },
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: '1' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
       { flush: false },
     );
     connected.set(true);
@@ -637,8 +676,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: `delete-${status}`,
-      serverId: 42,
+      identity: { kind: 'generated', localId: `delete-${status}`, remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 1,
@@ -651,7 +689,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: `delete-${status}`,
+        identity: generatedCommandIdentity(`delete-${status}`),
         operation: 'documents.delete',
         payload: {},
         optimisticValue: { name: 'confirmed' },
@@ -672,7 +710,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
         optimisticValue: { seq: 1 },
@@ -683,7 +721,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
         optimisticValue: { seq: 2 },
@@ -708,7 +746,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
         optimisticValue: { seq: 1 },
@@ -719,7 +757,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
         optimisticValue: { seq: 2 },
@@ -748,7 +786,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
         optimisticValue: { seq: 1 },
@@ -794,7 +832,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
         optimisticValue: { seq: 1 },
@@ -825,7 +863,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
         optimisticValue: {},
@@ -837,7 +875,9 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.refreshSession();
     await vi.waitFor(() =>
-      expect(handleError).toHaveBeenCalledWith(expect.objectContaining({ message: 'Offline replica row not found: documents/1' })),
+      expect(handleError).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'Offline replica row not found: documents/generated:1' }),
+      ),
     );
 
     await service.refreshSession();
@@ -858,7 +898,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
         optimisticValue: {},
@@ -879,7 +919,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
         optimisticValue: {},
@@ -898,7 +938,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
         optimisticValue: {},
@@ -910,13 +950,13 @@ describe('OfflineSyncService', () => {
     expect(service.pendingCommands()[0]?.state).toBe('sending');
   });
 
-  it('invalid serverIdはhard failする', async () => {
-    execute.mockResolvedValueOnce({ serverId: 0, serverRevision: 1, confirmedValues: {}, response: null });
+  it('invalid remoteIdはhard failする', async () => {
+    execute.mockResolvedValueOnce({ remoteId: 0, serverRevision: 1, confirmedValues: {}, response: null });
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-invalid-id',
+        identity: { kind: 'generated', localId: '019d-invalid-id' },
         operation: 'documents.create',
         payload: {},
         optimisticValue: {},
@@ -924,13 +964,13 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     connected.set(true);
-    await expect(service.flush()).rejects.toThrow('Offline command returned invalid serverId 0.');
+    await expect(service.flush()).rejects.toThrow('Offline replica generated remote id must be a positive integer.');
   });
 
-  it('naturalKey entityへのserverId応答はcompleteCommand境界でhard failする', async () => {
+  it('naturalKey entityへのremoteId応答はcompleteCommand境界でhard failする', async () => {
     options.replicaSchema = naturalReplicaSchema;
     execute.mockResolvedValueOnce({
-      serverId: 99,
+      remoteId: 99,
       serverRevision: 1,
       confirmedValues: { favFrom: 7, favTo: '42', title: 'confirmed' },
       response: null,
@@ -939,7 +979,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'natural_documents',
-        aggregateLocalId: 'immutable-uuid',
+        identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '42' } },
         operation: 'natural_documents.create',
         payload: {},
         optimisticValue: { favFrom: 7, favTo: '42', title: 'local' },
@@ -947,46 +987,84 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     connected.set(true);
-    await expect(service.flush()).rejects.toThrow('Offline command returned serverId for naturalKey source "natural_documents".');
+    await expect(service.flush()).rejects.toThrow(
+      'Offline command returned generated remote id for naturalKey source "natural_documents".',
+    );
   });
 
-  it('naturalKey entityへのserverIdHint指定はenqueue境界でhard failする', async () => {
+  it('naturalKey entityへgenerated identityを指定するとenqueue境界でhard failする', async () => {
     options.replicaSchema = naturalReplicaSchema;
     await expect(
       service.enqueue(
         {
           scopeId: '10',
           aggregateType: 'natural_documents',
-          aggregateLocalId: 'immutable-uuid',
-          serverIdHint: 99,
+          identity: { kind: 'generated', localId: 'immutable-uuid', remoteIdHint: 99 },
           operation: 'natural_documents.create',
           payload: {},
           optimisticValue: { favFrom: 7, favTo: '42', title: 'local' },
         },
         { flush: false },
       ),
-    ).rejects.toThrow('Offline replica source "natural_documents" does not define a serverId field.');
+    ).rejects.toThrow('Offline replica source "natural_documents" requires natural identity.');
   });
 
-  it('reassigned serverIdはhard failする', async () => {
+  it('natural identityとoptimistic valueのkey不一致を永続化前に拒否する', async () => {
+    options.replicaSchema = naturalReplicaSchema;
+
+    await expect(
+      service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'natural_documents',
+          identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '22' } },
+          operation: 'natural_documents.create',
+          payload: {},
+          optimisticValue: { favFrom: 7, favTo: '21', title: 'local' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('Offline command naturalKey must match optimistic values for "natural_documents".');
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
+  it('empty generated localIdを永続化前に拒否する', async () => {
+    await expect(
+      service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: '' },
+          operation: 'documents.create',
+          payload: {},
+          optimisticValue: { id: 0, title: 'local' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('Offline localId must be a non-empty normalized string');
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
+  it('reassigned remoteIdはhard failする', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-existing',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-existing', remoteId: 38142 },
       values: {},
       confirmedValues: {},
       serverRevision: 1,
       fetchedAt: 1,
       syncState: 'confirmed',
     });
-    execute.mockResolvedValueOnce({ serverId: 99999, serverRevision: 2, confirmedValues: {}, response: null });
+    execute.mockResolvedValueOnce({ remoteId: 99999, serverRevision: 2, confirmedValues: {}, response: null });
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-existing',
+        identity: { kind: 'generated', localId: '019d-existing' },
         operation: 'documents.update',
         payload: {},
         optimisticValue: {},
@@ -995,16 +1073,15 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     connected.set(true);
-    await expect(service.flush()).rejects.toThrow('Offline replica serverId is immutable');
+    await expect(service.flush()).rejects.toThrow('Offline replica remote id is immutable');
   });
 
-  it('enqueue時のserverId採用は初回pull前にreplica rowへ永続化する', async () => {
+  it('enqueue時のremoteId採用は初回pull前にreplica rowへ永続化する', async () => {
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-adopted',
-        serverId: 38142,
+        identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'adopted' },
         optimisticValue: { name: 'adopted' },
@@ -1012,20 +1089,18 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     expect(rows[0]).toMatchObject({
-      localId: '019d-adopted',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
       confirmedValues: null,
       syncState: 'pending',
     });
   });
 
-  it('採用済みserverIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
+  it('採用済みremoteIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-adopted',
-        serverId: 38142,
+        identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: {},
@@ -1035,7 +1110,7 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     execute.mockResolvedValueOnce({ removeReplica: true, response: null });
     await service.flush();
-    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: 38142 });
+    expect(execute.mock.calls[0]?.[1]).toEqual({ kind: 'generated', localId: '019d-adopted', remoteId: 38142 });
   });
 
   it('confirmed rowのdeleteはOutbox markerとhidden baselineを原子的に残し、ACKでphysical removeする', async () => {
@@ -1043,8 +1118,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-delete',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-delete', remoteId: 38142 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1057,7 +1131,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-delete',
+        identity: { kind: 'generated', localId: '019d-delete' },
         operation: 'documents.delete',
         payload: { id: 38142 },
         optimisticValue: { name: 'confirmed' },
@@ -1068,7 +1142,11 @@ describe('OfflineSyncService', () => {
     );
 
     expect(rows[0]).toMatchObject({ visibility: 'pending_delete', confirmedValues: { name: 'confirmed' }, serverRevision: 4 });
-    expect(commands[0]).toMatchObject({ replicaMutation: 'delete', aggregateLocalId: '019d-delete', baseRevision: 4 });
+    expect(commands[0]).toMatchObject({
+      replicaMutation: 'delete',
+      identity: { kind: 'generated', localId: '019d-delete' },
+      baseRevision: 4,
+    });
 
     execute.mockResolvedValueOnce({ removeReplica: true, response: null });
     connected.set(true);
@@ -1082,8 +1160,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-delete-without-projection',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-delete-without-projection', remoteId: 38142 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1095,7 +1172,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-delete-without-projection',
+        identity: { kind: 'generated', localId: '019d-delete-without-projection' },
         operation: 'documents.delete',
         payload: { id: 38142 },
         optimisticValue: { name: 'confirmed' },
@@ -1113,13 +1190,12 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
-  it('delete後のqueued recreateはlocalIdを維持してserverIdを再割当できる', async () => {
+  it('delete後のqueued recreateはlocalIdを維持してremoteIdを再割当できる', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'stable-local-id',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'stable-local-id', remoteId: 42 },
       values: { name: 'confirmed', presentation: 'pending' },
       confirmedValues: { name: 'confirmed', presentation: 'pending' },
       serverRevision: 4,
@@ -1131,7 +1207,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'stable-local-id',
+        identity: { kind: 'generated', localId: 'stable-local-id' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: rows[0]!.values,
@@ -1143,7 +1219,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'stable-local-id',
+        identity: { kind: 'generated', localId: 'stable-local-id' },
         operation: 'documents.create',
         payload: {},
         optimisticValue: { name: 'recreated', presentation: 'pending' },
@@ -1153,14 +1229,13 @@ describe('OfflineSyncService', () => {
     // A feed/cache integration may patch local-only values while delete is in flight.
     rows[0] = { ...rows[0]!, values: { name: 'recreated', presentation: null } };
 
-    execute.mockResolvedValueOnce({ removeReplica: true, clearServerId: true, response: null }).mockImplementationOnce(async () => {
+    execute.mockResolvedValueOnce({ removeReplica: true, clearRemoteId: true, response: null }).mockImplementationOnce(async () => {
       expect(rows[0]).toMatchObject({
-        localId: 'stable-local-id',
-        serverId: null,
+        identity: { kind: 'generated', localId: 'stable-local-id', remoteId: null },
         values: { name: 'recreated', presentation: null },
       });
       return {
-        serverId: 43,
+        remoteId: 43,
         confirmedValues: { name: 'recreated', presentation: null },
         response: null,
       };
@@ -1170,13 +1245,12 @@ describe('OfflineSyncService', () => {
     await service.flush();
 
     expect(execute.mock.calls.map((call) => call[1])).toEqual([
-      { localId: 'stable-local-id', serverId: 42 },
-      { localId: 'stable-local-id', serverId: null },
+      { kind: 'generated', localId: 'stable-local-id', remoteId: 42 },
+      { kind: 'generated', localId: 'stable-local-id', remoteId: null },
     ]);
     expect(rows).toEqual([
       expect.objectContaining({
-        localId: 'stable-local-id',
-        serverId: 43,
+        identity: { kind: 'generated', localId: 'stable-local-id', remoteId: 43 },
         serverRevision: null,
         values: { name: 'recreated', presentation: null },
         syncState: 'confirmed',
@@ -1190,8 +1264,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'race-local-id',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'race-local-id', remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1202,12 +1275,12 @@ describe('OfflineSyncService', () => {
     let resolveDelete!: (result: OfflineCommandResult) => void;
     execute
       .mockImplementationOnce(() => new Promise<OfflineCommandResult>((resolve) => (resolveDelete = resolve)))
-      .mockResolvedValueOnce({ serverId: 43, confirmedValues: { name: 'recreated' }, response: null });
+      .mockResolvedValueOnce({ remoteId: 43, confirmedValues: { name: 'recreated' }, response: null });
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'race-local-id',
+        identity: { kind: 'generated', localId: 'race-local-id' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: { name: 'confirmed' },
@@ -1223,24 +1296,23 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'race-local-id',
+        identity: { kind: 'generated', localId: 'race-local-id' },
         operation: 'documents.create',
         payload: {},
         optimisticValue: { name: 'recreated' },
       },
       { flush: false },
     );
-    resolveDelete({ removeReplica: true, clearServerId: true, response: null });
+    resolveDelete({ removeReplica: true, clearRemoteId: true, response: null });
     await flush;
 
     expect(execute.mock.calls.map((call) => call[1])).toEqual([
-      { localId: 'race-local-id', serverId: 42 },
-      { localId: 'race-local-id', serverId: null },
+      { kind: 'generated', localId: 'race-local-id', remoteId: 42 },
+      { kind: 'generated', localId: 'race-local-id', remoteId: null },
     ]);
     expect(rows).toEqual([
       expect.objectContaining({
-        localId: 'race-local-id',
-        serverId: 43,
+        identity: { kind: 'generated', localId: 'race-local-id', remoteId: 43 },
         values: { name: 'recreated' },
         syncState: 'confirmed',
       }),
@@ -1253,8 +1325,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'serialized-cache-local-id',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'serialized-cache-local-id', remoteId: 42 },
       values: { name: 'confirmed', presentation: 'pending' },
       confirmedValues: { name: 'confirmed', presentation: 'pending' },
       serverRevision: 4,
@@ -1268,12 +1339,12 @@ describe('OfflineSyncService', () => {
     const ackReadStarted = vi.fn();
     execute
       .mockImplementationOnce(() => new Promise<OfflineCommandResult>((resolve) => (resolveDelete = resolve)))
-      .mockResolvedValueOnce({ serverId: 43, confirmedValues: { name: 'recreated', presentation: null }, response: null });
+      .mockResolvedValueOnce({ remoteId: 43, confirmedValues: { name: 'recreated', presentation: null }, response: null });
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'serialized-cache-local-id',
+        identity: { kind: 'generated', localId: 'serialized-cache-local-id' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: { name: 'confirmed', presentation: 'pending' },
@@ -1288,7 +1359,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'serialized-cache-local-id',
+        identity: { kind: 'generated', localId: 'serialized-cache-local-id' },
         operation: 'documents.create',
         payload: {},
         optimisticValue: { name: 'recreated', presentation: 'pending' },
@@ -1299,16 +1370,18 @@ describe('OfflineSyncService', () => {
       ackReadStarted();
       await ackReadGate;
     };
-    resolveDelete({ removeReplica: true, clearServerId: true, response: null });
+    resolveDelete({ removeReplica: true, clearRemoteId: true, response: null });
     await vi.waitFor(() => expect(ackReadStarted).toHaveBeenCalledOnce());
 
     const cacheProjection = service.runSerializedReplicaMutation(async (repository) => {
-      const current = await repository.getReplicaRowIncludingPendingDelete!(
-        { userId: 1, scopeId: '10' },
-        'documents',
-        'serialized-cache-local-id',
-      );
-      expect(current).toMatchObject({ serverId: null, values: { name: 'recreated', presentation: 'pending' } });
+      const current = await repository.getReplicaRowIncludingPendingDelete!({ userId: 1, scopeId: '10' }, 'documents', {
+        kind: 'generated',
+        localId: 'serialized-cache-local-id',
+      });
+      expect(current).toMatchObject({
+        identity: { kind: 'generated', remoteId: null },
+        values: { name: 'recreated', presentation: 'pending' },
+      });
       await repository.transactReplica({
         putRows: [{ ...current!, values: { name: 'recreated', presentation: null } }],
       });
@@ -1318,20 +1391,18 @@ describe('OfflineSyncService', () => {
 
     expect(rows).toEqual([
       expect.objectContaining({
-        localId: 'serialized-cache-local-id',
-        serverId: 43,
+        identity: { kind: 'generated', localId: 'serialized-cache-local-id', remoteId: 43 },
         values: { name: 'recreated', presentation: null },
       }),
     ]);
   });
 
-  it('delete ACK後のstale serverIdHintは採用せずrecreateをserverId nullから開始する', async () => {
+  it('delete ACK後のstale remoteIdHintは採用せずrecreateをremoteId nullから開始する', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'complete-first-local-id',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'complete-first-local-id', remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1340,13 +1411,13 @@ describe('OfflineSyncService', () => {
       visibility: 'present',
     });
     execute
-      .mockResolvedValueOnce({ removeReplica: true, clearServerId: true, response: null })
-      .mockResolvedValueOnce({ serverId: 43, confirmedValues: { name: 'recreated' }, response: null });
+      .mockResolvedValueOnce({ removeReplica: true, clearRemoteId: true, response: null })
+      .mockResolvedValueOnce({ remoteId: 43, confirmedValues: { name: 'recreated' }, response: null });
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'complete-first-local-id',
+        identity: { kind: 'generated', localId: 'complete-first-local-id' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: { name: 'confirmed' },
@@ -1362,8 +1433,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'complete-first-local-id',
-        serverIdHint: 42,
+        identity: { kind: 'generated', localId: 'complete-first-local-id', remoteIdHint: 42 },
         operation: 'documents.create',
         payload: {},
         optimisticValue: { name: 'recreated' },
@@ -1373,19 +1443,84 @@ describe('OfflineSyncService', () => {
     await service.flush();
 
     expect(execute.mock.calls.map((call) => call[1])).toEqual([
-      { localId: 'complete-first-local-id', serverId: 42 },
-      { localId: 'complete-first-local-id', serverId: null },
+      { kind: 'generated', localId: 'complete-first-local-id', remoteId: 42 },
+      { kind: 'generated', localId: 'complete-first-local-id', remoteId: null },
     ]);
-    expect(rows).toEqual([expect.objectContaining({ localId: 'complete-first-local-id', serverId: 43, values: { name: 'recreated' } })]);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        identity: { kind: 'generated', localId: 'complete-first-local-id', remoteId: 43 },
+        values: { name: 'recreated' },
+      }),
+    ]);
   });
 
-  it('clearServerIdはconfirmed delete以外では拒否する', async () => {
+  it('TEXT remoteIdのdelete ACK後recreateを同じlocalId・remoteId nullで送り新UUIDへ収束する', async () => {
+    options.replicaSchema = textReplicaSchema;
+    const localId = 'text-recreate-local';
+    const oldRemoteId = '018f6f6e-74ad-7cc4-b94f-4af0b13c4401';
+    const newRemoteId = '018f6f6e-74ad-7cc4-b94f-4af0b13c4402';
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'text_documents',
+      identity: { kind: 'generated', localId, remoteId: oldRemoteId },
+      values: { id: oldRemoteId, title: 'old' },
+      confirmedValues: { id: oldRemoteId, title: 'old' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'text_documents',
+        identity: { kind: 'generated', localId },
+        operation: 'text_documents.delete',
+        payload: {},
+        optimisticValue: { id: oldRemoteId, title: 'old' },
+        replicaMutation: 'delete',
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'text_documents',
+        identity: { kind: 'generated', localId },
+        operation: 'text_documents.create',
+        payload: { title: 'new' },
+        optimisticValue: { id: '', title: 'new' },
+      },
+      { flush: false },
+    );
+    execute.mockResolvedValueOnce({ removeReplica: true, clearRemoteId: true, response: null }).mockResolvedValueOnce({
+      remoteId: newRemoteId,
+      confirmedValues: { id: newRemoteId, title: 'new' },
+      response: null,
+    });
+    connected.set(true);
+
+    await service.flush();
+
+    expect(execute.mock.calls.map((call) => call[1])).toEqual([
+      { kind: 'generated', localId, remoteId: oldRemoteId },
+      { kind: 'generated', localId, remoteId: null },
+    ]);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        identity: { kind: 'generated', localId, remoteId: newRemoteId },
+        values: { id: newRemoteId, title: 'new' },
+      }),
+    ]);
+  });
+
+  it('clearRemoteIdはconfirmed delete以外では拒否する', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'invalid-clear',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'invalid-clear', remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1397,25 +1532,24 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'invalid-clear',
+        identity: { kind: 'generated', localId: 'invalid-clear' },
         operation: 'documents.update',
         payload: {},
         optimisticValue: { name: 'updated' },
       },
       { flush: false },
     );
-    execute.mockResolvedValueOnce({ clearServerId: true, response: null });
+    execute.mockResolvedValueOnce({ clearRemoteId: true, response: null });
     connected.set(true);
-    await expect(service.flush()).rejects.toThrow('Offline command can clear serverId only for a confirmed replica removal.');
+    await expect(service.flush()).rejects.toThrow('Offline command can clear remoteId only for a confirmed replica removal.');
   });
 
-  it('clearServerIdとserverRevisionの同時返却は後続commandをrebaseせず拒否する', async () => {
+  it('clearRemoteIdとserverRevisionの同時返却は後続commandをrebaseせず拒否する', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'invalid-clear-revision',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'invalid-clear-revision', remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1427,7 +1561,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'invalid-clear-revision',
+        identity: { kind: 'generated', localId: 'invalid-clear-revision' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: rows[0]!.values,
@@ -1439,7 +1573,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'invalid-clear-revision',
+        identity: { kind: 'generated', localId: 'invalid-clear-revision' },
         operation: 'documents.create',
         payload: {},
         optimisticValue: { name: 'recreated' },
@@ -1450,13 +1584,13 @@ describe('OfflineSyncService', () => {
     rebase.mockClear();
     execute.mockResolvedValueOnce({
       removeReplica: true,
-      clearServerId: true,
+      clearRemoteId: true,
       serverRevision: 5,
       response: null,
     });
     connected.set(true);
 
-    await expect(service.flush()).rejects.toThrow('Offline command cannot return serverRevision and clearServerId together.');
+    await expect(service.flush()).rejects.toThrow('Offline command cannot return serverRevision and clearRemoteId together.');
     expect(rebase).not.toHaveBeenCalled();
     expect(commands[1]).toMatchObject({ baseRevision: 4 });
   });
@@ -1466,8 +1600,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-delete-discard',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-delete-discard', remoteId: 38142 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed baseline' },
       serverRevision: 4,
@@ -1479,7 +1612,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-delete-discard',
+        identity: { kind: 'generated', localId: '019d-delete-discard' },
         operation: 'documents.delete',
         payload: { id: 38142 },
         optimisticValue: { name: 'confirmed' },
@@ -1492,7 +1625,7 @@ describe('OfflineSyncService', () => {
     await service.discard(commandId, { flush: false });
     expect(rows).toEqual([
       expect.objectContaining({
-        localId: '019d-delete-discard',
+        identity: { kind: 'generated', localId: '019d-delete-discard', remoteId: 38142 },
         values: { name: 'confirmed baseline' },
         confirmedValues: { name: 'confirmed baseline' },
         visibility: 'present',
@@ -1502,13 +1635,12 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
-  it('delete ACKはserverId/naturalKeyのidentity変更をhard failする', async () => {
+  it('delete ACKはremoteId/naturalKeyのidentity変更をhard failする', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'delete-server-id',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'delete-server-id', remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 4,
@@ -1520,7 +1652,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'delete-server-id',
+        identity: { kind: 'generated', localId: 'delete-server-id' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: { name: 'confirmed' },
@@ -1528,9 +1660,9 @@ describe('OfflineSyncService', () => {
       },
       { flush: false },
     );
-    execute.mockResolvedValueOnce({ removeReplica: true, serverId: 43, response: null });
+    execute.mockResolvedValueOnce({ removeReplica: true, remoteId: 43, response: null });
     connected.set(true);
-    await expect(service.flush()).rejects.toThrow('Offline replica serverId is immutable: current=42, incoming=43.');
+    await expect(service.flush()).rejects.toThrow('Offline replica remote id is immutable: current=42, incoming=43.');
 
     commands = [];
     rows = [
@@ -1538,8 +1670,7 @@ describe('OfflineSyncService', () => {
         userId: 1,
         scopeId: '10',
         sourceKey: 'natural_documents',
-        localId: 'delete-natural-key',
-        serverId: null,
+        identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '42' } },
         values: { favFrom: 7, favTo: '42', title: 'confirmed' },
         confirmedValues: { favFrom: 7, favTo: '42', title: 'confirmed' },
         serverRevision: 4,
@@ -1553,7 +1684,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'natural_documents',
-        aggregateLocalId: 'delete-natural-key',
+        identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '42' } },
         operation: 'natural_documents.delete',
         payload: {},
         optimisticValue: { favFrom: 7, favTo: '42', title: 'confirmed' },
@@ -1570,8 +1701,7 @@ describe('OfflineSyncService', () => {
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: 'delete-then-upsert',
-      serverId: 42,
+      identity: { kind: 'generated', localId: 'delete-then-upsert', remoteId: 42 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'old confirmed baseline' },
       serverRevision: 4,
@@ -1583,7 +1713,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'delete-then-upsert',
+        identity: { kind: 'generated', localId: 'delete-then-upsert' },
         operation: 'documents.delete',
         payload: {},
         optimisticValue: { name: 'confirmed' },
@@ -1595,7 +1725,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: 'delete-then-upsert',
+        identity: { kind: 'generated', localId: 'delete-then-upsert' },
         operation: 'documents.update',
         payload: {},
         optimisticValue: { name: 'later optimistic' },
@@ -1622,7 +1752,7 @@ describe('OfflineSyncService', () => {
           {
             scopeId: '10',
             aggregateType: 'documents',
-            aggregateLocalId: 'missing-tombstone-api',
+            identity: { kind: 'generated', localId: 'missing-tombstone-api' },
             operation: 'documents.delete',
             payload: {},
             optimisticValue: {},
@@ -1638,32 +1768,30 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([]);
   });
 
-  it.each([0, -1, 1.5])('enqueue時の不正serverId %sは永続化前にrejectする', async (serverId) => {
+  it.each([0, -1, 1.5])('enqueue時の不正remoteId %sは永続化前にrejectする', async (remoteId) => {
     await expect(
       service.enqueue(
         {
           scopeId: '10',
           aggregateType: 'documents',
-          aggregateLocalId: '019d-invalid',
-          serverId,
+          identity: { kind: 'generated', localId: '019d-invalid', remoteId },
           operation: 'documents.update',
           payload: {},
           optimisticValue: {},
         },
         { flush: false },
       ),
-    ).rejects.toThrow(/invalid serverId/);
+    ).rejects.toThrow('Offline replica generated remote id must be a positive integer.');
     expect(commands).toEqual([]);
     expect(rows).toEqual([]);
   });
 
-  it('別localIdへ既存serverIdを割り当てようとするとrejectする', async () => {
+  it('別localIdへ既存remoteIdを割り当てようとするとrejectする', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-existing',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-existing', remoteId: 38142 },
       values: {},
       confirmedValues: {},
       serverRevision: 1,
@@ -1675,25 +1803,23 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'documents',
-          aggregateLocalId: '019d-new',
-          serverId: 38142,
+          identity: { kind: 'generated', localId: '019d-new', remoteId: 38142 },
           operation: 'documents.update',
           payload: {},
           optimisticValue: {},
         },
         { flush: false },
       ),
-    ).rejects.toThrow('Offline replica serverId 38142 is already mapped to localId 019d-existing.');
+    ).rejects.toThrow('Offline replica remote id 38142 is already mapped to another row.');
     expect(commands).toEqual([]);
   });
 
-  it('同一localIdへのserverId再指定は許容する', async () => {
+  it('同一localIdへのremoteId再指定は許容する', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
       sourceKey: 'documents',
-      localId: '019d-same',
-      serverId: 38142,
+      identity: { kind: 'generated', localId: '019d-same', remoteId: 38142 },
       values: { name: 'confirmed' },
       confirmedValues: { name: 'confirmed' },
       serverRevision: 1,
@@ -1704,8 +1830,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-same',
-        serverId: 38142,
+        identity: { kind: 'generated', localId: '019d-same', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'draft' },
         optimisticValue: { name: 'draft' },
@@ -1713,7 +1838,7 @@ describe('OfflineSyncService', () => {
       },
       { flush: false },
     );
-    expect(rows[0]).toMatchObject({ localId: '019d-same', serverId: 38142, syncState: 'pending' });
+    expect(rows[0]).toMatchObject({ identity: { kind: 'generated', localId: '019d-same', remoteId: 38142 }, syncState: 'pending' });
     expect(commands).toHaveLength(1);
   });
 
@@ -1722,8 +1847,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-adopted',
-        serverId: 38142,
+        identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'adopted' },
         optimisticValue: { name: 'adopted' },
@@ -1740,8 +1864,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '019d-adopted',
-        serverId: 38142,
+        identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'adopted' },
         optimisticValue: { name: 'adopted' },
@@ -1759,7 +1882,7 @@ describe('OfflineSyncService', () => {
       {
         scopeId: '10',
         aggregateType: 'documents',
-        aggregateLocalId: '1',
+        identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
         optimisticValue: {},
@@ -1779,7 +1902,7 @@ describe('OfflineSyncService', () => {
           sourceKey: 'test_items',
           scope: 'user',
           fields: {
-            id: serverId(),
+            id: generatedId('integer'),
             title: text(),
           },
         }),
@@ -1788,7 +1911,7 @@ describe('OfflineSyncService', () => {
           sourceKey: 'test_group_items',
           scope: 'partition',
           fields: {
-            id: serverId(),
+            id: generatedId('integer'),
             name: text(),
           },
         }),
@@ -1808,9 +1931,12 @@ describe('OfflineSyncService', () => {
       return left.createdAt - right.createdAt || (left.commandId < right.commandId ? -1 : left.commandId > right.commandId ? 1 : 0);
     }
 
-    function findReplicaRow(scope: OfflineScope, sourceKey: string, localId: string): OfflineReplicaRow | undefined {
+    function findReplicaRow(scope: OfflineScope, sourceKey: string, identity: OfflineReplicaAddress): OfflineReplicaRow | undefined {
       return rows.find((item) => {
-        if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.localId !== localId) return false;
+        if (item.userId !== scope.userId || item.sourceKey !== sourceKey) return false;
+        if (identity.kind === 'natural' || item.identity.kind === 'natural' || item.identity.localId !== identity.localId) {
+          return false;
+        }
         return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
       });
     }
@@ -1850,21 +1976,33 @@ describe('OfflineSyncService', () => {
         removeCommand: vi.fn(async (commandId: string) => {
           commands = commands.filter((item) => item.commandId !== commandId);
         }),
-        getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, localId: string) => {
-          const row = findReplicaRow(scope, sourceKey, localId);
+        getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineReplicaAddress) => {
+          const row = findReplicaRow(scope, sourceKey, identity);
           return row ? projectReplicaRow(row, scope) : null;
         }),
-        getReplicaRowByServerId: vi.fn(async (scope: OfflineScope, sourceKey: string, serverId: number) => {
+        getReplicaRowByRemoteId: vi.fn(async (scope: OfflineScope, sourceKey: string, remoteId: number) => {
           const row = rows.find((item) => {
-            if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.serverId !== serverId) return false;
+            if (
+              item.userId !== scope.userId ||
+              item.sourceKey !== sourceKey ||
+              item.identity.kind !== 'generated' ||
+              item.identity.remoteId !== remoteId
+            )
+              return false;
             return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
           });
           return row ? projectReplicaRow(row, scope) : null;
         }),
         getReplicaRowByRemoteIdentity: vi.fn(async (scope: OfflineScope, sourceKey: string, identity) => {
-          if (identity.serverId === undefined) throw new Error(`Natural identity is unsupported by this test repository.`);
+          if (identity.remoteId === undefined) throw new Error(`Natural identity is unsupported by this test repository.`);
           const row = rows.find((item) => {
-            if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.serverId !== identity.serverId) return false;
+            if (
+              item.userId !== scope.userId ||
+              item.sourceKey !== sourceKey ||
+              item.identity.kind !== 'generated' ||
+              item.identity.remoteId !== identity.remoteId
+            )
+              return false;
             return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
           });
           return row ? projectReplicaRow(row, scope) : null;
@@ -1872,12 +2010,12 @@ describe('OfflineSyncService', () => {
         getReplicaCursor: vi.fn(async () => null),
         transactReplica: vi.fn(async (transaction) => {
           for (const row of transaction.putRows ?? []) {
-            const existing = findReplicaRow(row, row.sourceKey, row.localId);
+            const existing = findReplicaRow(row, row.sourceKey, row.identity);
             rows = rows.filter(
               (item) =>
                 item.userId !== row.userId ||
                 item.sourceKey !== row.sourceKey ||
-                item.localId !== row.localId ||
+                canonicalOfflineReplicaIdentity(item.identity) !== canonicalOfflineReplicaIdentity(row.identity) ||
                 (!userScopedSourceKeys.has(row.sourceKey) && item.scopeId !== row.scopeId),
             );
             rows.push(structuredClone(existing ? { ...existing, ...row } : row));
@@ -1887,7 +2025,7 @@ describe('OfflineSyncService', () => {
               (item) =>
                 item.userId !== key.userId ||
                 item.sourceKey !== key.sourceKey ||
-                item.localId !== key.localId ||
+                canonicalOfflineReplicaIdentity(item.identity) !== canonicalOfflineReplicaIdentity(key.identity) ||
                 (!userScopedSourceKeys.has(key.sourceKey) && item.scopeId !== key.scopeId),
             );
           }
@@ -1928,8 +2066,7 @@ describe('OfflineSyncService', () => {
         userId: 1,
         scopeId: '10',
         sourceKey: 'test_items',
-        localId: '019d-user-item',
-        serverId: 42,
+        identity: { kind: 'generated', localId: '019d-user-item', remoteId: 42 },
         values: { id: 42, title: 'Baseline' },
         confirmedValues: { id: 42, title: 'Baseline' },
         serverRevision: 1,
@@ -1948,7 +2085,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-user-item',
+          identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G10 edit' },
           optimisticValue: { id: 42, title: 'G10 edit' },
@@ -1960,7 +2097,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '11',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-user-item',
+          identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G11 edit' },
           optimisticValue: { id: 42, title: 'G11 edit' },
@@ -1978,7 +2115,12 @@ describe('OfflineSyncService', () => {
         baseRevision: 2,
         optimisticValue: { id: 42, title: 'G11 edit' },
       });
-      expect(findReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-user-item')).toMatchObject({
+      expect(
+        findReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', {
+          kind: 'generated',
+          localId: '019d-user-item',
+        }),
+      ).toMatchObject({
         values: { title: 'G11 edit' },
         confirmedValues: { title: 'G10 edit' },
         serverRevision: 2,
@@ -1998,7 +2140,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-user-item',
+          identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G10 edit' },
           optimisticValue: { id: 42, title: 'G10 edit' },
@@ -2010,7 +2152,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '11',
           aggregateType: 'test_items',
-          aggregateLocalId: '019d-user-item',
+          identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G11 edit' },
           optimisticValue: { id: 42, title: 'G11 edit' },
@@ -2021,7 +2163,12 @@ describe('OfflineSyncService', () => {
       await service.discard(firstId, { flush: false });
       expect(commands).toHaveLength(1);
       expect(commands[0]).toMatchObject({ scopeId: '11', optimisticValue: { id: 42, title: 'G11 edit' } });
-      expect(findReplicaRow({ userId: 1, scopeId: '11' }, 'test_items', '019d-user-item')).toMatchObject({
+      expect(
+        findReplicaRow({ userId: 1, scopeId: '11' }, 'test_items', {
+          kind: 'generated',
+          localId: '019d-user-item',
+        }),
+      ).toMatchObject({
         values: { title: 'G11 edit' },
         confirmedValues: { title: 'Baseline' },
         syncState: 'pending',
@@ -2036,8 +2183,7 @@ describe('OfflineSyncService', () => {
         userId: 1,
         scopeId: '11',
         sourceKey: 'test_group_items',
-        localId: '019d-group-same',
-        serverId: 55,
+        identity: { kind: 'generated', localId: '019d-group-same', remoteId: 55 },
         values: { id: 55, name: 'G11 baseline' },
         confirmedValues: { id: 55, name: 'G11 baseline' },
         serverRevision: 1,
@@ -2048,8 +2194,7 @@ describe('OfflineSyncService', () => {
         userId: 1,
         scopeId: '10',
         sourceKey: 'test_group_items',
-        localId: '019d-group-same',
-        serverId: 56,
+        identity: { kind: 'generated', localId: '019d-group-same', remoteId: 56 },
         values: { id: 56, name: 'G10 baseline' },
         confirmedValues: { id: 56, name: 'G10 baseline' },
         serverRevision: 1,
@@ -2060,7 +2205,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '10',
           aggregateType: 'test_group_items',
-          aggregateLocalId: '019d-group-same',
+          identity: { kind: 'generated', localId: '019d-group-same' },
           operation: 'test_group_items.update',
           payload: { name: 'G10 name' },
           optimisticValue: { id: 56, name: 'G10 name' },
@@ -2072,7 +2217,7 @@ describe('OfflineSyncService', () => {
         {
           scopeId: '11',
           aggregateType: 'test_group_items',
-          aggregateLocalId: '019d-group-same',
+          identity: { kind: 'generated', localId: '019d-group-same' },
           operation: 'test_group_items.update',
           payload: { name: 'G11 name' },
           optimisticValue: { id: 55, name: 'G11 name' },

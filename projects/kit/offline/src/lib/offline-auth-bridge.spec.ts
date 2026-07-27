@@ -303,11 +303,11 @@ describe('createOfflineAuthBridge', () => {
 
   it('不正なremote identityをsessionへ永続化する前に拒否する', async () => {
     const { bridge, offline } = setupBridge({
-      exchangeImpl: async () => ({ ...identity, userId: 0 }),
+      exchangeImpl: async () => ({ ...identity, userId: Number.NaN }),
     });
     const { lease } = createLease();
 
-    await expect(bridge.onAuthorized!(stateStub, lease)).rejects.toThrow('Offline remote identity userId must be a positive safe integer.');
+    await expect(bridge.onAuthorized!(stateStub, lease)).rejects.toThrow('Offline principal id number must be a finite safe integer.');
     expect(offline.prepareRemoteSession).not.toHaveBeenCalled();
   });
 });

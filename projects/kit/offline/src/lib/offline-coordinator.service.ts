@@ -1,4 +1,5 @@
 import { inject, Injectable } from '@angular/core';
+import type { OfflinePrincipalId } from './offline-identity';
 import { OfflineNetworkService } from './offline-network.service';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 import { OfflineSessionService } from './offline-session.service';
@@ -29,14 +30,14 @@ export class OfflineCoordinatorService {
     await this.#sync.initialize();
   }
 
-  async activateSession(userId: number, scopeIds: readonly string[], authSubject: string | null): Promise<void> {
+  async activateSession(userId: OfflinePrincipalId, scopeIds: readonly string[], authSubject: string | null): Promise<void> {
     if (!(await this.prepareRemoteSession(userId, scopeIds, authSubject))) return;
     await this.resumeRemoteSession();
   }
 
   /** Installs a remotely verified identity without starting pull or outbox replay. */
   prepareRemoteSession(
-    userId: number,
+    userId: OfflinePrincipalId,
     scopeIds: readonly string[],
     authSubject: string | null,
     authLease?: OfflineSessionTransitionLease,

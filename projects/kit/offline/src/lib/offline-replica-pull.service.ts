@@ -1,8 +1,14 @@
 import { inject, Injectable } from '@angular/core';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
-import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OFFLINE_REPLICA_PULLER, type OfflineReplicaChange, type OfflineReplicaPullPage } from './offline-replica-puller';
+import {
+  canonicalOfflineCommandIdentity,
+  commandIdentityFromReplicaIdentity,
+  commandIdentityMatchesReplicaRow,
+  offlineGeneratedReplicaIdentity,
+  offlineNaturalReplicaIdentity,
+} from './offline-identity';
 import {
   canonicalOfflineRemoteIdentity,
   normalizeOfflineNaturalKey,
@@ -33,7 +39,6 @@ export class OfflineReplicaPullService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   readonly #puller = inject(OFFLINE_REPLICA_PULLER);
-  readonly #hooks = inject(OFFLINE_COMMAND_HOOKS);
   readonly #executor = inject(OFFLINE_COMMAND_EXECUTOR);
   #schemaHash: Promise<string> | null = null;
 
@@ -69,49 +74,46 @@ export class OfflineReplicaPullService {
           .map((commandId) => {
             const command = commands.find((candidate) => candidate.commandId === commandId);
             if (!command) return null;
-            if (this.#hooks.entityType(command) !== change.sourceKey) {
+            if (command.sourceKey !== change.sourceKey) {
               throw new Error(`Acknowledged command "${commandId}" does not target "${change.sourceKey}".`);
             }
             return command;
           })
           .filter((command): command is OfflineCommand => command !== null);
-        const acknowledgedLocalIds = new Set(acknowledged.map((command) => command.aggregateLocalId));
-        if (acknowledgedLocalIds.size > 1) {
-          throw new Error(`Acknowledged commands for "${change.sourceKey}" target multiple local rows.`);
+        const acknowledgedIdentities = new Set(acknowledged.map((command) => canonicalOfflineCommandIdentity(command.identity)));
+        if (acknowledgedIdentities.size > 1) {
+          throw new Error(`Acknowledged commands for "${change.sourceKey}" target multiple replica identities.`);
         }
         const acknowledgedCommand = acknowledged[0];
         const acknowledgedScope = acknowledgedCommand
           ? { userId: acknowledgedCommand.userId, scopeId: acknowledgedCommand.scopeId }
           : scope;
         const acknowledgedRow = acknowledgedCommand
-          ? await (
-              this.#repository.getReplicaRowIncludingPendingDelete?.(
-                acknowledgedScope,
-                change.sourceKey,
-                acknowledgedCommand.aggregateLocalId,
-              ) ??
-              this.#repository.getReplicaRow(
-                acknowledgedScope,
-                change.sourceKey,
-                acknowledgedCommand.aggregateLocalId,
-              )
-            )
+          ? await (this.#repository.getReplicaRowIncludingPendingDelete?.(
+              acknowledgedScope,
+              change.sourceKey,
+              acknowledgedCommand.identity,
+            ) ?? this.#repository.getReplicaRow(acknowledgedScope, change.sourceKey, acknowledgedCommand.identity))
           : null;
         if (acknowledgedCommand && !acknowledgedRow) {
           throw new Error(`Acknowledged command "${acknowledgedCommand.commandId}" has no local replica row.`);
         }
         const identity = this.#identity(change);
         const serverRow = await this.#repository.getReplicaRowByRemoteIdentity(scope, change.sourceKey, identity);
-        if (acknowledgedRow && serverRow && acknowledgedRow.localId !== serverRow.localId) {
-          if (identity.serverId !== undefined) {
-            throw new Error(`Server id ${identity.serverId} is already mapped to another local replica row.`);
+        if (
+          acknowledgedRow &&
+          serverRow &&
+          !commandIdentityMatchesReplicaRow(schema, acknowledgedRow, commandIdentityFromReplicaIdentity(serverRow.identity))
+        ) {
+          if (identity.remoteId !== undefined) {
+            throw new Error(`Server id ${String(identity.remoteId)} is already mapped to another local replica row.`);
           }
           throw new Error(`Remote identity for "${change.sourceKey}" is already mapped to another local replica row.`);
         }
         const existing = acknowledgedRow ?? serverRow;
         const related = existing
           ? commands.filter(
-              (command) => this.#hooks.entityType(command) === change.sourceKey && command.aggregateLocalId === existing.localId,
+              (command) => command.sourceKey === change.sourceKey && commandIdentityMatchesReplicaRow(schema, existing, command.identity),
             )
           : [];
         const hasPending = related.length > 0;
@@ -125,7 +127,7 @@ export class OfflineReplicaPullService {
         if (change.deleted) {
           if (!existing) continue;
           if (!hasPending) {
-            removeRows.push(existing);
+            removeRows.push({ ...existing, identity: existing.identity });
             continue;
           }
           putRows.push({
@@ -146,8 +148,10 @@ export class OfflineReplicaPullService {
           putRows.push({
             ...scope,
             sourceKey: change.sourceKey,
-            localId: crypto.randomUUID(),
-            serverId: identity.serverId ?? null,
+            identity:
+              schema.identity.kind === 'naturalKey'
+                ? offlineNaturalReplicaIdentity(schema, confirmedValues)
+                : offlineGeneratedReplicaIdentity(crypto.randomUUID(), identity.remoteId ?? null),
             values: confirmedValues,
             confirmedValues,
             serverRevision: change.serverRevision,
@@ -217,13 +221,15 @@ export class OfflineReplicaPullService {
       throw new Error(`${label}.deleted must be a boolean.`);
     }
     const schema = this.#entitySchema(change['sourceKey']);
-    if (schema.identity.kind === 'serverId') {
-      const serverId = change['serverId'];
-      if (typeof serverId !== 'number' || !Number.isSafeInteger(serverId) || serverId <= 0) {
-        throw new Error(`${label}.serverId must be a positive integer.`);
+    if (schema.identity.kind === 'generated') {
+      const remoteId = change['remoteId'];
+      const validInteger = typeof remoteId === 'number' && Number.isSafeInteger(remoteId) && remoteId > 0;
+      const validText = typeof remoteId === 'string' && remoteId.length > 0;
+      if (schema.identity.affinity === 'INTEGER' ? !validInteger : !validText) {
+        throw new Error(`${label}.remoteId must be a valid generated remote id.`);
       }
       if (change['naturalKey'] !== undefined) {
-        throw new Error(`${label}.naturalKey must be omitted for a serverId entity.`);
+        throw new Error(`${label}.naturalKey must be omitted for a generated entity.`);
       }
     }
     try {
@@ -267,9 +273,9 @@ export class OfflineReplicaPullService {
   #validatedValues(schema: OfflineReplicaEntitySchema<Record<string, unknown>>, change: OfflineReplicaChange): unknown {
     if (change.values === null) {
       throw new Error(
-        change.serverId === undefined
+        change.remoteId === undefined
           ? `Offline replica change "${change.sourceKey}" is missing values.`
-          : `Offline replica change "${change.sourceKey}"/${change.serverId} is missing values.`,
+          : `Offline replica change "${change.sourceKey}"/${String(change.remoteId)} is missing values.`,
       );
     }
     const values = projectOfflineReplicaValues(schema, change.values);
@@ -363,7 +369,7 @@ export class OfflineReplicaPullService {
           });
         }
       } else {
-        removeRows.push(row);
+        removeRows.push({ ...row, identity: row.identity });
       }
       return;
     }
@@ -373,7 +379,7 @@ export class OfflineReplicaPullService {
     this.#assertIdentityAssignment(schema, row, this.#identity(change));
     putRows.push({
       ...row,
-      serverId: change.serverId ?? null,
+      identity: row.identity.kind === 'generated' ? { ...row.identity, remoteId: change.remoteId ?? row.identity.remoteId } : row.identity,
       values: following.length > 0 ? following.at(-1)!.optimisticValue : confirmedValues,
       confirmedValues,
       serverRevision: change.serverRevision,
@@ -384,7 +390,7 @@ export class OfflineReplicaPullService {
   }
 
   #identity(change: OfflineReplicaChange): OfflineReplicaRemoteIdentity {
-    return change.serverId !== undefined ? { serverId: change.serverId } : { naturalKey: change.naturalKey! };
+    return change.remoteId !== undefined ? { remoteId: change.remoteId } : { naturalKey: change.naturalKey! };
   }
 
   #assertIdentityAssignment(
@@ -392,14 +398,17 @@ export class OfflineReplicaPullService {
     row: OfflineReplicaRow,
     incoming: OfflineReplicaRemoteIdentity,
   ): void {
-    if (schema.identity.kind === 'serverId') {
-      const serverId = incoming.serverId!;
-      if (row.serverId !== null && row.serverId !== serverId) {
-        throw new Error(`Replica serverId is immutable: current=${row.serverId}, incoming=${serverId}.`);
+    if (schema.identity.kind === 'generated') {
+      const remoteId = incoming.remoteId!;
+      if (row.identity.kind !== 'generated') {
+        throw new Error(`Replica generated identity is required for "${schema.sourceKey}".`);
+      }
+      if (row.identity.remoteId !== null && row.identity.remoteId !== remoteId) {
+        throw new Error(`Replica remote id is immutable: current=${String(row.identity.remoteId)}, incoming=${String(remoteId)}.`);
       }
       return;
     }
-    const current = offlineNaturalKeyFromValues(schema, row.values);
+    const current = row.identity.kind === 'natural' ? row.identity.naturalKey : offlineNaturalKeyFromValues(schema, row.values);
     if (
       current !== null &&
       canonicalOfflineRemoteIdentity(schema, { naturalKey: current }) !== canonicalOfflineRemoteIdentity(schema, incoming)
