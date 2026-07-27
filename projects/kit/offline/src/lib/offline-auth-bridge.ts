@@ -1,4 +1,5 @@
 import { inject } from '@angular/core';
+import { canonicalOfflinePrincipalId, type OfflinePrincipalId } from './offline-identity';
 import { toObservable } from '@angular/core/rxjs-interop';
 import type { RouterStateSnapshot } from '@angular/router';
 import type { KitAuthAccessLease, KitAuthConfig, KitRemoteAccessRecovery } from '@rdlabo/ionic-angular-kit';
@@ -8,7 +9,7 @@ import { OfflineCoordinatorService } from './offline-coordinator.service';
 
 /** Remote identity fields required to activate an offline session boundary. */
 export interface OfflineRemoteIdentity {
-  readonly userId: number;
+  readonly userId: OfflinePrincipalId;
   readonly scopeIds: readonly string[];
   readonly authSubject: string;
 }
@@ -157,9 +158,7 @@ export function createOfflineAuthBridge<TIdentity extends OfflineRemoteIdentity>
 }
 
 function assertOfflineRemoteIdentity(identity: OfflineRemoteIdentity): void {
-  if (!Number.isSafeInteger(identity.userId) || identity.userId <= 0) {
-    throw new Error('Offline remote identity userId must be a positive safe integer.');
-  }
+  canonicalOfflinePrincipalId(identity.userId);
   if (!Array.isArray(identity.scopeIds) || identity.scopeIds.some((scopeId) => typeof scopeId !== 'string' || scopeId.length === 0)) {
     throw new Error('Offline remote identity scopeIds must contain only non-empty strings.');
   }

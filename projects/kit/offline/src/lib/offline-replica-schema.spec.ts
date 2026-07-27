@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/consistent-type-definitions */
 import { describe, expect, it } from 'vitest';
+import { canonicalOfflinePrincipalId, parseOfflinePrincipalId } from './offline-identity';
 import {
   booleanColumn,
   canonicalOfflineRemoteIdentity,
@@ -11,11 +12,12 @@ import {
   ignored,
   integer,
   json,
+  localOnly,
   naturalKey,
   nullable,
   projectOfflineReplicaValues,
   real,
-  serverId,
+  generatedId,
   sha256OfflineReplicaSchema,
   text,
   type OfflineReplicaNaturalKeyDef,
@@ -37,7 +39,7 @@ const sampleSchema = defineReplicaEntity<SampleSelect>()({
   sourceKey: 'sample_items',
   scope: 'partition',
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     title: text(),
     notes: nullable(text()),
     amount: real(),
@@ -65,7 +67,7 @@ describe('offline-replica-schema runtime', () => {
     ]);
     expect(sampleSchema.fields.find((field) => field.sourceKey === 'id')).toEqual({
       sourceKey: 'id',
-      policy: 'serverId',
+      policy: 'remoteId',
       sqliteColumnName: 'server_id',
       affinity: 'INTEGER',
       storageKind: null,
@@ -108,13 +110,14 @@ describe('offline-replica-schema runtime', () => {
   it('generates deterministic CREATE TABLE SQL and scoped server_id index', () => {
     expect(sampleSchema.createTableSql).toEqual([
       `CREATE TABLE IF NOT EXISTS sample_items (
-  local_id TEXT NOT NULL,
-  _offline_user_id INTEGER NOT NULL,
+  _offline_user_id TEXT NOT NULL,
   _offline_scope_id TEXT NOT NULL,
+  local_id TEXT NOT NULL,
   server_id INTEGER,
   _offline_confirmed_json TEXT,
   _offline_server_revision_json TEXT,
   _offline_sync_state TEXT NOT NULL,
+  _offline_visibility TEXT NOT NULL DEFAULT 'present',
   _offline_fetched_at INTEGER NOT NULL,
   active INTEGER NOT NULL,
   amount REAL NOT NULL,
@@ -122,7 +125,7 @@ describe('offline-replica-schema runtime', () => {
   payload TEXT NOT NULL,
   title TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  PRIMARY KEY (local_id)
+  PRIMARY KEY (_offline_user_id, _offline_scope_id, local_id)
 )`,
       'CREATE UNIQUE INDEX IF NOT EXISTS uq_sample_items_server_id ON sample_items (_offline_user_id, _offline_scope_id, server_id) WHERE server_id IS NOT NULL',
     ]);
@@ -135,22 +138,23 @@ describe('offline-replica-schema runtime', () => {
       sourceKey: 'user_notes',
       scope: 'user',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
       },
     });
 
     expect(userScopedSchema.createTableSql).toEqual([
       `CREATE TABLE IF NOT EXISTS user_notes (
+  _offline_user_id TEXT NOT NULL,
   local_id TEXT NOT NULL,
-  _offline_user_id INTEGER NOT NULL,
   server_id INTEGER,
   _offline_confirmed_json TEXT,
   _offline_server_revision_json TEXT,
   _offline_sync_state TEXT NOT NULL,
+  _offline_visibility TEXT NOT NULL DEFAULT 'present',
   _offline_fetched_at INTEGER NOT NULL,
   title TEXT NOT NULL,
-  PRIMARY KEY (local_id)
+  PRIMARY KEY (_offline_user_id, local_id)
 )`,
       'CREATE UNIQUE INDEX IF NOT EXISTS uq_user_notes_server_id ON user_notes (_offline_user_id, server_id) WHERE server_id IS NOT NULL',
     ]);
@@ -158,18 +162,30 @@ describe('offline-replica-schema runtime', () => {
 
   it('exposes a deterministic schema fingerprint input', () => {
     expect(sampleSchema.schemaFingerprintInput).toBe(
-      'table=sample_items|source=sample_items|scope=partition|hasServerId=1|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:serverId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
+      'table=sample_items|source=sample_items|scope=partition|identity=generated:id:INTEGER|identityCodec=v2|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:remoteId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
     );
   });
 
-  it('hidden tombstone storage is a core migration and intentionally does not alter product DDL or schema fingerprint', async () => {
-    expect(sampleSchema.createTableSql[0]).not.toContain('_offline_visibility');
+  it('hidden tombstone storage is part of the initial product DDL and schema fingerprint', async () => {
+    expect(sampleSchema.createTableSql[0]).toContain('_offline_visibility');
     expect(sampleSchema.schemaFingerprintInput).toBe(
-      'table=sample_items|source=sample_items|scope=partition|hasServerId=1|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:serverId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
+      'table=sample_items|source=sample_items|scope=partition|identity=generated:id:INTEGER|identityCodec=v2|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:remoteId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
     );
-    expect(await sha256OfflineReplicaSchema(defineOfflineReplicaSchema({ version: 2, entities: [sampleSchema, userNotesSchema], migrations: [
-      { fromVersion: 1, statements: ['ALTER TABLE sample_items ADD COLUMN legacy_flag INTEGER NOT NULL DEFAULT 0'], migrateWebRow: (row) => row },
-    ] }))).toBe('7da9ce9faa5b749cc66827c70e11eb68d9c2ba660304468086fb6ba401dc672e');
+    expect(
+      await sha256OfflineReplicaSchema(
+        defineOfflineReplicaSchema({
+          version: 2,
+          entities: [sampleSchema, userNotesSchema],
+          migrations: [
+            {
+              fromVersion: 1,
+              statements: ['ALTER TABLE sample_items ADD COLUMN legacy_flag INTEGER NOT NULL DEFAULT 0'],
+              migrateWebRow: (row) => row,
+            },
+          ],
+        }),
+      ),
+    ).toBe('ccf882c366b942ba6e0811db50e11fa0fa81b25073fbbdfc932412f225adb617');
   });
 
   it('rejects invalid table and reserved column identifiers', () => {
@@ -179,7 +195,7 @@ describe('offline-replica-schema runtime', () => {
         table: 'Bad-Table',
         sourceKey: 'items',
         scope: 'user',
-        fields: { id: serverId(), title: text() },
+        fields: { id: generatedId('integer'), title: text() },
       }),
     ).toThrow('Replica table "Bad-Table" must match ^[a-z][a-z0-9_]*$.');
 
@@ -189,7 +205,7 @@ describe('offline-replica-schema runtime', () => {
         sourceKey: 'items',
         scope: 'user',
         fields: {
-          id: serverId(),
+          id: generatedId('integer'),
           title: { kind: 'column', affinity: 'TEXT', storageKind: 'text', columnName: 'local_id', nullable: false },
         },
       }),
@@ -203,32 +219,34 @@ describe('offline-replica-schema runtime', () => {
         table: 'items',
         sourceKey: 'items',
         scope: 'user',
-        fields: { id: serverId(), flag: ignored('   ') },
+        fields: { id: generatedId('integer'), flag: ignored('   ') },
       }),
     ).toThrow('Replica ignored field "flag" requires a reason.');
   });
 
-  it('rejects more than one serverId field', () => {
+  it('rejects more than one remoteId field', () => {
     type Select = { id: number; altId: number };
     expect(() =>
       defineReplicaEntity<Select>()({
         table: 'items',
         sourceKey: 'items',
         scope: 'user',
-        fields: { id: serverId(), altId: serverId() },
+        fields: { id: generatedId('integer'), altId: generatedId('integer') },
       }),
-    ).toThrow('Replica entity must define at most one serverId field.');
+    ).toThrow('Replica entity must define at most one remoteId field.');
   });
 
-  it('supports a local-only projection without a serverId field', () => {
+  it('supports a local-only projection without a remoteId field', () => {
     type Select = { title: string };
     const schema = defineReplicaEntity<Select>()({
       table: 'items',
       sourceKey: 'items',
       scope: 'user',
+      identity: localOnly(),
       fields: { title: text() },
     });
 
+    expect(schema.identity).toEqual({ kind: 'localOnly', sourceKeys: [] });
     expect(schema.fields).toEqual([
       expect.objectContaining({
         sourceKey: 'title',
@@ -236,11 +254,25 @@ describe('offline-replica-schema runtime', () => {
         sqliteColumnName: 'title',
       }),
     ]);
-    expect(schema.createTableSql[0]).not.toContain('server_id');
-    expect(schema.schemaFingerprintInput).toContain('hasServerId=0');
+    expect(schema.createTableSql).toEqual([
+      `CREATE TABLE IF NOT EXISTS items (
+  _offline_user_id TEXT NOT NULL,
+  local_id TEXT NOT NULL,
+  _offline_confirmed_json TEXT,
+  _offline_server_revision_json TEXT,
+  _offline_sync_state TEXT NOT NULL,
+  _offline_visibility TEXT NOT NULL DEFAULT 'present',
+  _offline_fetched_at INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  PRIMARY KEY (_offline_user_id, local_id)
+)`,
+    ]);
+    expect(schema.schemaFingerprintInput).toBe(
+      'table=items|source=items|scope=user|identity=localOnly|identityCodec=v2|fields=title:column:title:TEXT:text:required',
+    );
   });
 
-  it('materializes ordered naturalKey identity with a scope-unique physical-column index', () => {
+  it('materializes ordered naturalKey identity with a scoped composite primary key', () => {
     type Select = { favFrom: number; favTo: string; label: string };
     const schema = defineReplicaEntity<Select>()({
       table: 'favorites',
@@ -251,12 +283,24 @@ describe('offline-replica-schema runtime', () => {
     });
 
     expect(schema.identity).toEqual({ kind: 'naturalKey', sourceKeys: ['favFrom', 'favTo'] });
-    expect(schema.createTableSql[0]).not.toContain('server_id');
-    expect(schema.createTableSql[1]).toBe(
-      'CREATE UNIQUE INDEX IF NOT EXISTS uq_favorites_natural_key ON favorites (_offline_user_id, _offline_scope_id, fav_from, fav_to)',
+    expect(schema.createTableSql).toEqual([
+      `CREATE TABLE IF NOT EXISTS favorites (
+  _offline_user_id TEXT NOT NULL,
+  _offline_scope_id TEXT NOT NULL,
+  _offline_confirmed_json TEXT,
+  _offline_server_revision_json TEXT,
+  _offline_sync_state TEXT NOT NULL,
+  _offline_visibility TEXT NOT NULL DEFAULT 'present',
+  _offline_fetched_at INTEGER NOT NULL,
+  fav_from INTEGER NOT NULL,
+  fav_to TEXT NOT NULL,
+  label TEXT NOT NULL,
+  PRIMARY KEY (_offline_user_id, _offline_scope_id, fav_from, fav_to)
+)`,
+    ]);
+    expect(schema.schemaFingerprintInput).toBe(
+      'table=favorites|source=favorites|scope=partition|identity=naturalKey:favFrom,favTo|identityCodec=v2|fields=favFrom:column:fav_from:INTEGER:integer:required;favTo:column:fav_to:TEXT:text:required;label:column:label:TEXT:text:required',
     );
-    expect(schema.schemaFingerprintInput).toContain('identity=naturalKey:favFrom,favTo');
-    expect(schema.schemaFingerprintInput).toContain('identityCodec=v1');
     expect(canonicalOfflineRemoteIdentity(schema, { naturalKey: { favTo: '42', favFrom: 7 } })).toBe(
       'naturalKey:[["favFrom","n",7],["favTo","s","42"]]',
     );
@@ -293,9 +337,55 @@ describe('offline-replica-schema runtime', () => {
         sourceKey: 'mixed_identity',
         scope: 'user',
         identity: naturalKey(['code']),
-        fields: { id: serverId(), code: text() },
+        fields: { id: generatedId('integer'), code: text() },
       }),
-    ).toThrow('cannot define both serverId and naturalKey identity');
+    ).toThrow('cannot combine a generated id field with another identity');
+  });
+
+  it('materializes generated TEXT remoteId with server_id TEXT and remoteId:s canonical identity', () => {
+    type Select = { id: string; title: string };
+    const schema = defineReplicaEntity<Select>()({
+      table: 'text_id_items',
+      sourceKey: 'text_id_items',
+      scope: 'user',
+      fields: { id: generatedId('text'), title: text() },
+    });
+
+    expect(schema.fields.find((field) => field.sourceKey === 'id')).toMatchObject({
+      policy: 'remoteId',
+      sqliteColumnName: 'server_id',
+      affinity: 'TEXT',
+    });
+    expect(schema.createTableSql).toEqual([
+      `CREATE TABLE IF NOT EXISTS text_id_items (
+  _offline_user_id TEXT NOT NULL,
+  local_id TEXT NOT NULL,
+  server_id TEXT,
+  _offline_confirmed_json TEXT,
+  _offline_server_revision_json TEXT,
+  _offline_sync_state TEXT NOT NULL,
+  _offline_visibility TEXT NOT NULL DEFAULT 'present',
+  _offline_fetched_at INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  PRIMARY KEY (_offline_user_id, local_id)
+)`,
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_text_id_items_server_id ON text_id_items (_offline_user_id, server_id) WHERE server_id IS NOT NULL',
+    ]);
+    expect(schema.schemaFingerprintInput).toBe(
+      'table=text_id_items|source=text_id_items|scope=user|identity=generated:id:TEXT|identityCodec=v2|fields=id:remoteId:server_id:TEXT:nullable;title:column:title:TEXT:text:required',
+    );
+    expect(canonicalOfflineRemoteIdentity(schema, { remoteId: 'abc-uuid' })).toBe('remoteId:s:abc-uuid');
+  });
+
+  it('distinguishes numeric 7 from text "7" in canonical principal ids', () => {
+    const fromNumber = canonicalOfflinePrincipalId(7);
+    const fromString = canonicalOfflinePrincipalId('7');
+
+    expect(fromNumber).not.toBe(fromString);
+    expect(fromNumber).toBe('n:7');
+    expect(fromString).toBe('s:"7"');
+    expect(parseOfflinePrincipalId(fromNumber)).toBe(7);
+    expect(parseOfflinePrincipalId(fromString)).toBe('7');
   });
 });
 
@@ -311,7 +401,7 @@ const sampleRowValues = {
 };
 
 describe('encodeOfflineReplicaValues', () => {
-  it('encodes column fields in deterministic descriptor order and ignores serverId/ignored source keys', () => {
+  it('encodes column fields in deterministic descriptor order and ignores remoteId/ignored source keys', () => {
     const encoded = encodeOfflineReplicaValues(sampleSchema, sampleRowValues);
 
     expect(Object.keys(encoded)).toEqual(['active', 'amount', 'notes', 'payload', 'title', 'updated_at']);
@@ -403,7 +493,7 @@ const sampleColumnValues = {
 };
 
 describe('decodeOfflineReplicaValues', () => {
-  it('decodes column fields keyed by source property names and ignores serverId/ignored columns', () => {
+  it('decodes column fields keyed by source property names and ignores remoteId/ignored columns', () => {
     const encoded = encodeOfflineReplicaValues(sampleSchema, sampleRowValues);
     const decoded = decodeOfflineReplicaValues(sampleSchema, {
       ...encoded,
@@ -493,7 +583,7 @@ describe('encodeOfflineReplicaValues round-trip', () => {
 });
 
 describe('projectOfflineReplicaValues', () => {
-  it('projects column fields and omits serverId and ignored source keys', () => {
+  it('projects column fields and omits remoteId and ignored source keys', () => {
     expect(projectOfflineReplicaValues(sampleSchema, sampleRowValues)).toEqual(sampleColumnValues);
     expect(Object.keys(projectOfflineReplicaValues(sampleSchema, sampleRowValues))).not.toContain('id');
     expect(Object.keys(projectOfflineReplicaValues(sampleSchema, sampleRowValues))).not.toContain('transientFlag');
@@ -522,7 +612,7 @@ const userNotesSchema = defineReplicaEntity<UserNotesSelect>()({
   sourceKey: 'user_notes',
   scope: 'user',
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     title: text(),
   },
 });
@@ -571,7 +661,7 @@ describe('offline-replica-schema bundle runtime', () => {
   it('computes a stable 64-character lowercase sha256 digest', async () => {
     const digest = await sha256OfflineReplicaSchema(schemaBundle);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(digest).toBe('7da9ce9faa5b749cc66827c70e11eb68d9c2ba660304468086fb6ba401dc672e');
+    expect(digest).toBe('ccf882c366b942ba6e0811db50e11fa0fa81b25073fbbdfc932412f225adb617');
   });
 
   it('changes the bundle fingerprint when storageKind changes from integer to booleanColumn while affinity stays INTEGER', async () => {
@@ -583,7 +673,7 @@ describe('offline-replica-schema bundle runtime', () => {
       sourceKey: 'flag_items',
       scope: 'user',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         flag: integer(),
       },
     });
@@ -592,7 +682,7 @@ describe('offline-replica-schema bundle runtime', () => {
       sourceKey: 'flag_items',
       scope: 'user',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         flag: booleanColumn(),
       },
     });
@@ -663,7 +753,7 @@ describe('offline-replica-schema bundle runtime', () => {
       sourceKey: 'sample_items',
       scope: 'user',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
       },
     });
@@ -739,7 +829,7 @@ describe('offline-replica-schema types', () => {
       sourceKey: 'compile_items',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
         notes: nullable(text()),
       },
@@ -751,7 +841,7 @@ describe('offline-replica-schema types', () => {
       scope: 'partition',
       // @ts-expect-error — `notes` is missing from the field map.
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
       },
     });
@@ -762,7 +852,7 @@ describe('offline-replica-schema types', () => {
       scope: 'partition',
       // @ts-expect-error — `extra` is not part of the select shape.
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
         notes: nullable(text()),
         extra: text(),
@@ -776,7 +866,7 @@ describe('offline-replica-schema types', () => {
       sourceKey: 'compile_items',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
         // @ts-expect-error — nullable select properties require nullable(...).
         notes: text(),
@@ -788,7 +878,7 @@ describe('offline-replica-schema types', () => {
       sourceKey: 'compile_items',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         // @ts-expect-error — non-null select properties reject nullable(...).
         title: nullable(text()),
         notes: nullable(text()),
@@ -800,22 +890,22 @@ describe('offline-replica-schema types', () => {
       sourceKey: 'compile_items',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         title: text(),
         notes: nullable(text()),
       },
     });
   });
 
-  it('type: serverId() applies only to numeric source properties', () => {
+  it('type: generatedId() applies only to numeric source properties', () => {
     type StringIdSelect = { id: string; title: string };
     defineReplicaEntity<StringIdSelect>()({
       table: 'items',
       sourceKey: 'items',
       scope: 'user',
       fields: {
-        // @ts-expect-error — serverId() cannot map a string property.
-        id: serverId(),
+        // @ts-expect-error — generatedId() cannot map a string property.
+        id: generatedId('integer'),
         title: text(),
       },
     });
@@ -833,7 +923,7 @@ describe('offline-replica-schema types', () => {
       sourceKey: 'literal_items',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         kind: integer(),
         role: text(),
       },
@@ -852,7 +942,7 @@ describe('offline-replica-schema types', () => {
       sourceKey: 'literal_mismatch_items',
       scope: 'partition',
       fields: {
-        id: serverId(),
+        id: generatedId('integer'),
         // @ts-expect-error — numeric literal unions require integer().
         kind: text(),
         // @ts-expect-error — string literal unions require text().

@@ -3,7 +3,7 @@ import {
   defineReplicaEntity,
   integer,
   nullable,
-  serverId,
+  generatedId,
   text,
 } from '../../../../dist/kit/types/rdlabo-ionic-angular-kit-offline';
 
@@ -21,7 +21,7 @@ const entity = defineReplicaEntity<NonStrictSelect>()({
   sourceKey: 'nonstrict_items',
   scope: 'user',
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     title: text(),
     subtitle: nullable(text()),
     sortOrder: integer(),
@@ -39,7 +39,7 @@ defineReplicaEntity<NonStrictSelect>()({
   sourceKey: 'nonstrict_invalid_items',
   scope: 'user',
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     // @ts-expect-error Primitive affinity checks remain active without strictNullChecks.
     title: integer(),
     subtitle: nullable(text()),
@@ -53,7 +53,7 @@ defineReplicaEntity<NonStrictSelect>()({
   scope: 'user',
   // @ts-expect-error Exact-key validation still rejects a missing select property.
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     title: text(),
     subtitle: nullable(text()),
   },
@@ -65,7 +65,7 @@ defineReplicaEntity<NonStrictSelect>()({
   scope: 'user',
   // @ts-expect-error Exact-key validation still rejects an unknown property.
   fields: {
-    id: serverId(),
+    id: generatedId('integer'),
     title: text(),
     subtitle: nullable(text()),
     sortOrder: integer(),

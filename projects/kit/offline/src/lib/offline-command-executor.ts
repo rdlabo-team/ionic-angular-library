@@ -1,31 +1,29 @@
 import { InjectionToken } from '@angular/core';
 import type { OfflineCommand, OfflineScope } from './offline-repository';
-import type { OfflineNaturalKey } from './offline-replica-schema';
+import type { OfflineCommandIdentity, OfflinePrincipalId, OfflineReplicaIdentity } from './offline-identity';
+import type { OfflineGeneratedRemoteId, OfflineNaturalKey } from './offline-replica-schema';
 
 /** Server acknowledgement used to reconcile one optimistic local mutation. */
 export interface OfflineCommandResult {
-  /** AUTO_INCREMENT id returned by a successful create. */
-  serverId?: number;
+  /** Remote id returned by a successful generated-identity mutation. */
+  remoteId?: OfflineGeneratedRemoteId;
   serverRevision?: string | number;
   /** Full server-confirmed domain values after applying the mutation. */
   confirmedValues?: unknown;
   /** Removes the local replica row after a confirmed server delete. */
   removeReplica?: boolean;
   /**
-   * Releases the deleted row's remote AUTO_INCREMENT identity while keeping
+   * Releases the deleted row's remote identity while keeping
    * its immutable local id for a queued recreate of the same logical target.
    */
-  clearServerId?: boolean;
+  clearRemoteId?: boolean;
   response?: unknown;
 }
 
-/** Target ids resolved from the local replica immediately before transport. */
-export interface OfflineCommandTarget {
-  localId: string;
-  serverId: number | null;
-  /** Composite identity derived from current replica values for a natural-key entity. */
-  naturalKey?: OfflineNaturalKey;
-}
+/** Target identity resolved from the local replica immediately before transport. */
+export type OfflineCommandTarget =
+  | { readonly kind: 'generated'; readonly localId: string; readonly remoteId: OfflineGeneratedRemoteId | null }
+  | { readonly kind: 'natural'; readonly naturalKey: OfflineNaturalKey };
 
 /** 不透明なoperationを製品APIへ送信し、local replicaへ投影するadapter。 */
 /** Product adapter that sends commands and projects acknowledgements into entities. */
@@ -35,7 +33,7 @@ export interface OfflineCommandExecutor {
   withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
   /**
    * Removes the deleted remote row's revision from a queued recreate.
-   * Required only when `clearServerId` completes while later commands remain.
+   * Required only when `clearRemoteId` completes while later commands remain.
    */
   withoutServerRevision?(command: OfflineCommand): OfflineCommand;
 }
@@ -45,7 +43,7 @@ export const OFFLINE_COMMAND_EXECUTOR = new InjectionToken<OfflineCommandExecuto
 
 /** Authenticated user and partition scopes currently eligible for synchronization. */
 export interface OfflineSyncSession {
-  userId: number;
+  userId: OfflinePrincipalId;
   scopes: OfflineScope[];
 }
 
@@ -59,3 +57,32 @@ export interface OfflineSyncContext {
 
 /** DI token for authenticated synchronization context. */
 export const OFFLINE_SYNC_CONTEXT = new InjectionToken<OfflineSyncContext>('OFFLINE_SYNC_CONTEXT');
+
+/** Resolves the transport target from a replica row. */
+export function offlineCommandTargetFromReplicaRow(row: { readonly identity: OfflineReplicaIdentity }): OfflineCommandTarget {
+  if (row.identity.kind === 'natural') return { kind: 'natural', naturalKey: row.identity.naturalKey };
+  if (row.identity.kind === 'local') throw new Error('Local-only replica rows cannot be synchronized.');
+  return { kind: 'generated', localId: row.identity.localId, remoteId: row.identity.remoteId };
+}
+
+/** Resolves a command lookup identity from an enqueue request identity. */
+export function offlineCommandLookupIdentity(identity: EnqueueOfflineCommandIdentity): OfflineCommandIdentity {
+  if (identity.kind === 'generated') return { kind: 'generated', localId: identity.localId };
+  return { kind: 'natural', naturalKey: identity.naturalKey };
+}
+
+/** Enqueue identity for generated entities. */
+export interface EnqueueOfflineGeneratedIdentity {
+  readonly kind: 'generated';
+  readonly localId: string;
+  readonly remoteId?: OfflineGeneratedRemoteId | null;
+  readonly remoteIdHint?: OfflineGeneratedRemoteId | null;
+}
+
+/** Enqueue identity for natural-key entities. */
+export interface EnqueueOfflineNaturalIdentity {
+  readonly kind: 'natural';
+  readonly naturalKey: OfflineNaturalKey;
+}
+
+export type EnqueueOfflineCommandIdentity = EnqueueOfflineGeneratedIdentity | EnqueueOfflineNaturalIdentity;

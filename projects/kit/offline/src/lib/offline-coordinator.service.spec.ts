@@ -3,7 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
 import { OfflineNetworkService } from './offline-network.service';
-import { OFFLINE_REPOSITORY } from './offline-repository';
+import { OFFLINE_REPOSITORY, type OfflineScope } from './offline-repository';
 import { OfflineSessionService, type OfflineSessionManifest } from './offline-session.service';
 import { OfflineSyncService } from './offline-sync.service';
 
@@ -166,7 +166,7 @@ describe('OfflineCoordinatorService', () => {
   it('preserves user scope 0 from remote activation through the first pull', async () => {
     let lastUserId: number | null = null;
     let manifest: OfflineSessionManifest | null = null;
-    const pull = vi.fn(async (_scope: { userId: number; scopeId: string }) => undefined);
+    const pull = vi.fn(async (_scope: OfflineScope) => undefined);
     const repository = {
       initialize: vi.fn(async () => undefined),
       getLastUserId: vi.fn(async () => lastUserId),

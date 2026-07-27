@@ -1,10 +1,11 @@
 import { inject, Injectable, signal } from '@angular/core';
 import type { OfflineScope } from './offline-repository';
+import type { OfflinePrincipalId } from './offline-identity';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 
 /** Persisted identity and partition boundary for one authenticated local replica. */
 export interface OfflineSessionManifest {
-  userId: number;
+  userId: OfflinePrincipalId;
   readonly scopeIds: readonly string[];
   /** Authentication-provider subject used to distinguish users on a shared device. */
   authSubject: string | null;
@@ -38,15 +39,15 @@ export class OfflineSessionService {
     this.#initialized = true;
   }
 
-  async activateSession(userId: number, scopeIds: readonly string[], authSubject: string | null): Promise<void>;
+  async activateSession(userId: OfflinePrincipalId, scopeIds: readonly string[], authSubject: string | null): Promise<void>;
   async activateSession(
-    userId: number,
+    userId: OfflinePrincipalId,
     scopeIds: readonly string[],
     authSubject: string | null,
     lease: OfflineSessionTransitionLease,
   ): Promise<boolean>;
   async activateSession(
-    userId: number,
+    userId: OfflinePrincipalId,
     scopeIds: readonly string[],
     authSubject: string | null,
     lease?: OfflineSessionTransitionLease,
@@ -149,18 +150,18 @@ export class OfflineSessionService {
   }
 
   /** Returns the session allowed to use the local replica and append outbox commands. */
-  async getLocalSession(): Promise<{ userId: number; scopes: OfflineScope[] } | null> {
+  async getLocalSession(): Promise<{ userId: OfflinePrincipalId; scopes: OfflineScope[] } | null> {
     await this.initialize();
     return this.#localAccessThisRun ? this.#sessionFromManifest() : null;
   }
 
   /** Returns the remotely authenticated session eligible for pull and command replay. */
-  async getSession(): Promise<{ userId: number; scopes: OfflineScope[] } | null> {
+  async getSession(): Promise<{ userId: OfflinePrincipalId; scopes: OfflineScope[] } | null> {
     await this.initialize();
     return this.#remoteActivatedThisRun ? this.#sessionFromManifest() : null;
   }
 
-  #sessionFromManifest(): { userId: number; scopes: OfflineScope[] } | null {
+  #sessionFromManifest(): { userId: OfflinePrincipalId; scopes: OfflineScope[] } | null {
     const manifest = this.#activeManifest();
     return manifest
       ? { userId: manifest.userId, scopes: manifest.scopeIds.map((scopeId) => ({ userId: manifest.userId, scopeId })) }

@@ -18,10 +18,13 @@ import {
   IonicOfflineRepository,
   OFFLINE_REPOSITORY,
   OFFLINE_SCHEMA_VERSION,
+  parseOfflineCommandIdentity,
+  serializeOfflineCommandIdentity,
   type OfflineCommand,
   type OfflineRepository,
   type OfflineScope,
 } from './offline-repository';
+import { naturalCommandIdentity, naturalReplicaIdentity } from './offline-test-helpers';
 
 class MemoryStorage {
   readonly values = new Map<string, unknown>();
@@ -47,10 +50,167 @@ const entity = defineReplicaEntity<{ favFrom: number; favTo: string; label: stri
 });
 
 const schema = defineOfflineReplicaSchema({ version: 1, entities: [entity], migrations: [] });
+const threePartEntity = defineReplicaEntity<{ z: number; tenant: string; a: number; label: string }>()({
+  table: 'three_part_keys',
+  sourceKey: 'three_part_keys',
+  scope: 'partition',
+  identity: naturalKey(['z', 'tenant', 'a']),
+  fields: { z: integer(), tenant: text(), a: integer(), label: text() },
+});
+const threePartSchema = defineOfflineReplicaSchema({ version: 1, entities: [threePartEntity], migrations: [] });
 const scope: OfflineScope = { userId: 1, scopeId: '10' };
 
+const key42 = { favFrom: 7, favTo: '42' };
+const key43 = { favFrom: 7, favTo: '43' };
+
+function naturalRow(
+  naturalKeyValues: { favFrom: number; favTo: string },
+  label: string,
+  options: { syncState?: 'confirmed' | 'pending'; confirmedValues?: { favFrom: number; favTo: string; label: string } | null } = {},
+) {
+  return {
+    ...scope,
+    sourceKey: 'natural_favorites' as const,
+    identity: naturalReplicaIdentity(naturalKeyValues),
+    values: { ...naturalKeyValues, label },
+    confirmedValues: options.confirmedValues ?? null,
+    serverRevision: null,
+    fetchedAt: 1,
+    syncState: options.syncState ?? ('pending' as const),
+  };
+}
+
+async function createRepository(replicaSchema = schema): Promise<OfflineRepository> {
+  const storage = new MemoryStorage();
+  const schemaHash = await sha256OfflineReplicaSchema(replicaSchema);
+  storage.values.set('offline:metadata', {
+    schemaVersion: OFFLINE_SCHEMA_VERSION,
+    lastUserId: null,
+    replicaSchemaVersion: replicaSchema.version,
+    replicaSchemaHash: schemaHash,
+  });
+  TestBed.resetTestingModule();
+  TestBed.configureTestingModule({
+    providers: [
+      IonicOfflineRepository,
+      { provide: KitStorageService, useValue: storage },
+      { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test', replicaSchema } },
+      { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
+    ],
+  });
+  const repository = TestBed.inject(OFFLINE_REPOSITORY);
+  await repository.initialize();
+  return repository;
+}
+
+describe('natural-key replica identity', () => {
+  it('uses exact composite natural identity as the row PRIMARY KEY', async () => {
+    const repository = await createRepository();
+    await repository.transactReplica({ putRows: [naturalRow(key42, 'A')] });
+
+    await expect(repository.getReplicaRow(scope, 'natural_favorites', naturalCommandIdentity(key42))).resolves.toMatchObject({
+      identity: { kind: 'natural', naturalKey: key42 },
+      values: { favFrom: 7, favTo: '42', label: 'A' },
+    });
+    await expect(repository.getReplicaRows(scope, 'natural_favorites')).resolves.toEqual([
+      expect.objectContaining({
+        identity: { kind: 'natural', naturalKey: key42 },
+      }),
+    ]);
+  });
+
+  it('rejects rows whose identity naturalKey does not match values', async () => {
+    const repository = await createRepository();
+    await expect(
+      repository.transactReplica({
+        putRows: [
+          {
+            ...naturalRow(key42, 'mismatch'),
+            identity: naturalReplicaIdentity(key42),
+            values: { favFrom: 8, favTo: '42', label: 'mismatch' },
+          },
+        ],
+      }),
+    ).rejects.toThrow('Offline replica identity naturalKey must match values for "natural_favorites".');
+    await expect(repository.getReplicaRow(scope, 'natural_favorites', naturalCommandIdentity(key42))).resolves.toBeNull();
+  });
+
+  it('treats natural key change as delete old row plus insert new row', async () => {
+    const repository = await createRepository();
+    await repository.transactReplica({ putRows: [naturalRow(key42, 'A')] });
+    await expect(
+      repository.transactReplica({
+        putRows: [{ ...naturalRow(key42, 'changed'), values: { favFrom: 8, favTo: '42', label: 'changed' } }],
+      }),
+    ).rejects.toThrow('Offline replica identity naturalKey must match values for "natural_favorites".');
+
+    await repository.transactReplica({
+      removeRows: [{ ...scope, sourceKey: 'natural_favorites', identity: naturalReplicaIdentity(key42) }],
+      putRows: [naturalRow(key43, 'B')],
+    });
+    await expect(repository.getReplicaRows(scope, 'natural_favorites')).resolves.toEqual([
+      expect.objectContaining({ identity: { kind: 'natural', naturalKey: key43 }, values: { favFrom: 7, favTo: '43', label: 'B' } }),
+    ]);
+    await expect(repository.getReplicaRow(scope, 'natural_favorites', naturalCommandIdentity(key42))).resolves.toBeNull();
+  });
+
+  it('upserts the same natural key into one durable row', async () => {
+    const repository = await createRepository();
+    await repository.transactReplica({ putRows: [naturalRow(key42, 'first')] });
+    await repository.transactReplica({
+      putRows: [naturalRow(key42, 'second', { syncState: 'confirmed', confirmedValues: { ...key42, label: 'second' } })],
+    });
+
+    await expect(repository.getReplicaRows(scope, 'natural_favorites')).resolves.toHaveLength(1);
+    await expect(repository.getReplicaRow(scope, 'natural_favorites', naturalCommandIdentity(key42))).resolves.toMatchObject({
+      identity: { kind: 'natural', naturalKey: key42 },
+      values: { favFrom: 7, favTo: '42', label: 'second' },
+      confirmedValues: { favFrom: 7, favTo: '42', label: 'second' },
+      syncState: 'confirmed',
+    });
+  });
+
+  it('roundtrips natural command identity through outbox JSON', () => {
+    const identity = naturalCommandIdentity(key42);
+    const json = serializeOfflineCommandIdentity(identity);
+    expect(parseOfflineCommandIdentity(JSON.parse(json))).toEqual(identity);
+  });
+
+  it('supports an ordered three-part mixed key for DDL, lookup, upsert, ordering, and remove', async () => {
+    expect(threePartEntity.createTableSql[0]).toContain('PRIMARY KEY (_offline_user_id, _offline_scope_id, z, tenant, a)');
+    const repository = await createRepository(threePartSchema);
+    const firstKey = { z: 2, tenant: 'tenant-a', a: 9 };
+    const secondKey = { z: 10, tenant: 'tenant-a', a: 1 };
+    const row = (key: typeof firstKey, label: string) => ({
+      ...scope,
+      sourceKey: 'three_part_keys',
+      identity: naturalReplicaIdentity(key),
+      values: { ...key, label },
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'pending' as const,
+    });
+
+    await repository.transactReplica({ putRows: [row(secondKey, 'second'), row(firstKey, 'first')] });
+    await repository.transactReplica({ putRows: [row(firstKey, 'updated')] });
+    await expect(repository.getReplicaRow(scope, 'three_part_keys', naturalCommandIdentity(firstKey))).resolves.toMatchObject({
+      values: { label: 'updated' },
+    });
+    await expect(repository.getReplicaRows(scope, 'three_part_keys')).resolves.toEqual([
+      expect.objectContaining({ identity: naturalReplicaIdentity(firstKey) }),
+      expect.objectContaining({ identity: naturalReplicaIdentity(secondKey) }),
+    ]);
+
+    await repository.transactReplica({
+      removeRows: [{ ...scope, sourceKey: 'three_part_keys', identity: naturalReplicaIdentity(firstKey) }],
+    });
+    await expect(repository.getReplicaRow(scope, 'three_part_keys', naturalCommandIdentity(firstKey))).resolves.toBeNull();
+  });
+});
+
 describe('natural-key pull reconciliation', () => {
-  it('same-page lost ACK keeps UUID, pending tombstone conflicts, and same-kind natural identity reassignment rejects', async () => {
+  it('ACKs create, pending tombstone conflicts, and rejects immutable naturalKey reassignment', async () => {
     const storage = new MemoryStorage();
     const schemaHash = await sha256OfflineReplicaSchema(schema);
     storage.values.set('offline:metadata', {
@@ -66,7 +226,7 @@ describe('natural-key pull reconciliation', () => {
         changes: [
           {
             sourceKey: 'natural_favorites',
-            naturalKey: { favFrom: 7, favTo: '42' },
+            naturalKey: key42,
             serverRevision: 1,
             acknowledgedCommandIds: ['create-1'],
             values: { favFrom: 7, favTo: '42', label: 'intermediate' },
@@ -74,7 +234,7 @@ describe('natural-key pull reconciliation', () => {
           },
           {
             sourceKey: 'natural_favorites',
-            naturalKey: { favFrom: 7, favTo: '42' },
+            naturalKey: key42,
             serverRevision: 2,
             values: { favFrom: 7, favTo: '42', label: 'confirmed' },
             deleted: false,
@@ -89,7 +249,7 @@ describe('natural-key pull reconciliation', () => {
         changes: [
           {
             sourceKey: 'natural_favorites',
-            naturalKey: { favFrom: 7, favTo: '42' },
+            naturalKey: key42,
             serverRevision: 3,
             values: null,
             deleted: true,
@@ -104,7 +264,7 @@ describe('natural-key pull reconciliation', () => {
         changes: [
           {
             sourceKey: 'natural_favorites',
-            naturalKey: { favFrom: 7, favTo: '43' },
+            naturalKey: key43,
             serverRevision: 4,
             acknowledgedCommandIds: ['update-1'],
             values: null,
@@ -139,25 +299,14 @@ describe('natural-key pull reconciliation', () => {
     const service = TestBed.inject(OfflineReplicaPullService);
     await repository.initialize();
     await repository.transactReplica({
-      putRows: [
-        {
-          ...scope,
-          sourceKey: 'natural_favorites',
-          localId: 'immutable-local-uuid',
-          serverId: null,
-          values: { favFrom: 7, favTo: '42', label: 'optimistic' },
-          confirmedValues: null,
-          serverRevision: null,
-          fetchedAt: 1,
-          syncState: 'pending',
-        },
-      ],
+      putRows: [naturalRow(key42, 'optimistic')],
       putCommands: [
         {
           ...scope,
           commandId: 'create-1',
           aggregateType: 'natural_favorites',
-          aggregateLocalId: 'immutable-local-uuid',
+          sourceKey: 'natural_favorites',
+          identity: naturalCommandIdentity(key42),
           operation: 'create',
           payload: {},
           optimisticValue: { favFrom: 7, favTo: '42', label: 'optimistic' },
@@ -175,9 +324,10 @@ describe('natural-key pull reconciliation', () => {
     await service.pull(scope);
     await expect(repository.getReplicaRows(scope, 'natural_favorites')).resolves.toEqual([
       expect.objectContaining({
-        localId: 'immutable-local-uuid',
-        serverId: null,
+        identity: { kind: 'natural', naturalKey: key42 },
         values: { favFrom: 7, favTo: '42', label: 'confirmed' },
+        confirmedValues: { favFrom: 7, favTo: '42', label: 'confirmed' },
+        syncState: 'confirmed',
       }),
     ]);
     await expect(repository.getCommands(scope)).resolves.toEqual([]);
@@ -185,7 +335,7 @@ describe('natural-key pull reconciliation', () => {
     await repository.transactReplica({
       putRows: [
         {
-          ...(await repository.getReplicaRow(scope, 'natural_favorites', 'immutable-local-uuid'))!,
+          ...(await repository.getReplicaRow(scope, 'natural_favorites', naturalCommandIdentity(key42)))!,
           values: { favFrom: 7, favTo: '42', label: 'pending edit' },
           syncState: 'pending',
         },
@@ -195,7 +345,8 @@ describe('natural-key pull reconciliation', () => {
           ...scope,
           commandId: 'update-1',
           aggregateType: 'natural_favorites',
-          aggregateLocalId: 'immutable-local-uuid',
+          sourceKey: 'natural_favorites',
+          identity: naturalCommandIdentity(key42),
           operation: 'update',
           payload: {},
           optimisticValue: { favFrom: 7, favTo: '42', label: 'pending edit' },
@@ -212,7 +363,7 @@ describe('natural-key pull reconciliation', () => {
     await service.pull(scope);
     await expect(repository.getReplicaRows(scope, 'natural_favorites')).resolves.toEqual([
       expect.objectContaining({
-        localId: 'immutable-local-uuid',
+        identity: { kind: 'natural', naturalKey: key42 },
         values: { favFrom: 7, favTo: '42', label: 'pending edit' },
         syncState: 'conflict',
       }),
