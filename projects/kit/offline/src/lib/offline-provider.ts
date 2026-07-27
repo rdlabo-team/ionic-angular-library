@@ -1,7 +1,7 @@
 import type { EnvironmentProviders, Provider, Type } from '@angular/core';
 import { inject, makeEnvironmentProviders, provideAppInitializer } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
-import type { OfflineCommandExecutor } from './offline-command-executor';
+import type { OfflineCommandExecutor, OfflineCommandResult } from './offline-command-executor';
 import { OFFLINE_COMMAND_EXECUTOR, OFFLINE_SYNC_CONTEXT } from './offline-command-executor';
 import type { OfflineCommandHooks } from './offline-command-hooks';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
@@ -22,11 +22,7 @@ import {
 } from './sqlite-offline-repository';
 
 /** Configuration for the standard offline repository, outbox, and request-policy runtime. */
-export interface ProvideOfflineOptions extends OfflineKitOptions {
-  /** Product adapter that sends opaque commands to its API. */
-  commandExecutor: Type<OfflineCommandExecutor>;
-  /** Product transport for explicit cursor-based server delta pulls. */
-  replicaPuller: Type<OfflineReplicaPuller>;
+interface ProvideOfflineOptionsBase extends OfflineKitOptions {
   /** Product policies that map URLs and DTOs to generic replica/outbox operations. */
   requestPolicies: readonly Type<OfflineRequestPolicy>[];
   /** Optional product hooks for entity projection and command cleanup. */
@@ -37,6 +33,41 @@ export interface ProvideOfflineOptions extends OfflineKitOptions {
   sqliteConnection?: CommunitySqliteConnection;
 }
 
+/** Full replica pull and durable Outbox synchronization. */
+export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptionsBase {
+  mode?: 'synchronized';
+  /** Product adapter that sends opaque commands to its API. */
+  commandExecutor: Type<OfflineCommandExecutor>;
+  /** Product transport for explicit cursor-based server delta pulls. */
+  replicaPuller: Type<OfflineReplicaPuller>;
+}
+
+/** Server- or external-source read cache with no mutation transport or Outbox. */
+export interface ProvideReadCacheOfflineOptions extends ProvideOfflineOptionsBase {
+  mode: 'readCacheOnly';
+  commandExecutor?: never;
+  replicaPuller?: never;
+}
+
+export type ProvideOfflineOptions = ProvideSynchronizedOfflineOptions | ProvideReadCacheOfflineOptions;
+
+const READ_CACHE_ONLY_COMMAND_EXECUTOR: OfflineCommandExecutor = {
+  execute: async (): Promise<OfflineCommandResult> => {
+    throw new Error('This offline provider is configured as a read-only cache.');
+  },
+  withServerRevision: (command) => command,
+};
+
+const READ_CACHE_ONLY_REPLICA_PULLER: OfflineReplicaPuller = {
+  pull: async (request) => ({
+    schemaVersion: request.schemaVersion,
+    schemaHash: request.schemaHash,
+    changes: [],
+    nextCursor: request.cursor,
+    hasMore: false,
+  }),
+};
+
 /**
  * Provide the standard scoped offline runtime.
  *
@@ -46,12 +77,13 @@ export interface ProvideOfflineOptions extends OfflineKitOptions {
  * isolation.
  */
 export function provideOffline(options: ProvideOfflineOptions): EnvironmentProviders {
+  const synchronized = options.mode !== 'readCacheOnly';
   return makeEnvironmentProviders([
-    options.commandExecutor,
-    options.replicaPuller,
+    ...(synchronized ? [options.commandExecutor, options.replicaPuller] : []),
     {
       provide: OFFLINE_KIT_OPTIONS,
       useValue: {
+        mode: options.mode ?? 'synchronized',
         databaseName: options.databaseName,
         createEncryptionKey: options.createEncryptionKey,
         replicaSchema: options.replicaSchema,
@@ -67,8 +99,12 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
       useFactory: () => selectOfflineRepository(Capacitor.getPlatform(), inject(IonicOfflineRepository), inject(SqliteOfflineRepository)),
     },
     { provide: OFFLINE_SYNC_CONTEXT, useExisting: OfflineSessionService },
-    { provide: OFFLINE_COMMAND_EXECUTOR, useExisting: options.commandExecutor },
-    { provide: OFFLINE_REPLICA_PULLER, useExisting: options.replicaPuller },
+    synchronized
+      ? { provide: OFFLINE_COMMAND_EXECUTOR, useExisting: options.commandExecutor }
+      : { provide: OFFLINE_COMMAND_EXECUTOR, useValue: READ_CACHE_ONLY_COMMAND_EXECUTOR },
+    synchronized
+      ? { provide: OFFLINE_REPLICA_PULLER, useExisting: options.replicaPuller }
+      : { provide: OFFLINE_REPLICA_PULLER, useValue: READ_CACHE_ONLY_REPLICA_PULLER },
     ...(options.commandHooks ? [options.commandHooks, { provide: OFFLINE_COMMAND_HOOKS, useExisting: options.commandHooks }] : []),
     ...options.requestPolicies.flatMap((policy) => provideOfflineRequestPolicy(policy)),
     ...(options.providers ?? []),

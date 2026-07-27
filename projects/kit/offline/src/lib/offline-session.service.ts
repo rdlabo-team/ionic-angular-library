@@ -12,6 +12,16 @@ export interface OfflineSessionManifest {
   updatedAt: number;
 }
 
+/** Checks the authenticated subject and optional scope against one persisted session boundary. */
+export function offlineSessionManifestAllows(
+  manifest: OfflineSessionManifest | null,
+  authSubject: string | null,
+  scopeId?: string,
+): manifest is OfflineSessionManifest {
+  if (!manifest || manifest.authSubject !== authSubject) return false;
+  return scopeId === undefined || manifest.scopeIds.includes(scopeId);
+}
+
 /** Structural lease used to reject stale asynchronous session commits. */
 export interface OfflineSessionTransitionLease {
   isCurrent(): boolean;

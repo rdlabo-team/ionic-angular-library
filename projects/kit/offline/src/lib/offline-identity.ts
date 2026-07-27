@@ -11,6 +11,14 @@ import {
 /** Product-agnostic authenticated principal identifier. */
 export type OfflinePrincipalId = string | number;
 
+/** Narrows a product DB id without duplicating the numeric identity boundary. */
+export function requirePositiveOfflineInteger(value: unknown, label = 'Offline id'): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe integer.`);
+  }
+  return value;
+}
+
 /** Type-tagged SQLite/web key; numeric 7 and text "7" never share a boundary. */
 export function canonicalOfflinePrincipalId(value: OfflinePrincipalId): string {
   if (typeof value === 'number') {

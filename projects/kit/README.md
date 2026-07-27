@@ -391,8 +391,10 @@ A fleet-canonical HTTP interceptor with:
 
 The optional `offline` entry point provides a user/partition-scoped local replica, durable outbox, authenticated
 session boundary, cursor-based delta pull, aggregate-ordered replay, optimistic updates, retry classification, and a
-read-only request-policy interceptor. Applications provide URL/DTO read policies, a replica puller, and a command
-executor through `provideOffline(...)`.
+read-only request-policy interceptor. Synchronized applications provide URL/DTO read policies, a replica puller, and
+a command executor through `provideOffline(...)`. External-source or HTTP read caches use
+`mode: 'readCacheOnly'`; the kit then supplies the empty pull/executor boundary instead of making every product
+declare dummy adapters.
 Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
 Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
 primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
@@ -602,6 +604,10 @@ to `conflict`; the new server value is retained as the confirmed baseline. A rem
 retention rule: without pending commands it removes the row, while a pending row and its Outbox remain under
 `remote_deleted` conflict so the user can resolve or discard them.
 
+Hono payloads may call a generated database key `serverId`, while the database-independent runtime calls it
+`remoteId`. Product pullers must use `normalizeOfflineReplicaPullPage(response)` at the HTTP boundary; do not
+reimplement `serverId` stripping/injection per application. Natural-key changes pass through unchanged.
+
 The command adapter must send `commandId` as the server-side idempotency key. The server persists that key with the
 mutation and returns all keys represented by a delta row as `acknowledgedCommandIds`. This correlation is required:
 if the server commits a create/update/delete but its HTTP acknowledgement is lost, the next pull reconciles the
@@ -689,6 +695,15 @@ provideOffline({
   replicaPuller: ProductReplicaPuller,
   commandExecutor: ProductCommandExecutor,
   // ...request policies, databaseName, createEncryptionKey
+});
+
+// Stripe or another external system is the source of truth; no Outbox exists.
+provideOffline({
+  mode: 'readCacheOnly',
+  replicaSchema: readCacheSchema,
+  requestPolicies: [ReadCacheRequestPolicy],
+  databaseName: 'product-read-cache',
+  createEncryptionKey,
 });
 ```
 

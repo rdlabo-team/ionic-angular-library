@@ -231,6 +231,26 @@ describe('OfflineSyncService', () => {
     service = TestBed.inject(OfflineSyncService);
   });
 
+  it('readCacheOnly mode rejects enqueue before creating replica or Outbox state', async () => {
+    options.mode = 'readCacheOnly';
+
+    await expect(
+      service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'forbidden-write' },
+          operation: 'documents.create',
+          payload: { title: 'write' },
+          optimisticValue: { id: 0, title: 'write' },
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('read-only cache');
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+  });
+
   it('Outbox件数上限では既存commandを失わず新規enqueueを拒否する', async () => {
     options.outboxLimits = { maxCommandsPerUser: 1 };
     await service.enqueue(
