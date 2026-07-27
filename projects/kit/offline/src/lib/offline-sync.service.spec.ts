@@ -980,7 +980,7 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('Offline replica serverId is immutable');
   });
 
-  it('enqueue時のserverId採用は初回pull前にreplica rowへ永続化する', async () => {
+  it('existing rowが無いenqueueはstale serverId hintを採用しない', async () => {
     await service.enqueue(
       {
         scopeId: '10',
@@ -995,13 +995,13 @@ describe('OfflineSyncService', () => {
     );
     expect(rows[0]).toMatchObject({
       localId: '019d-adopted',
-      serverId: 38142,
+      serverId: null,
       confirmedValues: null,
       syncState: 'pending',
     });
   });
 
-  it('採用済みserverIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
+  it('existing rowが無いdelete requestのserverId hintはexecutor targetへ復活させない', async () => {
     await service.enqueue(
       {
         scopeId: '10',
@@ -1017,7 +1017,7 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     execute.mockResolvedValueOnce({ removeReplica: true, response: null });
     await service.flush();
-    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: 38142 });
+    expect(execute.mock.calls[0]?.[1]).toEqual({ localId: '019d-adopted', serverId: null });
   });
 
   it('confirmed rowのdeleteはOutbox markerとhidden baselineを原子的に残し、ACKでphysical removeする', async () => {
@@ -1228,6 +1228,79 @@ describe('OfflineSyncService', () => {
       }),
     ]);
     expect(commands).toEqual([]);
+  });
+
+  it('serialized cache projectionはACK current read中に割り込まず解放後のrowを読む', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      localId: 'serialized-cache-local-id',
+      serverId: 42,
+      values: { name: 'confirmed', presentation: 'pending' },
+      confirmedValues: { name: 'confirmed', presentation: 'pending' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+    let resolveDelete!: (result: OfflineCommandResult) => void;
+    let releaseAckRead!: () => void;
+    const ackReadGate = new Promise<void>((resolve) => (releaseAckRead = resolve));
+    const ackReadStarted = vi.fn();
+    execute
+      .mockImplementationOnce(() => new Promise<OfflineCommandResult>((resolve) => (resolveDelete = resolve)))
+      .mockResolvedValueOnce({ serverId: 43, confirmedValues: { name: 'recreated', presentation: null }, response: null });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'serialized-cache-local-id',
+        operation: 'documents.delete',
+        payload: {},
+        optimisticValue: { name: 'confirmed', presentation: 'pending' },
+        replicaMutation: 'delete',
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    const flush = service.flush();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: 'serialized-cache-local-id',
+        operation: 'documents.create',
+        payload: {},
+        optimisticValue: { name: 'recreated', presentation: 'pending' },
+      },
+      { flush: false },
+    );
+    beforeGetReplicaRow = async () => {
+      ackReadStarted();
+      await ackReadGate;
+    };
+    resolveDelete({ removeReplica: true, clearServerId: true, response: null });
+    await vi.waitFor(() => expect(ackReadStarted).toHaveBeenCalledOnce());
+
+    const cacheProjection = service.runSerializedReplicaMutation(async (repository) => {
+      const current = await repository.getReplicaRowIncludingPendingDelete!({ userId: 1, scopeId: '10' }, 'documents', 'serialized-cache-local-id');
+      expect(current).toMatchObject({ serverId: null, values: { name: 'recreated', presentation: 'pending' } });
+      await repository.transactReplica({
+        putRows: [{ ...current!, values: { name: 'recreated', presentation: null } }],
+      });
+    });
+    releaseAckRead();
+    await Promise.all([flush, cacheProjection]);
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        localId: 'serialized-cache-local-id',
+        serverId: 43,
+        values: { name: 'recreated', presentation: null },
+      }),
+    ]);
   });
 
   it('delete ACKが先なら後続enqueueはserverIdを解放済みのrowからrecreateする', async () => {
@@ -1563,7 +1636,7 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([]);
   });
 
-  it('別localIdへ既存serverIdを割り当てようとするとrejectする', async () => {
+  it('別localIdのstale serverId hintは既存remote mappingを奪わない', async () => {
     rows.push({
       userId: 1,
       scopeId: '10',
@@ -1576,21 +1649,24 @@ describe('OfflineSyncService', () => {
       fetchedAt: 1,
       syncState: 'confirmed',
     });
-    await expect(
-      service.enqueue(
-        {
-          scopeId: '10',
-          aggregateType: 'documents',
-          aggregateLocalId: '019d-new',
-          serverId: 38142,
-          operation: 'documents.update',
-          payload: {},
-          optimisticValue: {},
-        },
-        { flush: false },
-      ),
-    ).rejects.toThrow('Offline replica serverId 38142 is already mapped to localId 019d-existing.');
-    expect(commands).toEqual([]);
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        aggregateLocalId: '019d-new',
+        serverId: 38142,
+        operation: 'documents.update',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ localId: '019d-existing', serverId: 38142 }),
+        expect.objectContaining({ localId: '019d-new', serverId: null }),
+      ]),
+    );
   });
 
   it('同一localIdへのserverId再指定は許容する', async () => {
