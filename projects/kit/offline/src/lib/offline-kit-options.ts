@@ -11,6 +11,8 @@ export interface OfflineOutboxLimits {
 
 /** Product-independent native offline persistence settings. */
 export interface OfflineKitOptions {
+  /** Runtime transport mode. Defaults to full synchronized replica/outbox behavior. */
+  mode?: 'synchronized' | 'readCacheOnly';
   /** Encrypted SQLite database name used on iOS and Android. */
   databaseName: string;
   /** Creates the native database encryption key on first install. Required on iOS and Android. */

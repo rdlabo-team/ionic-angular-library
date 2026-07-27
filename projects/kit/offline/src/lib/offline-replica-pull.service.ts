@@ -43,6 +43,7 @@ export class OfflineReplicaPullService {
   #schemaHash: Promise<string> | null = null;
 
   async pull(scope: OfflineScope): Promise<void> {
+    if (this.#options.mode === 'readCacheOnly') return;
     const schemaHash = await (this.#schemaHash ??= sha256OfflineReplicaSchema(this.#options.replicaSchema));
     let cursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
 

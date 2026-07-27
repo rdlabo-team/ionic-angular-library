@@ -229,6 +229,9 @@ export class OfflineSyncService {
 
   async #enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean }, generation: number): Promise<string> {
     await this.initialize();
+    if (this.#options.mode === 'readCacheOnly') {
+      throw new Error('This offline provider is configured as a read-only cache and cannot enqueue commands.');
+    }
     const session = await this.#getLocalSession();
     if (!session) throw new Error('Cannot enqueue an offline command without an authenticated user');
     this.#assertSessionPrincipalBoundary(session);
