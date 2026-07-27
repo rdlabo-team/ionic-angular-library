@@ -291,7 +291,7 @@ export const appConfig: ApplicationConfig = {
         //   const session = await auth.exchangeCredential();
         //   return {
         //     activate: (lease) => offline.prepareRemoteSession(
-        //       session.userId, session.groupIds, session.subject, lease,
+        //       session.userId, session.scopeIds, session.subject, lease,
         //     ),
         //     resume: () => offline.resumeRemoteSession(),
         //   };
@@ -310,7 +310,7 @@ export const appConfig: ApplicationConfig = {
         //     return session
         //       ? {
         //           activate: (lease) => offline.prepareRemoteSession(
-        //             session.userId, session.groupIds, session.subject, lease,
+        //             session.userId, session.scopeIds, session.subject, lease,
         //           ),
         //           resume: () => offline.resumeRemoteSession(),
         //         }
@@ -389,7 +389,7 @@ A fleet-canonical HTTP interceptor with:
 
 ### Scoped local replica and outbox (`@rdlabo/ionic-angular-kit/offline`)
 
-The optional `offline` entry point provides a user/group-scoped local replica, durable outbox, authenticated
+The optional `offline` entry point provides a user/partition-scoped local replica, durable outbox, authenticated
 session boundary, cursor-based delta pull, aggregate-ordered replay, optimistic updates, retry classification, and a
 read-only request-policy interceptor. Applications provide URL/DTO read policies, a replica puller, and a command
 executor through `provideOffline(...)`.
@@ -401,8 +401,8 @@ For cold-start offline route access, `OfflineCoordinatorService.activateOfflineS
 that is bound to a non-null authentication-provider subject. Supplying a currently known subject also rejects a
 different user on a shared device. It activates local replica writes and durable outbox enqueue, but remote pull and
 command replay remain disabled until online authentication completes the ordered
-`prepareRemoteSession(...)` → publish `remote` → `resumeRemoteSession()` transition. `activateSession(...)` remains
-available as a backward-compatible one-step API for callers that do not enforce shared access mode.
+`prepareRemoteSession(...)` → publish `remote` → `resumeRemoteSession()` transition. `activateSession(...)` is
+available as a one-step API for callers that do not enforce shared access mode.
 Explicit sign-out must first call `KitAuthAccessService.clear()` and then await `clearActiveSession()`. The first
 step immediately invalidates every in-flight auth lease; the second serializes cleanup after local persistence
 already in progress and removes the manifest and user replica.
@@ -430,8 +430,9 @@ provideKitAuth(() => ({
 ordering via `KitRemoteAccessRecovery`. Product code keeps consent, error UI, and credential mapping inside
 `exchange(context)` (`phase: 'authorize' | 'recover'`, optional route state, lease). Return `null`/`false` to decline
 without throwing; thrown errors are never swallowed and remain available to the guard's unavailable/denial
-classification. The returned identity requires a positive `userId`, non-negative numeric scope ids (including the
-current user-scope compatibility value `0`), and a non-empty `authSubject`. The bridge compares that subject before
+classification. The returned identity requires a positive `userId`, non-empty string `scopeIds`, and a non-empty
+`authSubject`. A scope may be a numeric database id serialized as a string or a domain UUID such as an organization
+or venue id. The bridge compares the subject before
 session activation, immediately before the coordinator commits through a composite lease, and around remote resume.
 Optional `isIdentityCurrent` can add provider object-identity checks. `onRemoteResumed` receives the identity, phase,
 route state, and post-grant lease for safe redirects or other product side effects. Default recovery availability
@@ -537,7 +538,7 @@ omitted id would otherwise make the executor interpret the row as a not-yet-crea
 
 ```ts
 await offlineSync.enqueue({
-  groupId,
+  scopeId,
   aggregateType: 'items',
   aggregateLocalId: localId,
   serverId: existingApiItem.id,
@@ -549,13 +550,14 @@ await offlineSync.enqueue({
 
 The mapping is immutable and unique inside its effective replica scope. Reassigning one `localId` to another
 `serverId`, or assigning the same `serverId` to another `localId`, rejects before persistence. Web storage enforces
-the same rule transactionally as SQLite's unique indexes: group-scoped entities are unique per user/group/source,
-and user-scoped entities are unique per user/source across groups. If an adopted row has no confirmed baseline and
+the same rule transactionally as SQLite's unique indexes: partition-scoped entities are unique per
+user/partition/source, and user-scoped entities are unique per user/source across partitions. If an adopted row has
+no confirmed baseline and
 its final command is discarded, the local row is removed; the next pull may materialize the authoritative server
 row again. A row with a confirmed baseline rolls back to that baseline instead.
 
 Each synchronization cycle pulls authoritative server deltas before replaying the outbox. Every page carries the
-replica schema version/hash and advances a durable user/group cursor in the same transaction as its rows. A schema
+replica schema version/hash and advances a durable user/partition cursor in the same transaction as its rows. A schema
 mismatch, malformed row, or non-advancing cursor rejects synchronization without advancing that cursor. If a remote
 revision changed while a local command is pending, the optimistic row remains visible and both row and command move
 to `conflict`; the new server value is retained as the confirmed baseline.
@@ -584,7 +586,7 @@ import type { Items as ItemSelect } from '@product/hono/db/schema';
 const itemEntityV2 = defineReplicaEntity<ItemSelect>()({
   table: 'items',
   sourceKey: 'items',
-  scope: 'group',
+  scope: 'partition',
   fields: {
     id: serverId(),
     title: text(),

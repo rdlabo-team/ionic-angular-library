@@ -32,7 +32,7 @@ type SampleSelect = {
 const sampleSchema = defineReplicaEntity<SampleSelect>()({
   table: 'sample_items',
   sourceKey: 'sample_items',
-  scope: 'group',
+  scope: 'partition',
   fields: {
     id: serverId(),
     title: text(),
@@ -49,7 +49,7 @@ describe('offline-replica-schema runtime', () => {
   it('materializes ordered field descriptors with table metadata', () => {
     expect(sampleSchema.tableName).toBe('sample_items');
     expect(sampleSchema.sourceKey).toBe('sample_items');
-    expect(sampleSchema.scope).toBe('group');
+    expect(sampleSchema.scope).toBe('partition');
     expect(sampleSchema.fields.map((field) => field.sourceKey)).toEqual([
       'active',
       'amount',
@@ -107,7 +107,7 @@ describe('offline-replica-schema runtime', () => {
       `CREATE TABLE IF NOT EXISTS sample_items (
   local_id TEXT NOT NULL,
   _offline_user_id INTEGER NOT NULL,
-  _offline_group_id INTEGER NOT NULL,
+  _offline_scope_id TEXT NOT NULL,
   server_id INTEGER,
   _offline_confirmed_json TEXT,
   _offline_server_revision_json TEXT,
@@ -121,11 +121,11 @@ describe('offline-replica-schema runtime', () => {
   updated_at TEXT NOT NULL,
   PRIMARY KEY (local_id)
 )`,
-      'CREATE UNIQUE INDEX IF NOT EXISTS uq_sample_items_server_id ON sample_items (_offline_user_id, _offline_group_id, server_id) WHERE server_id IS NOT NULL',
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_sample_items_server_id ON sample_items (_offline_user_id, _offline_scope_id, server_id) WHERE server_id IS NOT NULL',
     ]);
   });
 
-  it('omits _offline_group_id and scopes the partial index to _offline_user_id for user scope', () => {
+  it('omits _offline_scope_id and scopes the partial index to _offline_user_id for user scope', () => {
     type UserScopedSelect = { id: number; title: string };
     const userScopedSchema = defineReplicaEntity<UserScopedSelect>()({
       table: 'user_notes',
@@ -155,7 +155,7 @@ describe('offline-replica-schema runtime', () => {
 
   it('exposes a deterministic schema fingerprint input', () => {
     expect(sampleSchema.schemaFingerprintInput).toBe(
-      'table=sample_items|source=sample_items|scope=group|hasServerId=1|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:serverId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
+      'table=sample_items|source=sample_items|scope=partition|hasServerId=1|fields=active:column:active:INTEGER:booleanColumn:required;amount:column:amount:REAL:real:required;id:serverId:server_id:INTEGER:nullable;notes:column:notes:TEXT:text:nullable;payload:column:payload:TEXT:json:required;title:column:title:TEXT:text:required;transientFlag:ignored:server-only cache flag;updatedAt:column:updated_at:TEXT:datetime:required',
     );
   });
 
@@ -339,7 +339,7 @@ describe('decodeOfflineReplicaValues', () => {
       server_id: 42,
       local_id: 'local-1',
       _offline_user_id: 7,
-      _offline_group_id: 3,
+      _offline_scope_id: '3',
       _offline_confirmed_json: null,
       _offline_server_revision_json: null,
       _offline_sync_state: 'synced',
@@ -500,7 +500,7 @@ describe('offline-replica-schema bundle runtime', () => {
   it('computes a stable 64-character lowercase sha256 digest', async () => {
     const digest = await sha256OfflineReplicaSchema(schemaBundle);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
-    expect(digest).toBe('0c276e4507eff8937278ac5126fe66aceab802ef780efc459d80de70dba050f5');
+    expect(digest).toBe('7da9ce9faa5b749cc66827c70e11eb68d9c2ba660304468086fb6ba401dc672e');
   });
 
   it('changes the bundle fingerprint when storageKind changes from integer to booleanColumn while affinity stays INTEGER', async () => {
@@ -666,7 +666,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<CompileSelect>()({
       table: 'compile_items',
       sourceKey: 'compile_items',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         title: text(),
@@ -677,7 +677,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<CompileSelect>()({
       table: 'compile_items',
       sourceKey: 'compile_items',
-      scope: 'group',
+      scope: 'partition',
       // @ts-expect-error — `notes` is missing from the field map.
       fields: {
         id: serverId(),
@@ -688,7 +688,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<CompileSelect>()({
       table: 'compile_items',
       sourceKey: 'compile_items',
-      scope: 'group',
+      scope: 'partition',
       // @ts-expect-error — `extra` is not part of the select shape.
       fields: {
         id: serverId(),
@@ -703,7 +703,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<CompileSelect>()({
       table: 'compile_items',
       sourceKey: 'compile_items',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         title: text(),
@@ -715,7 +715,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<CompileSelect>()({
       table: 'compile_items',
       sourceKey: 'compile_items',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         // @ts-expect-error — non-null select properties reject nullable(...).
@@ -727,7 +727,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<CompileSelect>()({
       table: 'compile_items',
       sourceKey: 'compile_items',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         title: text(),
@@ -760,7 +760,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<LiteralSelect>()({
       table: 'literal_items',
       sourceKey: 'literal_items',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         kind: integer(),
@@ -779,7 +779,7 @@ describe('offline-replica-schema types', () => {
     defineReplicaEntity<LiteralSelect>()({
       table: 'literal_mismatch_items',
       sourceKey: 'literal_mismatch_items',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         // @ts-expect-error — numeric literal unions require integer().

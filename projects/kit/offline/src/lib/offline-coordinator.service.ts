@@ -29,7 +29,7 @@ export class OfflineCoordinatorService {
     await this.#sync.initialize();
   }
 
-  async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void> {
+  async activateSession(userId: number, scopeIds: readonly string[], authSubject: string | null): Promise<void> {
     if (!(await this.prepareRemoteSession(userId, scopeIds, authSubject))) return;
     await this.resumeRemoteSession();
   }
@@ -37,7 +37,7 @@ export class OfflineCoordinatorService {
   /** Installs a remotely verified identity without starting pull or outbox replay. */
   prepareRemoteSession(
     userId: number,
-    scopeIds: readonly number[],
+    scopeIds: readonly string[],
     authSubject: string | null,
     authLease?: OfflineSessionTransitionLease,
   ): Promise<boolean> {

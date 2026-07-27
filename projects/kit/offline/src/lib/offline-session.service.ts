@@ -2,10 +2,10 @@ import { inject, Injectable, signal } from '@angular/core';
 import type { OfflineScope } from './offline-repository';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 
-/** Persisted identity and group boundary for one authenticated local replica. */
+/** Persisted identity and partition boundary for one authenticated local replica. */
 export interface OfflineSessionManifest {
   userId: number;
-  scopeIds: number[];
+  readonly scopeIds: readonly string[];
   /** Authentication-provider subject used to distinguish users on a shared device. */
   authSubject: string | null;
   updatedAt: number;
@@ -38,22 +38,22 @@ export class OfflineSessionService {
     this.#initialized = true;
   }
 
-  async activateSession(userId: number, scopeIds: readonly number[], authSubject: string | null): Promise<void>;
+  async activateSession(userId: number, scopeIds: readonly string[], authSubject: string | null): Promise<void>;
   async activateSession(
     userId: number,
-    scopeIds: readonly number[],
+    scopeIds: readonly string[],
     authSubject: string | null,
     lease: OfflineSessionTransitionLease,
   ): Promise<boolean>;
   async activateSession(
     userId: number,
-    scopeIds: readonly number[],
+    scopeIds: readonly string[],
     authSubject: string | null,
     lease?: OfflineSessionTransitionLease,
   ): Promise<void | boolean> {
     await this.initialize();
     if (lease && !lease.isCurrent()) return false;
-    const normalizedScopeIds = [...new Set(scopeIds)].sort((a, b) => a - b);
+    const normalizedScopeIds = [...new Set(scopeIds)].sort((a, b) => a.localeCompare(b));
     const previousUserId = await this.#repository.getLastUserId();
     if (lease && !lease.isCurrent()) return false;
     let previous = previousUserId === userId ? ((await this.#repository.getSessionManifest<OfflineSessionManifest>(userId)) ?? null) : null;
@@ -68,8 +68,8 @@ export class OfflineSessionService {
     const active = new Set(normalizedScopeIds);
     await Promise.all(
       (previous?.scopeIds ?? [])
-        .filter((groupId) => !active.has(groupId))
-        .map((groupId) => this.#repository.clearGroup({ userId, groupId })),
+        .filter((scopeId) => !active.has(scopeId))
+        .map((scopeId) => this.#repository.clearScope({ userId, scopeId })),
     );
     if (lease && !lease.isCurrent()) return false;
 
@@ -163,7 +163,7 @@ export class OfflineSessionService {
   #sessionFromManifest(): { userId: number; scopes: OfflineScope[] } | null {
     const manifest = this.#activeManifest();
     return manifest
-      ? { userId: manifest.userId, scopes: manifest.scopeIds.map((groupId) => ({ userId: manifest.userId, groupId })) }
+      ? { userId: manifest.userId, scopes: manifest.scopeIds.map((scopeId) => ({ userId: manifest.userId, scopeId })) }
       : null;
   }
 }

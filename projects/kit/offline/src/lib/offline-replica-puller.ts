@@ -1,7 +1,7 @@
 import { InjectionToken } from '@angular/core';
 import type { OfflineScope } from './offline-repository';
 
-/** Server pull request for one user/group replica partition. */
+/** Server pull request for one user or partition-scoped replica. */
 export interface OfflineReplicaPullRequest {
   scope: OfflineScope;
   cursor: string;

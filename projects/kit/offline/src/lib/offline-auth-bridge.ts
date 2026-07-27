@@ -9,7 +9,7 @@ import { OfflineCoordinatorService } from './offline-coordinator.service';
 /** Remote identity fields required to activate an offline session boundary. */
 export interface OfflineRemoteIdentity {
   readonly userId: number;
-  readonly scopeIds: readonly number[];
+  readonly scopeIds: readonly string[];
   readonly authSubject: string;
 }
 
@@ -160,8 +160,8 @@ function assertOfflineRemoteIdentity(identity: OfflineRemoteIdentity): void {
   if (!Number.isSafeInteger(identity.userId) || identity.userId <= 0) {
     throw new Error('Offline remote identity userId must be a positive safe integer.');
   }
-  if (!Array.isArray(identity.scopeIds) || identity.scopeIds.some((scopeId) => !Number.isSafeInteger(scopeId) || scopeId < 0)) {
-    throw new Error('Offline remote identity scopeIds must contain only non-negative safe integers.');
+  if (!Array.isArray(identity.scopeIds) || identity.scopeIds.some((scopeId) => typeof scopeId !== 'string' || scopeId.length === 0)) {
+    throw new Error('Offline remote identity scopeIds must contain only non-empty strings.');
   }
   if (typeof identity.authSubject !== 'string' || identity.authSubject.length === 0) {
     throw new Error('Offline remote identity authSubject must be a non-empty string.');

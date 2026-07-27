@@ -41,7 +41,7 @@ const replicaSchema = defineOfflineReplicaSchema({
   migrations: [],
 });
 
-const scope: OfflineScope = { userId: 1, groupId: 10 };
+const scope: OfflineScope = { userId: 1, scopeId: '10' };
 
 class MemoryStorage {
   readonly values = new Map<string, unknown>();

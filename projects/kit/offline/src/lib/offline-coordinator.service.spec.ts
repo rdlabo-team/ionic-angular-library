@@ -23,7 +23,7 @@ describe('OfflineCoordinatorService', () => {
     const session = {
       initialize: vi.fn(async () => undefined),
       activateSession: vi.fn(
-        async (userId: number, _scopeIds: readonly number[], _authSubject: string | null, lease: { isCurrent(): boolean }) => {
+        async (userId: number, _scopeIds: readonly string[], _authSubject: string | null, lease: { isCurrent(): boolean }) => {
           order.push('activate-remote');
           if (!lease.isCurrent()) return false;
           sessionState.userId = userId;
@@ -66,7 +66,7 @@ describe('OfflineCoordinatorService', () => {
   }
 
   it('restores local visibility without starting remote synchronization', async () => {
-    const manifest = { userId: 1, scopeIds: [2], authSubject: 'subject', updatedAt: 1 };
+    const manifest = { userId: 1, scopeIds: ['2'], authSubject: 'subject', updatedAt: 1 };
     const { coordinator, order, sync } = setup(manifest);
 
     await expect(coordinator.activateOfflineSession('subject')).resolves.toEqual(manifest);
@@ -87,7 +87,7 @@ describe('OfflineCoordinatorService', () => {
   it('separates remote identity activation from transport resume', async () => {
     const { coordinator, order } = setup();
 
-    await coordinator.prepareRemoteSession(1, [2], 'subject');
+    await coordinator.prepareRemoteSession(1, ['2'], 'subject');
     expect(order).toEqual(['reset', 'suspend-remote', 'activate-remote']);
 
     await coordinator.resumeRemoteSession();
@@ -105,7 +105,7 @@ describe('OfflineCoordinatorService', () => {
       releaseActivation = resolve;
     });
     session.activateSession.mockImplementationOnce(
-      async (userId: number, _scopeIds: readonly number[], _subject: string | null, lease: { isCurrent(): boolean }) => {
+      async (userId: number, _scopeIds: readonly string[], _subject: string | null, lease: { isCurrent(): boolean }) => {
         activationStarted?.();
         await gate;
         if (!lease.isCurrent()) return false;
@@ -114,7 +114,7 @@ describe('OfflineCoordinatorService', () => {
       },
     );
 
-    const activation = coordinator.prepareRemoteSession(1, [2], 'old-subject');
+    const activation = coordinator.prepareRemoteSession(1, ['2'], 'old-subject');
     await started;
     const logout = coordinator.clearActiveSession();
     releaseActivation?.();
@@ -144,7 +144,7 @@ describe('OfflineCoordinatorService', () => {
       releaseOld = resolve;
     });
     session.activateSession.mockImplementationOnce(
-      async (userId: number, _scopeIds: readonly number[], _subject: string | null, lease: { isCurrent(): boolean }) => {
+      async (userId: number, _scopeIds: readonly string[], _subject: string | null, lease: { isCurrent(): boolean }) => {
         oldStarted?.();
         await gate;
         if (!lease.isCurrent()) return false;
@@ -153,9 +153,9 @@ describe('OfflineCoordinatorService', () => {
       },
     );
 
-    const oldActivation = coordinator.prepareRemoteSession(1, [2], 'old-subject');
+    const oldActivation = coordinator.prepareRemoteSession(1, ['2'], 'old-subject');
     await started;
-    const newActivation = coordinator.prepareRemoteSession(9, [10], 'new-subject');
+    const newActivation = coordinator.prepareRemoteSession(9, ['10'], 'new-subject');
     releaseOld?.();
 
     await expect(oldActivation).resolves.toBe(false);
@@ -166,7 +166,7 @@ describe('OfflineCoordinatorService', () => {
   it('preserves user scope 0 from remote activation through the first pull', async () => {
     let lastUserId: number | null = null;
     let manifest: OfflineSessionManifest | null = null;
-    const pull = vi.fn(async (_scope: { userId: number; groupId: number }) => undefined);
+    const pull = vi.fn(async (_scope: { userId: number; scopeId: string }) => undefined);
     const repository = {
       initialize: vi.fn(async () => undefined),
       getLastUserId: vi.fn(async () => lastUserId),
@@ -178,7 +178,7 @@ describe('OfflineCoordinatorService', () => {
         manifest = structuredClone(value);
       }),
       clearUser: vi.fn(async () => undefined),
-      clearGroup: vi.fn(async () => undefined),
+      clearScope: vi.fn(async () => undefined),
     };
     const network = {
       state: signal('connected'),
@@ -211,10 +211,10 @@ describe('OfflineCoordinatorService', () => {
     });
     const coordinator = TestBed.inject(OfflineCoordinatorService);
 
-    await expect(coordinator.prepareRemoteSession(7, [0], 'subject')).resolves.toBe(true);
+    await expect(coordinator.prepareRemoteSession(7, ['0'], 'subject')).resolves.toBe(true);
     await coordinator.resumeRemoteSession();
 
-    expect(manifest).toMatchObject({ userId: 7, scopeIds: [0], authSubject: 'subject' });
-    expect(pull).toHaveBeenCalledWith({ userId: 7, groupId: 0 });
+    expect(manifest).toMatchObject({ userId: 7, scopeIds: ['0'], authSubject: 'subject' });
+    expect(pull).toHaveBeenCalledWith({ userId: 7, scopeId: '0' });
   });
 });

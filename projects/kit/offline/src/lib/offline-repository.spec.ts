@@ -50,7 +50,7 @@ const testItemWithSubtitleEntity = defineReplicaEntity<TestItemWithSubtitleSelec
 const testGroupItemEntity = defineReplicaEntity<{ id: number; name: string }>()({
   table: 'test_group_items',
   sourceKey: 'test_group_items',
-  scope: 'group',
+  scope: 'partition',
   fields: {
     id: serverId(),
     name: text(),
@@ -259,7 +259,7 @@ describe('IonicOfflineRepository', () => {
   describe('web replica schema migration', () => {
     const baseRow: OfflineReplicaRow = {
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       sourceKey: 'test_items',
       localId: '019d-aaaa',
       serverId: 42,
@@ -273,7 +273,7 @@ describe('IonicOfflineRepository', () => {
     it('add-field transformを成功させidentity/sync metadataとoutboxを保持する', async () => {
       const command: OfflineCommand = {
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         commandId: 'update-1',
         aggregateType: 'test_items',
         aggregateLocalId: '019d-aaaa',
@@ -293,7 +293,7 @@ describe('IonicOfflineRepository', () => {
       });
       await repository.initialize();
 
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
         localId: '019d-aaaa',
         serverId: 42,
         serverRevision: 7,
@@ -302,7 +302,7 @@ describe('IonicOfflineRepository', () => {
         values: { title: 'Local item', subtitle: 'migrated' },
         confirmedValues: { title: 'Confirmed item', subtitle: 'migrated-confirmed' },
       });
-      expect(await repository.getCommands({ userId: 1, groupId: 10 })).toHaveLength(1);
+      expect(await repository.getCommands({ userId: 1, scopeId: '10' })).toHaveLength(1);
       expect(storage.values.get('offline:replica:schema-migration')).toBeUndefined();
       expect(storage.values.get('offline:metadata')).toMatchObject({
         replicaSchemaVersion: 2,
@@ -325,7 +325,7 @@ describe('IonicOfflineRepository', () => {
       };
       const command: OfflineCommand = {
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         commandId: 'delete-1',
         aggregateType: 'test_items',
         aggregateLocalId: '019d-cccc',
@@ -352,18 +352,18 @@ describe('IonicOfflineRepository', () => {
       });
       await repository.initialize();
 
-      expect(await repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-cccc')).toBeNull();
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-bbbb')).resolves.toMatchObject({
+      expect(await repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-cccc')).toBeNull();
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-bbbb')).resolves.toMatchObject({
         values: { title: 'Keep me', subtitle: 'kept' },
       });
-      expect(await repository.getCommands({ userId: 1, groupId: 10 })).toHaveLength(1);
+      expect(await repository.getCommands({ userId: 1, scopeId: '10' })).toHaveLength(1);
       expect(storage.values.get('offline:metadata')).toMatchObject({ replicaSchemaVersion: 2 });
     });
 
     it('invalid outputはmetadataを進めずoutboxを失わない', async () => {
       const command: OfflineCommand = {
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         commandId: 'update-1',
         aggregateType: 'test_items',
         aggregateLocalId: '019d-aaaa',
@@ -408,7 +408,7 @@ describe('IonicOfflineRepository', () => {
           putRows: [
             {
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               sourceKey: 'test_items',
               localId: '019d-new',
               serverId: null,
@@ -426,7 +426,7 @@ describe('IonicOfflineRepository', () => {
     it('ROWS成功後のmetadata失敗は旧状態へrollbackする', async () => {
       const command: OfflineCommand = {
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         commandId: 'update-1',
         aggregateType: 'test_items',
         aggregateLocalId: '019d-aaaa',
@@ -486,7 +486,7 @@ describe('IonicOfflineRepository', () => {
       });
       await repository.initialize();
 
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
         values: { title: 'Local item', subtitle: 'migrated' },
       });
       expect(storage.values.get('offline:replica:schema-migration')).toBeUndefined();
@@ -537,7 +537,7 @@ describe('IonicOfflineRepository', () => {
       repository = createRepository(replicaSchemaV2, { preserveStorage: true });
       await repository.initialize();
 
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
         values: { title: 'Local item', subtitle: 'migrated' },
       });
       expect(storage.values.get('offline:metadata')).toMatchObject({ replicaSchemaVersion: 2 });
@@ -564,10 +564,10 @@ describe('IonicOfflineRepository', () => {
       });
       await repository.initialize();
 
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-aaaa')).rejects.toThrow(
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-aaaa')).rejects.toThrow(
         'Unknown offline replica source key "test_items".',
       );
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'renamed_items', '019d-aaaa')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'renamed_items', '019d-aaaa')).resolves.toMatchObject({
         sourceKey: 'renamed_items',
         values: { title: 'Local item' },
       });
@@ -592,7 +592,7 @@ describe('IonicOfflineRepository', () => {
       });
       await repository.initialize();
 
-      await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
+      await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-aaaa')).resolves.toMatchObject({
         values: { title: 'Local item', subtitle: 'migrated' },
       });
       expect(storage.values.get('offline:metadata')).toMatchObject({
@@ -626,12 +626,12 @@ describe('IonicOfflineRepository', () => {
     });
   });
 
-  it('clearGroupはuser-scoped replica rowを保持しgroup-scoped rowだけ削除する', async () => {
+  it('clearScopeはuser-scoped replica rowを保持しpartition-scoped rowだけ削除する', async () => {
     await repository.transactReplica({
       putRows: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_items',
           localId: '019d-user',
           serverId: 42,
@@ -643,12 +643,12 @@ describe('IonicOfflineRepository', () => {
         },
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_group_items',
           localId: '019d-group',
           serverId: 55,
-          values: { id: 55, name: 'Group scoped' },
-          confirmedValues: { id: 55, name: 'Group scoped' },
+          values: { id: 55, name: 'Partition scoped' },
+          confirmedValues: { id: 55, name: 'Partition scoped' },
           serverRevision: 1,
           fetchedAt: 1,
           syncState: 'confirmed',
@@ -656,17 +656,17 @@ describe('IonicOfflineRepository', () => {
       ],
     });
 
-    await repository.clearGroup({ userId: 1, groupId: 10 });
+    await repository.clearScope({ userId: 1, scopeId: '10' });
 
-    await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-user')).resolves.toMatchObject({
+    await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-user')).resolves.toMatchObject({
       localId: '019d-user',
     });
-    expect(await repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_group_items', '019d-group')).toBeNull();
+    expect(await repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_group_items', '019d-group')).toBeNull();
   });
 
-  describe('user-scope cross-group parity', () => {
-    const scopeG10 = { userId: 1, groupId: 10 };
-    const scopeG11 = { userId: 1, groupId: 11 };
+  describe('user-scope cross-partition parity', () => {
+    const scopeG10 = { userId: 1, scopeId: '10' };
+    const scopeG11 = { userId: 1, scopeId: '11' };
     const userRow = {
       sourceKey: 'test_items',
       localId: '019d-cross',
@@ -683,34 +683,34 @@ describe('IonicOfflineRepository', () => {
           {
             ...userRow,
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             values: { id: 42, title: 'Shared user row' },
           },
         ],
       });
     });
 
-    it('getReplicaRowは別groupIdでも同一user rowを返す', async () => {
+    it('getReplicaRowは別scopeIdでも同一user rowを返す', async () => {
       await expect(repository.getReplicaRow(scopeG11, 'test_items', '019d-cross')).resolves.toMatchObject({
         localId: '019d-cross',
-        groupId: 11,
+        scopeId: '11',
         values: { title: 'Shared user row' },
       });
     });
 
-    it('getReplicaRowByServerIdは別groupIdでも同一user rowを返す', async () => {
+    it('getReplicaRowByServerIdは別scopeIdでも同一user rowを返す', async () => {
       await expect(repository.getReplicaRowByServerId(scopeG11, 'test_items', 42)).resolves.toMatchObject({
         localId: '019d-cross',
       });
     });
 
-    it('transactReplica更新は別group scopeからでも同一rowへ投影する', async () => {
+    it('transactReplica更新は別partition scopeからでも同一rowへ投影する', async () => {
       await repository.transactReplica({
         putRows: [
           {
             ...userRow,
             userId: 1,
-            groupId: 11,
+            scopeId: '11',
             values: { id: 42, title: 'Updated from G11' },
             confirmedValues: { id: 42, title: 'Updated from G11' },
           },
@@ -719,13 +719,13 @@ describe('IonicOfflineRepository', () => {
 
       await expect(repository.getReplicaRow(scopeG10, 'test_items', '019d-cross')).resolves.toMatchObject({
         values: { title: 'Updated from G11' },
-        groupId: 10,
+        scopeId: '10',
       });
     });
   });
 
   it('同一createdAtはcommandId昇順で決定的に並べる', async () => {
-    const base: Omit<OfflineCommand, 'groupId' | 'commandId' | 'createdAt'> = {
+    const base: Omit<OfflineCommand, 'scopeId' | 'commandId' | 'createdAt'> = {
       userId: 1,
       aggregateType: 'test_items',
       aggregateLocalId: '019d-aaaa',
@@ -739,15 +739,15 @@ describe('IonicOfflineRepository', () => {
       retryAt: null,
       lastErrorCode: null,
     };
-    await repository.putCommand({ ...base, groupId: 10, commandId: 'cmd-z', createdAt: 10 });
-    await repository.putCommand({ ...base, groupId: 10, commandId: 'cmd-a', createdAt: 10 });
-    await repository.putCommand({ ...base, groupId: 11, commandId: 'cmd-m', createdAt: 10 });
-    expect((await repository.getCommands({ userId: 1, groupId: 10 })).map((item) => item.commandId)).toEqual(['cmd-a', 'cmd-z']);
+    await repository.putCommand({ ...base, scopeId: '10', commandId: 'cmd-z', createdAt: 10 });
+    await repository.putCommand({ ...base, scopeId: '10', commandId: 'cmd-a', createdAt: 10 });
+    await repository.putCommand({ ...base, scopeId: '11', commandId: 'cmd-m', createdAt: 10 });
+    expect((await repository.getCommands({ userId: 1, scopeId: '10' })).map((item) => item.commandId)).toEqual(['cmd-a', 'cmd-z']);
     expect((await repository.getCommandsForUser!(1)).map((item) => item.commandId)).toEqual(['cmd-a', 'cmd-m', 'cmd-z']);
   });
 
-  it('outboxを作成順で保持し、group削除時はそのscopeだけを消す', async () => {
-    const base: Omit<OfflineCommand, 'groupId' | 'commandId' | 'createdAt'> = {
+  it('outboxを作成順で保持し、partition削除時はそのscopeだけを消す', async () => {
+    const base: Omit<OfflineCommand, 'scopeId' | 'commandId' | 'createdAt'> = {
       userId: 1,
       aggregateType: 'documents',
       aggregateLocalId: '019d-aaaa',
@@ -761,18 +761,18 @@ describe('IonicOfflineRepository', () => {
       retryAt: null,
       lastErrorCode: null,
     };
-    await repository.putCommand({ ...base, groupId: 10, commandId: 'later', createdAt: 20 });
-    await repository.putCommand({ ...base, groupId: 10, commandId: 'earlier', createdAt: 10 });
-    await repository.putCommand({ ...base, groupId: 11, commandId: 'keep', createdAt: 5 });
-    expect((await repository.getCommands({ userId: 1, groupId: 10 })).map((item) => item.commandId)).toEqual(['earlier', 'later']);
+    await repository.putCommand({ ...base, scopeId: '10', commandId: 'later', createdAt: 20 });
+    await repository.putCommand({ ...base, scopeId: '10', commandId: 'earlier', createdAt: 10 });
+    await repository.putCommand({ ...base, scopeId: '11', commandId: 'keep', createdAt: 5 });
+    expect((await repository.getCommands({ userId: 1, scopeId: '10' })).map((item) => item.commandId)).toEqual(['earlier', 'later']);
 
-    await repository.clearGroup({ userId: 1, groupId: 10 });
-    expect(await repository.getCommands({ userId: 1, groupId: 10 })).toEqual([]);
-    expect(await repository.getCommands({ userId: 1, groupId: 11 })).toHaveLength(1);
+    await repository.clearScope({ userId: 1, scopeId: '10' });
+    expect(await repository.getCommands({ userId: 1, scopeId: '10' })).toEqual([]);
+    expect(await repository.getCommands({ userId: 1, scopeId: '11' })).toHaveLength(1);
   });
 
   it('session manifestをuserIdごとに保持しclearUserで削除する', async () => {
-    const manifest = { userId: 1, scopeIds: [10], authSubject: 'uid-a', updatedAt: 1 };
+    const manifest = { userId: 1, scopeIds: ['10'], authSubject: 'uid-a', updatedAt: 1 };
     await repository.putSessionManifest(1, manifest);
     await expect(repository.getSessionManifest(1)).resolves.toEqual(manifest);
     await expect(repository.getSessionManifest(2)).resolves.toBeNull();
@@ -781,15 +781,15 @@ describe('IonicOfflineRepository', () => {
     await expect(repository.getSessionManifest(1)).resolves.toBeNull();
   });
 
-  it('clearGroupはsession manifestを削除しない', async () => {
-    const manifest = { userId: 1, scopeIds: [10], authSubject: 'uid-a', updatedAt: 1 };
+  it('clearScopeはsession manifestを削除しない', async () => {
+    const manifest = { userId: 1, scopeIds: ['10'], authSubject: 'uid-a', updatedAt: 1 };
     await repository.putSessionManifest(1, manifest);
-    await repository.clearGroup({ userId: 1, groupId: 10 });
+    await repository.clearScope({ userId: 1, scopeId: '10' });
     await expect(repository.getSessionManifest(1)).resolves.toEqual(manifest);
   });
 
   it('local UUIDを主キーとしてserver id未採番のreplica rowを保持する', async () => {
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     const row = {
       ...scope,
       sourceKey: 'test_items',
@@ -803,7 +803,7 @@ describe('IonicOfflineRepository', () => {
     } as const;
     const command: OfflineCommand = {
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       commandId: 'create-1',
       aggregateType: 'test_items',
       aggregateLocalId: '019d-aaaa',
@@ -839,7 +839,7 @@ describe('IonicOfflineRepository', () => {
   it('local-only projectionをserverIdなしでround-tripしserverId lookupは常にnullを返す', async () => {
     repository = createRepository(localProjectionSchema);
     await repository.initialize();
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     await repository.transactReplica({
       putRows: [
         {
@@ -874,7 +874,7 @@ describe('IonicOfflineRepository', () => {
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'local_projections',
             localId: 'feed-home',
             serverId: 1,
@@ -887,7 +887,7 @@ describe('IonicOfflineRepository', () => {
         ],
       }),
     ).rejects.toThrow('Offline replica source "local_projections" does not define a serverId field.');
-    await expect(repository.getReplicaRows({ userId: 1, groupId: 10 }, 'local_projections')).resolves.toEqual([]);
+    await expect(repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'local_projections')).resolves.toEqual([]);
   });
 
   it('未知core schemaはOutboxを消さずlossless migrationが無い限りfail closedにする', async () => {
@@ -907,7 +907,7 @@ describe('IonicOfflineRepository', () => {
   });
 
   it('replica rowとoutbox commandを単一transactionで同時に読める', async () => {
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     const row = {
       ...scope,
       sourceKey: 'test_items',
@@ -948,7 +948,7 @@ describe('IonicOfflineRepository', () => {
       putRows: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_items',
           localId: '019d-projected',
           serverId: 42,
@@ -961,7 +961,7 @@ describe('IonicOfflineRepository', () => {
       ],
     });
 
-    await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-projected')).resolves.toMatchObject({
+    await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-projected')).resolves.toMatchObject({
       serverId: 42,
       values: { title: 'Optimistic' },
       confirmedValues: { title: 'Confirmed' },
@@ -974,7 +974,7 @@ describe('IonicOfflineRepository', () => {
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-bbbb',
             serverId: null,
@@ -987,14 +987,14 @@ describe('IonicOfflineRepository', () => {
         ],
       }),
     ).rejects.toThrow('Replica row is missing required source key "title".');
-    expect(await repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-bbbb')).toBeNull();
+    expect(await repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-bbbb')).toBeNull();
   });
 
   it('未知core schemaではreplica rowsも破壊しない', async () => {
     storage.values.set('offline:replica:rows', {
       '1:10:test_items:019d-bbbb': {
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         sourceKey: 'test_items',
         localId: '019d-bbbb',
         serverId: null,
@@ -1011,7 +1011,7 @@ describe('IonicOfflineRepository', () => {
   });
 
   describe('replica pull persistence', () => {
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     const baseRow = {
       sourceKey: 'test_items',
       serverId: 42,
@@ -1021,12 +1021,12 @@ describe('IonicOfflineRepository', () => {
       syncState: 'confirmed' as const,
     };
 
-    it('getReplicaRowByServerIdはuser scopeでgroupIdを無視してlookupする', async () => {
+    it('getReplicaRowByServerIdはuser scopeでscopeIdを無視してlookupする', async () => {
       await repository.transactReplica({
         putRows: [
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 42, title: 'G10' } },
-          { ...baseRow, userId: 1, groupId: 11, localId: '019d-bbbb', serverId: 43, values: { id: 43, title: 'G11' } },
-          { ...baseRow, userId: 2, groupId: 10, localId: '019d-cccc', serverId: 42, values: { id: 42, title: 'Other user' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 42, title: 'G10' } },
+          { ...baseRow, userId: 1, scopeId: '11', localId: '019d-bbbb', serverId: 43, values: { id: 43, title: 'G11' } },
+          { ...baseRow, userId: 2, scopeId: '10', localId: '019d-cccc', serverId: 42, values: { id: 42, title: 'Other user' } },
         ],
       });
 
@@ -1040,7 +1040,7 @@ describe('IonicOfflineRepository', () => {
       expect(await repository.getReplicaRowByServerId(scope, 'test_items', 99)).toBeNull();
     });
 
-    it('getReplicaRowByServerIdはgroup scopeでgroupId一致のみ返す', async () => {
+    it('getReplicaRowByServerIdはpartition scopeでscopeId一致のみ返す', async () => {
       const groupRow = {
         sourceKey: 'test_group_items',
         serverId: 55,
@@ -1051,8 +1051,8 @@ describe('IonicOfflineRepository', () => {
       };
       await repository.transactReplica({
         putRows: [
-          { ...groupRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 55, name: 'G10' } },
-          { ...groupRow, userId: 1, groupId: 11, localId: '019d-bbbb', serverId: 56, values: { id: 56, name: 'G11' } },
+          { ...groupRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 55, name: 'G10' } },
+          { ...groupRow, userId: 1, scopeId: '11', localId: '019d-bbbb', serverId: 56, values: { id: 56, name: 'G11' } },
         ],
       });
 
@@ -1067,7 +1067,7 @@ describe('IonicOfflineRepository', () => {
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-aaaa',
             serverId: 42,
@@ -1078,10 +1078,10 @@ describe('IonicOfflineRepository', () => {
             syncState: 'confirmed',
           },
         ],
-        putCursors: [{ userId: 1, groupId: 10, cursor: 'cursor-v1' }],
+        putCursors: [{ userId: 1, scopeId: '10', cursor: 'cursor-v1' }],
       });
 
-      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ userId: 1, groupId: 10, cursor: 'cursor-v1' });
+      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ userId: 1, scopeId: '10', cursor: 'cursor-v1' });
       await expect(repository.getReplicaRowByServerId(scope, 'test_items', 42)).resolves.toMatchObject({
         values: { title: 'Pulled' },
       });
@@ -1093,7 +1093,7 @@ describe('IonicOfflineRepository', () => {
           putRows: [
             {
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               sourceKey: 'test_items',
               localId: '019d-aaaa',
               serverId: 42,
@@ -1104,24 +1104,24 @@ describe('IonicOfflineRepository', () => {
               syncState: 'confirmed',
             },
           ],
-          putCursors: [{ userId: 1, groupId: 10, cursor: 'cursor-v1' }],
+          putCursors: [{ userId: 1, scopeId: '10', cursor: 'cursor-v1' }],
         }),
       ).rejects.toThrow('Replica row is missing required source key "title".');
       expect(await repository.getReplicaCursor(scope)).toBeNull();
     });
 
-    it('clearGroupはcursorを削除する', async () => {
+    it('clearScopeはcursorを削除する', async () => {
       await repository.transactReplica({
         putCursors: [
-          { userId: 1, groupId: 10, cursor: 'cursor-g10' },
-          { userId: 1, groupId: 11, cursor: 'cursor-g11' },
+          { userId: 1, scopeId: '10', cursor: 'cursor-g10' },
+          { userId: 1, scopeId: '11', cursor: 'cursor-g11' },
         ],
       });
-      await repository.clearGroup(scope);
+      await repository.clearScope(scope);
       expect(await repository.getReplicaCursor(scope)).toBeNull();
-      await expect(repository.getReplicaCursor({ userId: 1, groupId: 11 })).resolves.toEqual({
+      await expect(repository.getReplicaCursor({ userId: 1, scopeId: '11' })).resolves.toEqual({
         userId: 1,
-        groupId: 11,
+        scopeId: '11',
         cursor: 'cursor-g11',
       });
     });
@@ -1129,22 +1129,22 @@ describe('IonicOfflineRepository', () => {
     it('clearUserはcursorを削除する', async () => {
       await repository.transactReplica({
         putCursors: [
-          { userId: 1, groupId: 10, cursor: 'cursor-u1' },
-          { userId: 2, groupId: 10, cursor: 'cursor-u2' },
+          { userId: 1, scopeId: '10', cursor: 'cursor-u1' },
+          { userId: 2, scopeId: '10', cursor: 'cursor-u2' },
         ],
       });
       await repository.clearUser(1);
-      expect(await repository.getReplicaCursor({ userId: 1, groupId: 10 })).toBeNull();
-      await expect(repository.getReplicaCursor({ userId: 2, groupId: 10 })).resolves.toEqual({
+      expect(await repository.getReplicaCursor({ userId: 1, scopeId: '10' })).toBeNull();
+      await expect(repository.getReplicaCursor({ userId: 2, scopeId: '10' })).resolves.toEqual({
         userId: 2,
-        groupId: 10,
+        scopeId: '10',
         cursor: 'cursor-u2',
       });
     });
   });
 
   describe('replica serverId uniqueness', () => {
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     const groupRow = {
       sourceKey: 'test_group_items' as const,
       serverId: 55,
@@ -1162,13 +1162,13 @@ describe('IonicOfflineRepository', () => {
       syncState: 'confirmed' as const,
     };
 
-    it('group-scopedで別localIdに同じserverIdを割り当てるとrejectする', async () => {
+    it('partition-scopedで別localIdに同じserverIdを割り当てるとrejectする', async () => {
       await repository.transactReplica({
         putRows: [
           {
             ...groupRow,
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             localId: '019d-aaaa',
             values: { id: 55, name: 'A' },
           },
@@ -1180,7 +1180,7 @@ describe('IonicOfflineRepository', () => {
             {
               ...groupRow,
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               localId: '019d-bbbb',
               values: { id: 55, name: 'B' },
             },
@@ -1195,7 +1195,7 @@ describe('IonicOfflineRepository', () => {
           {
             ...userRow,
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             localId: '019d-aaaa',
             values: { id: 42, title: 'A' },
           },
@@ -1207,7 +1207,7 @@ describe('IonicOfflineRepository', () => {
             {
               ...userRow,
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               localId: '019d-bbbb',
               values: { id: 42, title: 'B' },
             },
@@ -1223,14 +1223,14 @@ describe('IonicOfflineRepository', () => {
             {
               ...groupRow,
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               localId: '019d-aaaa',
               values: { id: 55, name: 'A' },
             },
             {
               ...groupRow,
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               localId: '019d-bbbb',
               values: { id: 55, name: 'B' },
             },
@@ -1241,20 +1241,20 @@ describe('IonicOfflineRepository', () => {
       expect(await repository.getReplicaRow(scope, 'test_group_items', '019d-bbbb')).toBeNull();
     });
 
-    it('group-scopedは別groupなら同じserverIdを許容する', async () => {
+    it('partition-scopedは別partitionなら同じserverIdを許容する', async () => {
       await repository.transactReplica({
         putRows: [
           {
             ...groupRow,
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             localId: '019d-aaaa',
             values: { id: 55, name: 'G10' },
           },
           {
             ...groupRow,
             userId: 1,
-            groupId: 11,
+            scopeId: '11',
             localId: '019d-bbbb',
             values: { id: 55, name: 'G11' },
           },
@@ -1263,18 +1263,18 @@ describe('IonicOfflineRepository', () => {
       await expect(repository.getReplicaRowByServerId(scope, 'test_group_items', 55)).resolves.toMatchObject({
         localId: '019d-aaaa',
       });
-      await expect(repository.getReplicaRowByServerId({ userId: 1, groupId: 11 }, 'test_group_items', 55)).resolves.toMatchObject({
+      await expect(repository.getReplicaRowByServerId({ userId: 1, scopeId: '11' }, 'test_group_items', 55)).resolves.toMatchObject({
         localId: '019d-bbbb',
       });
     });
 
-    it('user-scopedは別groupでも同じserverIdをrejectする', async () => {
+    it('user-scopedは別partitionでも同じserverIdをrejectする', async () => {
       await repository.transactReplica({
         putRows: [
           {
             ...userRow,
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             localId: '019d-aaaa',
             values: { id: 42, title: 'G10' },
           },
@@ -1286,7 +1286,7 @@ describe('IonicOfflineRepository', () => {
             {
               ...userRow,
               userId: 1,
-              groupId: 11,
+              scopeId: '11',
               localId: '019d-bbbb',
               values: { id: 42, title: 'G11' },
             },
@@ -1309,30 +1309,30 @@ describe('IonicOfflineRepository', () => {
     it('localId昇順で決定的に返す', async () => {
       await repository.transactReplica({
         putRows: [
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-cccc', values: { id: 0, title: 'C' } },
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 0, title: 'A' } },
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-bbbb', values: { id: 0, title: 'B' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-cccc', values: { id: 0, title: 'C' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 0, title: 'A' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-bbbb', values: { id: 0, title: 'B' } },
         ],
       });
 
-      const rows = await repository.getReplicaRows({ userId: 1, groupId: 10 }, 'test_items');
+      const rows = await repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_items');
       expect(rows.map((row) => row.localId)).toEqual(['019d-aaaa', '019d-bbbb', '019d-cccc']);
     });
 
-    it('user-scoped sourceはgroupIdを無視して同一userの行を返す', async () => {
+    it('user-scoped sourceはscopeIdを無視して同一userの行を返す', async () => {
       await repository.transactReplica({
         putRows: [
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 0, title: 'G10' } },
-          { ...baseRow, userId: 1, groupId: 11, localId: '019d-bbbb', values: { id: 0, title: 'G11' } },
-          { ...baseRow, userId: 2, groupId: 10, localId: '019d-cccc', values: { id: 0, title: 'Other user' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 0, title: 'G10' } },
+          { ...baseRow, userId: 1, scopeId: '11', localId: '019d-bbbb', values: { id: 0, title: 'G11' } },
+          { ...baseRow, userId: 2, scopeId: '10', localId: '019d-cccc', values: { id: 0, title: 'Other user' } },
         ],
       });
 
-      const rows = await repository.getReplicaRows({ userId: 1, groupId: 10 }, 'test_items');
+      const rows = await repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_items');
       expect(rows.map((row) => row.localId)).toEqual(['019d-aaaa', '019d-bbbb']);
     });
 
-    it('group-scoped sourceはgroupId一致の行だけを返す', async () => {
+    it('partition-scoped sourceはscopeId一致の行だけを返す', async () => {
       const groupRow = {
         sourceKey: 'test_group_items',
         serverId: null,
@@ -1343,12 +1343,12 @@ describe('IonicOfflineRepository', () => {
       };
       await repository.transactReplica({
         putRows: [
-          { ...groupRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 0, name: 'G10' } },
-          { ...groupRow, userId: 1, groupId: 11, localId: '019d-bbbb', values: { id: 0, name: 'G11' } },
+          { ...groupRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 0, name: 'G10' } },
+          { ...groupRow, userId: 1, scopeId: '11', localId: '019d-bbbb', values: { id: 0, name: 'G11' } },
         ],
       });
 
-      const rows = await repository.getReplicaRows({ userId: 1, groupId: 10 }, 'test_group_items');
+      const rows = await repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_group_items');
       expect(rows).toHaveLength(1);
       expect(rows[0]?.localId).toBe('019d-aaaa');
     });

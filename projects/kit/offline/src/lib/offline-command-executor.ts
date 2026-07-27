@@ -30,7 +30,7 @@ export interface OfflineCommandExecutor {
 /** DI token for the product-specific command transport adapter. */
 export const OFFLINE_COMMAND_EXECUTOR = new InjectionToken<OfflineCommandExecutor>('OFFLINE_COMMAND_EXECUTOR');
 
-/** Authenticated user and group scopes currently eligible for synchronization. */
+/** Authenticated user and partition scopes currently eligible for synchronization. */
 export interface OfflineSyncSession {
   userId: number;
   scopes: OfflineScope[];

@@ -11,7 +11,7 @@ describe('OfflineSessionService shared-device boundary', () => {
 
   beforeEach(() => {
     lastUserId = 10;
-    manifests = new Map([[10, { userId: 10, scopeIds: [1], authSubject: 'uid-A', updatedAt: 1 }]]);
+    manifests = new Map([[10, { userId: 10, scopeIds: ['1'], authSubject: 'uid-A', updatedAt: 1 }]]);
     clearUser = vi.fn(async (userId: number) => {
       manifests.delete(userId);
       if (lastUserId === userId) lastUserId = null;
@@ -27,7 +27,7 @@ describe('OfflineSessionService shared-device boundary', () => {
         manifests.set(userId, manifest);
       }),
       clearUser,
-      clearGroup: vi.fn(async () => undefined),
+      clearScope: vi.fn(async () => undefined),
     } as unknown as OfflineRepository;
     TestBed.configureTestingModule({
       providers: [OfflineSessionService, { provide: OFFLINE_REPOSITORY, useValue: repository }],
@@ -44,7 +44,7 @@ describe('OfflineSessionService shared-device boundary', () => {
   it('認証基盤へ到達不能ならsubject付きmanifestをlocal accessへ復元する', async () => {
     await expect(service.getOfflineAccessManifest()).resolves.toEqual({
       userId: 10,
-      scopeIds: [1],
+      scopeIds: ['1'],
       authSubject: 'uid-A',
       updatedAt: 1,
     });
@@ -55,7 +55,7 @@ describe('OfflineSessionService shared-device boundary', () => {
     await expect(service.activateOfflineSession('uid-A')).resolves.toMatchObject({ userId: 10 });
     await expect(service.getLocalSession()).resolves.toEqual({
       userId: 10,
-      scopes: [{ userId: 10, groupId: 1 }],
+      scopes: [{ userId: 10, scopeId: '1' }],
     });
     await expect(service.getSession()).resolves.toBeNull();
   });
@@ -76,7 +76,7 @@ describe('OfflineSessionService shared-device boundary', () => {
   });
 
   it('legacy null subjectのmanifestはlocal accessへ復元しない', async () => {
-    manifests.set(10, { userId: 10, scopeIds: [1], authSubject: null, updatedAt: 1 });
+    manifests.set(10, { userId: 10, scopeIds: ['1'], authSubject: null, updatedAt: 1 });
     await expect(service.getOfflineAccessManifest()).resolves.toBeNull();
   });
 
@@ -87,39 +87,39 @@ describe('OfflineSessionService shared-device boundary', () => {
 
   it('AからBへ認証主体が変わるとA全scopeを削除してからBを有効化する', async () => {
     await service.initialize();
-    await service.activateSession(20, [2], 'uid-B');
+    await service.activateSession(20, ['2'], 'uid-B');
     expect(clearUser).toHaveBeenCalledWith(10);
     expect(lastUserId).toBe(20);
-    await expect(service.getSession()).resolves.toEqual({ userId: 20, scopes: [{ userId: 20, groupId: 2 }] });
+    await expect(service.getSession()).resolves.toEqual({ userId: 20, scopes: [{ userId: 20, scopeId: '2' }] });
     await expect(service.getLocalSession()).resolves.toEqual({
       userId: 20,
-      scopes: [{ userId: 20, groupId: 2 }],
+      scopes: [{ userId: 20, scopeId: '2' }],
     });
     expect(service.activeManifest()).toMatchObject({ userId: 20, authSubject: 'uid-B' });
   });
 
   it('user-scoped replicaのscope 0をmanifestとremote sessionに保持する', async () => {
-    await service.activateSession(10, [0], 'uid-A');
+    await service.activateSession(10, ['0'], 'uid-A');
 
-    expect(service.activeManifest()).toMatchObject({ userId: 10, scopeIds: [0], authSubject: 'uid-A' });
+    expect(service.activeManifest()).toMatchObject({ userId: 10, scopeIds: ['0'], authSubject: 'uid-A' });
     await expect(service.getSession()).resolves.toEqual({
       userId: 10,
-      scopes: [{ userId: 10, groupId: 0 }],
+      scopes: [{ userId: 10, scopeId: '0' }],
     });
   });
 
   it('同じuserIdでもauthSubjectが変わると旧主体の全scopeを継承しない', async () => {
     await service.initialize();
-    await service.activateSession(10, [2], 'uid-B');
+    await service.activateSession(10, ['2'], 'uid-B');
     expect(clearUser).toHaveBeenCalledWith(10);
-    expect(manifests.get(10)).toMatchObject({ userId: 10, scopeIds: [2], authSubject: 'uid-B' });
-    expect(service.activeManifest()).toMatchObject({ userId: 10, scopeIds: [2], authSubject: 'uid-B' });
+    expect(manifests.get(10)).toMatchObject({ userId: 10, scopeIds: ['2'], authSubject: 'uid-B' });
+    expect(service.activeManifest()).toMatchObject({ userId: 10, scopeIds: ['2'], authSubject: 'uid-B' });
   });
 
   it('legacy null subjectから既知subjectへの移行時も旧local replicaを削除する', async () => {
-    manifests.set(10, { userId: 10, scopeIds: [1], authSubject: null, updatedAt: 1 });
+    manifests.set(10, { userId: 10, scopeIds: ['1'], authSubject: null, updatedAt: 1 });
     await service.initialize();
-    await service.activateSession(10, [1], 'uid-A');
+    await service.activateSession(10, ['1'], 'uid-A');
     expect(clearUser).toHaveBeenCalledWith(10);
   });
 });

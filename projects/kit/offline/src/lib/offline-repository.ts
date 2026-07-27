@@ -13,10 +13,10 @@ import {
 /** Current durable storage schema used by both web and native repositories. */
 export const OFFLINE_SCHEMA_VERSION = 4;
 
-/** User and group partition of all local offline data. */
+/** User and partition scope of all local offline data. */
 export interface OfflineScope {
   userId: number;
-  groupId: number;
+  scopeId: string;
 }
 
 /** Synchronization state of a locally materialized product replica row. */
@@ -61,7 +61,7 @@ export interface OfflineReplicaRow<TValues = unknown> extends OfflineScope {
   syncState: OfflineReplicaSyncState;
 }
 
-/** Stable address of a product replica row inside a user and group replica. */
+/** Stable address of a product replica row inside a user or partition-scoped replica. */
 export interface OfflineReplicaRowKey extends OfflineScope {
   sourceKey: string;
   localId: string;
@@ -102,7 +102,7 @@ export interface OfflineRepository {
   replaceCommand(command: OfflineCommand): Promise<void>;
   removeCommand(commandId: string): Promise<void>;
   clearUser(userId: number): Promise<void>;
-  clearGroup(scope: OfflineScope): Promise<void>;
+  clearScope(scope: OfflineScope): Promise<void>;
   transactReplica(transaction: OfflineReplicaTransaction): Promise<void>;
 }
 
@@ -210,7 +210,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     return Object.values(rows)
       .filter((row) => {
         if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
-        return schema.scope === 'group' ? row.groupId === scope.groupId : true;
+        return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
       })
       .map((row) => this.#rowForScope(row, schema, scope))
       .sort((left, right) => left.localId.localeCompare(right.localId));
@@ -228,7 +228,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
     const row = Object.values(rows).find((row) => {
       if (row.sourceKey !== sourceKey || row.userId !== scope.userId || row.serverId !== serverId) return false;
-      return schema.scope === 'group' ? row.groupId === scope.groupId : true;
+      return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
     });
     return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
@@ -246,7 +246,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.#writes;
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
-      .filter((command) => command.userId === scope.userId && command.groupId === scope.groupId)
+      .filter((command) => command.userId === scope.userId && command.scopeId === scope.scopeId)
       .sort(compareOfflineCommands);
   }
 
@@ -297,9 +297,9 @@ export class IonicOfflineRepository implements OfflineRepository {
     }
   }
 
-  async clearGroup(scope: OfflineScope): Promise<void> {
+  async clearScope(scope: OfflineScope): Promise<void> {
     await this.initialize();
-    const belongsToGroup = (value: OfflineScope) => value.userId === scope.userId && value.groupId === scope.groupId;
+    const belongsToGroup = (value: OfflineScope) => value.userId === scope.userId && value.scopeId === scope.scopeId;
     await Promise.all([
       this.#filterRecord<OfflineReplicaRow>(ROWS_KEY, (value) => {
         const schema = this.#resolveReplicaEntitySchema(value.sourceKey);
@@ -510,7 +510,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
       rows[this.#rowKey(row, row.sourceKey, row.localId)] = {
         ...row,
-        groupId: schema.scope === 'user' ? 0 : row.groupId,
+        scopeId: schema.scope === 'user' ? '' : row.scopeId,
         values: projectOfflineReplicaValues(schema, row.values),
         confirmedValues: row.confirmedValues === null ? null : projectOfflineReplicaValues(schema, row.confirmedValues),
       };
@@ -562,7 +562,7 @@ export class IonicOfflineRepository implements OfflineRepository {
 
   #rowKey(scope: OfflineScope, sourceKey: string, localId: string): string {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const partition = schema.scope === 'user' ? 'user' : String(scope.groupId);
+    const partition = schema.scope === 'user' ? 'user' : String(scope.scopeId);
     return `${scope.userId}:${partition}:${sourceKey}:${localId}`;
   }
 
@@ -571,11 +571,11 @@ export class IonicOfflineRepository implements OfflineRepository {
     schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
     scope: OfflineScope,
   ): OfflineReplicaRow<TValues> {
-    return schema.scope === 'user' ? { ...row, groupId: scope.groupId } : row;
+    return schema.scope === 'user' ? { ...row, scopeId: scope.scopeId } : row;
   }
 
   #cursorKey(scope: OfflineScope): string {
-    return `${scope.userId}:${scope.groupId}`;
+    return `${scope.userId}:${scope.scopeId}`;
   }
 
   #schemaHasServerId(schema: OfflineReplicaEntitySchema<Record<string, unknown>>): boolean {
@@ -598,7 +598,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       if (row.userId !== incoming.userId || row.sourceKey !== incoming.sourceKey || row.serverId !== incoming.serverId) {
         return false;
       }
-      return schema.scope === 'user' || row.groupId === incoming.groupId;
+      return schema.scope === 'user' || row.scopeId === incoming.scopeId;
     });
     if (collision) {
       throw new Error(`Offline replica serverId ${String(incoming.serverId)} is already mapped to localId ${collision[1].localId}.`);

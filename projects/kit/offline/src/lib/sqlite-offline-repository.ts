@@ -117,7 +117,7 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS offline_sync_commands (
   command_id TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL,
-  group_id INTEGER NOT NULL,
+  scope_id TEXT NOT NULL,
   aggregate_type TEXT NOT NULL,
   aggregate_local_id TEXT NOT NULL,
   operation TEXT NOT NULL,
@@ -132,7 +132,7 @@ const SCHEMA = [
   last_error_code TEXT
 )`,
   `CREATE INDEX IF NOT EXISTS offline_sync_commands_scope_created
-  ON offline_sync_commands (user_id, group_id, created_at)`,
+  ON offline_sync_commands (user_id, scope_id, created_at)`,
   `CREATE TABLE IF NOT EXISTS offline_replica_schema_metadata (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   version INTEGER NOT NULL,
@@ -140,9 +140,9 @@ const SCHEMA = [
 )`,
   `CREATE TABLE IF NOT EXISTS offline_replica_cursors (
   user_id INTEGER NOT NULL,
-  group_id INTEGER NOT NULL,
+  scope_id TEXT NOT NULL,
   cursor TEXT NOT NULL,
-  PRIMARY KEY (user_id, group_id)
+  PRIMARY KEY (user_id, scope_id)
 )`,
 ];
 
@@ -195,9 +195,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const predicates = ['local_id = ?', '_offline_user_id = ?'];
     const values: SQLiteValue[] = [localId, scope.userId];
-    if (schema.scope === 'group') {
-      predicates.push('_offline_group_id = ?');
-      values.push(scope.groupId);
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
     }
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
     const row = rows[0];
@@ -209,9 +209,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const predicates = ['_offline_user_id = ?'];
     const values: SQLiteValue[] = [scope.userId];
-    if (schema.scope === 'group') {
-      predicates.push('_offline_group_id = ?');
-      values.push(scope.groupId);
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
     }
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY local_id ASC`, values);
     return rows.map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, this.#string(row['local_id']), row));
@@ -226,9 +226,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
     if (!this.#schemaHasServerId(schema)) return null;
     const predicates = ['server_id = ?', '_offline_user_id = ?'];
     const values: SQLiteValue[] = [serverId, scope.userId];
-    if (schema.scope === 'group') {
-      predicates.push('_offline_group_id = ?');
-      values.push(scope.groupId);
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
     }
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
     const row = rows[0];
@@ -237,9 +237,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
-    const rows = await this.#query('SELECT cursor FROM offline_replica_cursors WHERE user_id = ? AND group_id = ?', [
+    const rows = await this.#query('SELECT cursor FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', [
       scope.userId,
-      scope.groupId,
+      scope.scopeId,
     ]);
     const row = rows[0];
     if (!row) return null;
@@ -248,8 +248,8 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     const rows = await this.#query(
-      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC',
-      [scope.userId, scope.groupId],
+      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC',
+      [scope.userId, scope.scopeId],
     );
     return rows.map((row) => this.#command(row));
   }
@@ -285,14 +285,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
     });
   }
 
-  async clearGroup(scope: OfflineScope): Promise<void> {
+  async clearScope(scope: OfflineScope): Promise<void> {
     await this.#transaction(async (database) => {
-      const values = [scope.userId, scope.groupId];
-      await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ? AND group_id = ?', values);
-      await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND group_id = ?', values);
+      const values = [scope.userId, scope.scopeId];
+      await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ? AND scope_id = ?', values);
+      await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', values);
       for (const entity of this.#options.replicaSchema.entities) {
-        if (entity.scope !== 'group') continue;
-        await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_group_id = ?`, values);
+        if (entity.scope !== 'partition') continue;
+        await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_scope_id = ?`, values);
       }
     });
   }
@@ -455,7 +455,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return {
       commandId: this.#string(row['command_id']),
       userId: this.#number(row['user_id']),
-      groupId: this.#number(row['group_id']),
+      scopeId: this.#string(row['scope_id']),
       aggregateType: this.#string(row['aggregate_type']),
       aggregateLocalId: this.#string(row['aggregate_local_id']),
       operation: this.#string(row['operation']),
@@ -475,11 +475,11 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#execute(
       databaseId,
       `INSERT INTO offline_sync_commands
-        (command_id, user_id, group_id, aggregate_type, aggregate_local_id, operation, payload_json, optimistic_value_json,
+        (command_id, user_id, scope_id, aggregate_type, aggregate_local_id, operation, payload_json, optimistic_value_json,
          payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
-        user_id = excluded.user_id, group_id = excluded.group_id, aggregate_type = excluded.aggregate_type,
+        user_id = excluded.user_id, scope_id = excluded.scope_id, aggregate_type = excluded.aggregate_type,
         aggregate_local_id = excluded.aggregate_local_id, operation = excluded.operation, payload_json = excluded.payload_json,
         optimistic_value_json = excluded.optimistic_value_json, payload_hash = excluded.payload_hash,
         base_revision_json = excluded.base_revision_json, state = excluded.state, attempts = excluded.attempts,
@@ -487,7 +487,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       [
         command.commandId,
         command.userId,
-        command.groupId,
+        command.scopeId,
         command.aggregateType,
         command.aggregateLocalId,
         command.operation,
@@ -513,7 +513,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const values: SQLiteValue[] = [
       row.localId,
       row.userId,
-      ...(schema.scope === 'group' ? [row.groupId] : []),
+      ...(schema.scope === 'partition' ? [row.scopeId] : []),
       ...(this.#schemaHasServerId(schema) ? [row.serverId] : []),
       confirmedValues === null ? null : JSON.stringify(confirmedValues),
       row.serverRevision == null ? null : JSON.stringify(row.serverRevision),
@@ -528,9 +528,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const schema = this.#resolveReplicaEntitySchema(key.sourceKey);
     const predicates = ['local_id = ?', '_offline_user_id = ?'];
     const values: SQLiteValue[] = [key.localId, key.userId];
-    if (schema.scope === 'group') {
-      predicates.push('_offline_group_id = ?');
-      values.push(key.groupId);
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(key.scopeId);
     }
     return this.#execute(databaseId, `DELETE FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
   }
@@ -538,9 +538,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   #putReplicaCursor(databaseId: string, cursor: OfflineReplicaCursor): Promise<void> {
     return this.#execute(
       databaseId,
-      `INSERT INTO offline_replica_cursors (user_id, group_id, cursor) VALUES (?, ?, ?)
-       ON CONFLICT(user_id, group_id) DO UPDATE SET cursor = excluded.cursor`,
-      [cursor.userId, cursor.groupId, cursor.cursor],
+      `INSERT INTO offline_replica_cursors (user_id, scope_id, cursor) VALUES (?, ?, ?)
+       ON CONFLICT(user_id, scope_id) DO UPDATE SET cursor = excluded.cursor`,
+      [cursor.userId, cursor.scopeId, cursor.cursor],
     );
   }
 
@@ -550,9 +550,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   } {
     const insertColumns = ['local_id', '_offline_user_id'];
     const updateSets = ['_offline_user_id = excluded._offline_user_id'];
-    if (schema.scope === 'group') {
-      insertColumns.push('_offline_group_id');
-      updateSets.push('_offline_group_id = excluded._offline_group_id');
+    if (schema.scope === 'partition') {
+      insertColumns.push('_offline_scope_id');
+      updateSets.push('_offline_scope_id = excluded._offline_scope_id');
     }
     if (this.#schemaHasServerId(schema)) {
       insertColumns.push('server_id');

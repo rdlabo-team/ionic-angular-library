@@ -43,7 +43,7 @@ export class OfflineReplicaPullService {
       this.#assertPullPage(page);
       this.#assertHandshake(page.schemaVersion, page.schemaHash, schemaHash);
       if (page.hasMore && page.nextCursor === cursor) {
-        throw new Error(`Offline replica pull cursor did not advance for scope ${scope.userId}:${scope.groupId}.`);
+        throw new Error(`Offline replica pull cursor did not advance for scope ${scope.userId}:${scope.scopeId}.`);
       }
 
       const scopeCommands = await this.#repository.getCommands(scope);
@@ -73,7 +73,7 @@ export class OfflineReplicaPullService {
         }
         const acknowledgedCommand = acknowledged[0];
         const acknowledgedScope = acknowledgedCommand
-          ? { userId: acknowledgedCommand.userId, groupId: acknowledgedCommand.groupId }
+          ? { userId: acknowledgedCommand.userId, scopeId: acknowledgedCommand.scopeId }
           : scope;
         const acknowledgedRow = acknowledgedCommand
           ? await this.#repository.getReplicaRow(acknowledgedScope, change.sourceKey, acknowledgedCommand.aggregateLocalId)

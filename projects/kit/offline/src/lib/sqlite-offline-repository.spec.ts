@@ -47,7 +47,7 @@ const testItemWithSubtitleEntity = defineReplicaEntity<TestItemWithSubtitleSelec
 const testGroupItemEntity = defineReplicaEntity<{ id: number; name: string }>()({
   table: 'test_group_items',
   sourceKey: 'test_group_items',
-  scope: 'group',
+  scope: 'partition',
   fields: {
     id: serverId(),
     name: text(),
@@ -222,16 +222,16 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     await expect(options.createEncryptionKey?.()).resolves.toBe('first-install-secret');
   });
 
-  it('group scopeのoutboxを単一transactionで削除する', async () => {
+  it('partition scopeのoutboxを単一transactionで削除する', async () => {
     const repository = createRepository();
     await repository.initialize();
-    await repository.clearGroup({ userId: 7, groupId: 8 });
+    await repository.clearScope({ userId: 7, scopeId: '8' });
     const deletes = plugin.execute.mock.calls
       .map(([options]) => options as { statement: string; values?: unknown[] })
       .filter(({ statement }) => statement.startsWith('DELETE FROM'));
     expect(deletes).toHaveLength(2);
-    expect(deletes[0]?.values).toEqual([7, 8]);
-    expect(deletes[1]?.values).toEqual([7, 8]);
+    expect(deletes[0]?.values).toEqual([7, '8']);
+    expect(deletes[1]?.values).toEqual([7, '8']);
     expect(plugin.beginTransaction).toHaveBeenCalledOnce();
     expect(plugin.commitTransaction).toHaveBeenCalledOnce();
     expect(plugin.rollbackTransaction).not.toHaveBeenCalled();
@@ -242,7 +242,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     await repository.initialize();
     await repository.putCommand({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       commandId: 'cmd-z',
       aggregateType: 'test_items',
       aggregateLocalId: '019d-aaaa',
@@ -259,7 +259,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     });
     await repository.putCommand({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       commandId: 'cmd-a',
       aggregateType: 'test_items',
       aggregateLocalId: '019d-aaaa',
@@ -275,19 +275,19 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       lastErrorCode: null,
     });
 
-    await repository.getCommands({ userId: 1, groupId: 10 });
+    await repository.getCommands({ userId: 1, scopeId: '10' });
     await repository.getCommandsForUser(1);
 
     const scopeQuery = plugin.query.mock.calls.find(([options]) => {
       const statement = (options as { statement: string }).statement;
-      return statement === 'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC';
+      return statement === 'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC';
     })?.[0] as { statement: string } | undefined;
     const userQuery = plugin.query.mock.calls.find(([options]) => {
       const statement = (options as { statement: string }).statement;
       return statement === 'SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC';
     })?.[0] as { statement: string } | undefined;
     expect(scopeQuery?.statement).toBe(
-      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND group_id = ? ORDER BY created_at ASC, command_id ASC',
+      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC',
     );
     expect(userQuery?.statement).toBe('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC');
   });
@@ -299,7 +299,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       putRows: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_items',
           localId: '019d-aaaa',
           serverId: null,
@@ -530,7 +530,7 @@ describe('SqliteOfflineRepository replica rows', () => {
   const testGroupItemColumns = [
     'local_id',
     '_offline_user_id',
-    '_offline_group_id',
+    '_offline_scope_id',
     'server_id',
     '_offline_confirmed_json',
     '_offline_server_revision_json',
@@ -564,12 +564,12 @@ describe('SqliteOfflineRepository replica rows', () => {
     if (statement.includes('server_id = ?')) {
       const serverId = values?.[0];
       const userId = values?.[1];
-      const groupId = tableName === 'test_group_items' ? values?.[2] : undefined;
+      const scopeId = tableName === 'test_group_items' ? values?.[2] : undefined;
       const stored = Object.entries(storedReplicaRows).find(([, row]) => {
         if (row.tableName !== tableName) return false;
         const serverIdIndex = tableName === 'test_group_items' ? 3 : 2;
         if (row.values[serverIdIndex] !== serverId || row.values[1] !== userId) return false;
-        if (groupId !== undefined && row.values[2] !== groupId) return false;
+        if (scopeId !== undefined && row.values[2] !== scopeId) return false;
         return true;
       });
       if (!stored) return { rows: [] };
@@ -582,11 +582,11 @@ describe('SqliteOfflineRepository replica rows', () => {
       return { columns, rows: [replicaRowMatrix(tableName, stored)] };
     }
     const userId = values?.[0];
-    const groupId = tableName === 'test_group_items' ? values?.[1] : undefined;
+    const scopeId = tableName === 'test_group_items' ? values?.[1] : undefined;
     const rows = entries
       .filter(([, stored]) => {
         if (stored.values[1] !== userId) return false;
-        if (groupId !== undefined && stored.values[2] !== groupId) return false;
+        if (scopeId !== undefined && stored.values[2] !== scopeId) return false;
         return true;
       })
       .sort(([leftId], [rightId]) => leftId.localeCompare(rightId))
@@ -611,21 +611,21 @@ describe('SqliteOfflineRepository replica rows', () => {
       execute: vi.fn(async ({ statement, values }: { statement: string; values?: unknown[] }) => {
         if (statement.startsWith('INSERT INTO offline_replica_cursors')) {
           const userId = values?.[0];
-          const groupId = values?.[1];
+          const scopeId = values?.[1];
           const cursor = values?.[2];
-          if (typeof userId === 'number' && typeof groupId === 'number' && typeof cursor === 'string') {
-            storedReplicaCursors[`${userId}:${groupId}`] = cursor;
+          if (typeof userId === 'number' && typeof scopeId === 'string' && typeof cursor === 'string') {
+            storedReplicaCursors[`${userId}:${scopeId}`] = cursor;
           }
         }
         if (statement.startsWith('DELETE FROM offline_replica_cursors')) {
           const userId = values?.[0];
-          const groupId = values?.[1];
-          if (typeof userId === 'number' && groupId === undefined) {
+          const scopeId = values?.[1];
+          if (typeof userId === 'number' && scopeId === undefined) {
             for (const key of Object.keys(storedReplicaCursors)) {
               if (key.startsWith(`${userId}:`)) delete storedReplicaCursors[key];
             }
-          } else if (typeof userId === 'number' && typeof groupId === 'number') {
-            delete storedReplicaCursors[`${userId}:${groupId}`];
+          } else if (typeof userId === 'number' && typeof scopeId === 'string') {
+            delete storedReplicaCursors[`${userId}:${scopeId}`];
           }
         }
         for (const tableName of ['test_items', 'test_group_items', 'local_projections'] as const) {
@@ -637,15 +637,15 @@ describe('SqliteOfflineRepository replica rows', () => {
           }
           if (statement.startsWith(`DELETE FROM ${tableName}`)) {
             const userId = values?.[0];
-            const groupId = values?.[1];
+            const scopeId = values?.[1];
             if (
-              statement.includes('_offline_user_id = ? AND _offline_group_id = ?') &&
+              statement.includes('_offline_user_id = ? AND _offline_scope_id = ?') &&
               typeof userId === 'number' &&
-              typeof groupId === 'number'
+              typeof scopeId === 'string'
             ) {
               for (const [localId, stored] of Object.entries(storedReplicaRows)) {
                 if (stored.tableName !== tableName) continue;
-                if (stored.values[1] === userId && stored.values[2] === groupId) {
+                if (stored.values[1] === userId && stored.values[2] === scopeId) {
                   delete storedReplicaRows[localId];
                 }
               }
@@ -666,9 +666,9 @@ describe('SqliteOfflineRepository replica rows', () => {
         }
         if (statement.includes('offline_replica_cursors')) {
           const userId = values?.[0];
-          const groupId = values?.[1];
+          const scopeId = values?.[1];
           const cursor =
-            typeof userId === 'number' && typeof groupId === 'number' ? storedReplicaCursors[`${userId}:${groupId}`] : undefined;
+            typeof userId === 'number' && typeof scopeId === 'string' ? storedReplicaCursors[`${userId}:${scopeId}`] : undefined;
           return cursor === undefined ? { rows: [] } : { columns: ['cursor'], rows: [[cursor]] };
         }
         for (const tableName of ['test_items', 'test_group_items', 'local_projections'] as const) {
@@ -698,7 +698,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       putRows: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_items',
           localId: '019d-bbbb',
           serverId: null,
@@ -712,7 +712,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       putCommands: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           commandId: 'create-row-1',
           aggregateType: 'test_items',
           aggregateLocalId: '019d-bbbb',
@@ -756,7 +756,7 @@ describe('SqliteOfflineRepository replica rows', () => {
     )?.[0] as { statement: string } | undefined;
     expect(createTable?.statement).not.toContain('server_id');
 
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     await repository.transactReplica({
       putRows: [
         {
@@ -806,7 +806,7 @@ describe('SqliteOfflineRepository replica rows', () => {
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'local_projections',
             localId: 'feed-home',
             serverId: 1,
@@ -829,7 +829,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       putRows: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_items',
           localId: '019d-confirmed',
           serverId: 42,
@@ -846,7 +846,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       (options as { statement: string }).statement.startsWith('INSERT INTO test_items'),
     )?.[0] as { statement: string; values?: unknown[] };
     expect(upsert?.values?.[3]).toBe(JSON.stringify({ title: 'Confirmed' }));
-    await expect(repository.getReplicaRowByServerId({ userId: 1, groupId: 10 }, 'test_items', 42)).resolves.toMatchObject({
+    await expect(repository.getReplicaRowByServerId({ userId: 1, scopeId: '10' }, 'test_items', 42)).resolves.toMatchObject({
       values: { title: 'Optimistic' },
       confirmedValues: { title: 'Confirmed' },
     });
@@ -855,7 +855,7 @@ describe('SqliteOfflineRepository replica rows', () => {
   it('server_idはnullから38142へ更新されlocal_idは不変', async () => {
     const repository = createRepository();
     await repository.initialize();
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
     const baseRow = {
       ...scope,
       sourceKey: 'test_items',
@@ -890,7 +890,7 @@ describe('SqliteOfflineRepository replica rows', () => {
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-bbbb',
             serverId: null,
@@ -915,7 +915,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       putRows: [
         {
           userId: 1,
-          groupId: 10,
+          scopeId: '10',
           sourceKey: 'test_items',
           localId: '019d-bbbb',
           serverId: null,
@@ -927,7 +927,7 @@ describe('SqliteOfflineRepository replica rows', () => {
         },
       ],
     });
-    await expect(repository.getReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-bbbb')).resolves.toMatchObject({
+    await expect(repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-bbbb')).resolves.toMatchObject({
       values: { title: 'Decoded title' },
       fetchedAt: 99,
       syncState: 'pending',
@@ -949,32 +949,32 @@ describe('SqliteOfflineRepository replica rows', () => {
       await repository.initialize();
       await repository.transactReplica({
         putRows: [
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-cccc', values: { id: 0, title: 'C' } },
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 0, title: 'A' } },
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-bbbb', values: { id: 0, title: 'B' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-cccc', values: { id: 0, title: 'C' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 0, title: 'A' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-bbbb', values: { id: 0, title: 'B' } },
         ],
       });
 
-      const rows = await repository.getReplicaRows({ userId: 1, groupId: 10 }, 'test_items');
+      const rows = await repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_items');
       expect(rows.map((row) => row.localId)).toEqual(['019d-aaaa', '019d-bbbb', '019d-cccc']);
     });
 
-    it('user-scoped sourceはgroupIdを無視して同一userの行を返す', async () => {
+    it('user-scoped sourceはscopeIdを無視して同一userの行を返す', async () => {
       const repository = createRepository();
       await repository.initialize();
       await repository.transactReplica({
         putRows: [
-          { ...baseRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 0, title: 'G10' } },
-          { ...baseRow, userId: 1, groupId: 11, localId: '019d-bbbb', values: { id: 0, title: 'G11' } },
-          { ...baseRow, userId: 2, groupId: 10, localId: '019d-cccc', values: { id: 0, title: 'Other user' } },
+          { ...baseRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 0, title: 'G10' } },
+          { ...baseRow, userId: 1, scopeId: '11', localId: '019d-bbbb', values: { id: 0, title: 'G11' } },
+          { ...baseRow, userId: 2, scopeId: '10', localId: '019d-cccc', values: { id: 0, title: 'Other user' } },
         ],
       });
 
-      const rows = await repository.getReplicaRows({ userId: 1, groupId: 10 }, 'test_items');
+      const rows = await repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_items');
       expect(rows.map((row) => row.localId)).toEqual(['019d-aaaa', '019d-bbbb']);
     });
 
-    it('group-scoped sourceはgroupId一致の行だけを返す', async () => {
+    it('partition-scoped sourceはscopeId一致の行だけを返す', async () => {
       const repository = createRepository();
       await repository.initialize();
       const groupRow = {
@@ -987,28 +987,28 @@ describe('SqliteOfflineRepository replica rows', () => {
       };
       await repository.transactReplica({
         putRows: [
-          { ...groupRow, userId: 1, groupId: 10, localId: '019d-aaaa', values: { id: 0, name: 'G10' } },
-          { ...groupRow, userId: 1, groupId: 11, localId: '019d-bbbb', values: { id: 0, name: 'G11' } },
+          { ...groupRow, userId: 1, scopeId: '10', localId: '019d-aaaa', values: { id: 0, name: 'G10' } },
+          { ...groupRow, userId: 1, scopeId: '11', localId: '019d-bbbb', values: { id: 0, name: 'G11' } },
         ],
       });
 
-      const rows = await repository.getReplicaRows({ userId: 1, groupId: 10 }, 'test_group_items');
+      const rows = await repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_group_items');
       expect(rows).toHaveLength(1);
       expect(rows[0]?.localId).toBe('019d-aaaa');
     });
   });
 
   describe('replica pull persistence', () => {
-    const scope = { userId: 1, groupId: 10 };
+    const scope = { userId: 1, scopeId: '10' };
 
-    it('getReplicaRowByServerIdはuser scopeでgroupIdを無視してlookupする', async () => {
+    it('getReplicaRowByServerIdはuser scopeでscopeIdを無視してlookupする', async () => {
       const repository = createRepository();
       await repository.initialize();
       await repository.transactReplica({
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-aaaa',
             serverId: 42,
@@ -1020,7 +1020,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           },
           {
             userId: 1,
-            groupId: 11,
+            scopeId: '11',
             sourceKey: 'test_items',
             localId: '019d-bbbb',
             serverId: 43,
@@ -1042,14 +1042,14 @@ describe('SqliteOfflineRepository replica rows', () => {
       expect(await repository.getReplicaRowByServerId(scope, 'test_items', 99)).toBeNull();
     });
 
-    it('getReplicaRowByServerIdはgroup scopeでgroupId一致のみ返す', async () => {
+    it('getReplicaRowByServerIdはpartition scopeでscopeId一致のみ返す', async () => {
       const repository = createRepository();
       await repository.initialize();
       await repository.transactReplica({
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_group_items',
             localId: '019d-aaaa',
             serverId: 55,
@@ -1061,7 +1061,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           },
           {
             userId: 1,
-            groupId: 11,
+            scopeId: '11',
             sourceKey: 'test_group_items',
             localId: '019d-bbbb',
             serverId: 56,
@@ -1087,7 +1087,7 @@ describe('SqliteOfflineRepository replica rows', () => {
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-aaaa',
             serverId: 42,
@@ -1098,12 +1098,12 @@ describe('SqliteOfflineRepository replica rows', () => {
             syncState: 'confirmed',
           },
         ],
-        putCursors: [{ userId: 1, groupId: 10, cursor: 'cursor-v1' }],
+        putCursors: [{ userId: 1, scopeId: '10', cursor: 'cursor-v1' }],
       });
 
       expect(plugin.beginTransaction).toHaveBeenCalledOnce();
       expect(plugin.commitTransaction).toHaveBeenCalledOnce();
-      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ userId: 1, groupId: 10, cursor: 'cursor-v1' });
+      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ userId: 1, scopeId: '10', cursor: 'cursor-v1' });
       await expect(repository.getReplicaRowByServerId(scope, 'test_items', 42)).resolves.toMatchObject({
         values: { title: 'Pulled' },
       });
@@ -1117,7 +1117,7 @@ describe('SqliteOfflineRepository replica rows', () => {
           putRows: [
             {
               userId: 1,
-              groupId: 10,
+              scopeId: '10',
               sourceKey: 'test_items',
               localId: '019d-aaaa',
               serverId: 42,
@@ -1128,7 +1128,7 @@ describe('SqliteOfflineRepository replica rows', () => {
               syncState: 'confirmed',
             },
           ],
-          putCursors: [{ userId: 1, groupId: 10, cursor: 'cursor-v1' }],
+          putCursors: [{ userId: 1, scopeId: '10', cursor: 'cursor-v1' }],
         }),
       ).rejects.toThrow('Replica row is missing required source key "title".');
       expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
@@ -1138,18 +1138,18 @@ describe('SqliteOfflineRepository replica rows', () => {
     });
   });
 
-  describe('user-scope cross-group parity', () => {
-    const scopeG10 = { userId: 1, groupId: 10 };
-    const scopeG11 = { userId: 1, groupId: 11 };
+  describe('user-scope cross-partition parity', () => {
+    const scopeG10 = { userId: 1, scopeId: '10' };
+    const scopeG11 = { userId: 1, scopeId: '11' };
 
-    it('getReplicaRow/getReplicaRowByServerIdは別groupIdでも同一user rowを返す', async () => {
+    it('getReplicaRow/getReplicaRowByServerIdは別scopeIdでも同一user rowを返す', async () => {
       const repository = createRepository();
       await repository.initialize();
       await repository.transactReplica({
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-cross',
             serverId: 42,
@@ -1164,21 +1164,21 @@ describe('SqliteOfflineRepository replica rows', () => {
 
       await expect(repository.getReplicaRow(scopeG11, 'test_items', '019d-cross')).resolves.toMatchObject({
         localId: '019d-cross',
-        groupId: 11,
+        scopeId: '11',
       });
       await expect(repository.getReplicaRowByServerId(scopeG11, 'test_items', 42)).resolves.toMatchObject({
         localId: '019d-cross',
       });
     });
 
-    it('clearGroupはuser-scoped rowを保持しgroup-scoped rowだけ削除する', async () => {
+    it('clearScopeはuser-scoped rowを保持しpartition-scoped rowだけ削除する', async () => {
       const repository = createRepository();
       await repository.initialize();
       await repository.transactReplica({
         putRows: [
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_items',
             localId: '019d-user',
             serverId: 42,
@@ -1190,12 +1190,12 @@ describe('SqliteOfflineRepository replica rows', () => {
           },
           {
             userId: 1,
-            groupId: 10,
+            scopeId: '10',
             sourceKey: 'test_group_items',
             localId: '019d-group',
             serverId: 55,
-            values: { id: 55, name: 'Group scoped' },
-            confirmedValues: { id: 55, name: 'Group scoped' },
+            values: { id: 55, name: 'Partition scoped' },
+            confirmedValues: { id: 55, name: 'Partition scoped' },
             serverRevision: 1,
             fetchedAt: 1,
             syncState: 'confirmed',
@@ -1203,7 +1203,7 @@ describe('SqliteOfflineRepository replica rows', () => {
         ],
       });
 
-      await repository.clearGroup(scopeG10);
+      await repository.clearScope(scopeG10);
 
       await expect(repository.getReplicaRow(scopeG10, 'test_items', '019d-user')).resolves.toMatchObject({
         localId: '019d-user',

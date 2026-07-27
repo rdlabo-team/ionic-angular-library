@@ -26,7 +26,7 @@ const replicaSchema = defineOfflineReplicaSchema({
     defineReplicaEntity<{ id: number; title: string }>()({
       table: 'documents',
       sourceKey: 'documents',
-      scope: 'group',
+      scope: 'partition',
       fields: {
         id: serverId(),
         title: text(),
@@ -56,7 +56,7 @@ describe('OfflineSyncService', () => {
     commands = [];
     rows = [];
     connected = signal(false);
-    session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     localSession = undefined;
     beforePutCommand = null;
     beforeGetReplicaRow = null;
@@ -68,7 +68,7 @@ describe('OfflineSyncService', () => {
     const repository = {
       initialize: vi.fn(async () => undefined),
       getCommands: vi.fn(async (scope: OfflineScope) =>
-        commands.filter((item) => item.userId === scope.userId && item.groupId === scope.groupId),
+        commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId),
       ),
       getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId)),
       putCommand: vi.fn(async (command: OfflineCommand) => {
@@ -90,7 +90,7 @@ describe('OfflineSyncService', () => {
         return (
           rows.find(
             (item) =>
-              item.userId === scope.userId && item.groupId === scope.groupId && item.sourceKey === sourceKey && item.localId === localId,
+              item.userId === scope.userId && item.scopeId === scope.scopeId && item.sourceKey === sourceKey && item.localId === localId,
           ) ?? null
         );
       }),
@@ -98,7 +98,7 @@ describe('OfflineSyncService', () => {
         async (scope: OfflineScope, sourceKey: string, serverId: number) =>
           rows.find(
             (item) =>
-              item.userId === scope.userId && item.groupId === scope.groupId && item.sourceKey === sourceKey && item.serverId === serverId,
+              item.userId === scope.userId && item.scopeId === scope.scopeId && item.sourceKey === sourceKey && item.serverId === serverId,
           ) ?? null,
       ),
       getReplicaCursor: vi.fn(async () => null),
@@ -107,7 +107,7 @@ describe('OfflineSyncService', () => {
           rows = rows.filter(
             (item) =>
               item.userId !== row.userId ||
-              item.groupId !== row.groupId ||
+              item.scopeId !== row.scopeId ||
               item.sourceKey !== row.sourceKey ||
               item.localId !== row.localId,
           );
@@ -117,7 +117,7 @@ describe('OfflineSyncService', () => {
           rows = rows.filter(
             (item) =>
               item.userId !== key.userId ||
-              item.groupId !== key.groupId ||
+              item.scopeId !== key.scopeId ||
               item.sourceKey !== key.sourceKey ||
               item.localId !== key.localId,
           );
@@ -158,7 +158,7 @@ describe('OfflineSyncService', () => {
     options.outboxLimits = { maxCommandsPerUser: 1 };
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: 'first',
         operation: 'documents.create',
@@ -171,7 +171,7 @@ describe('OfflineSyncService', () => {
     await expect(
       service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'documents',
           aggregateLocalId: 'second',
           operation: 'documents.create',
@@ -191,7 +191,7 @@ describe('OfflineSyncService', () => {
     await expect(
       service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'documents',
           aggregateLocalId: 'oversized',
           operation: 'documents.create',
@@ -206,13 +206,13 @@ describe('OfflineSyncService', () => {
   });
 
   it('local sessionはoutboxへenqueueできるがremote session確立までは送信しない', async () => {
-    localSession = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    localSession = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     session = null;
     await service.refreshLocalSession();
 
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: 'offline-local',
         operation: 'documents.create',
@@ -233,7 +233,7 @@ describe('OfflineSyncService', () => {
     await service.initialize();
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: 'reconnect-local',
         operation: 'documents.create',
@@ -266,7 +266,7 @@ describe('OfflineSyncService', () => {
 
     const enqueue = service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: 'revoked',
         operation: 'documents.create',
@@ -312,7 +312,7 @@ describe('OfflineSyncService', () => {
   it('同じaggregateの操作を作成順に送り、成功後だけoutboxから除く', async () => {
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -323,7 +323,7 @@ describe('OfflineSyncService', () => {
     );
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -347,7 +347,7 @@ describe('OfflineSyncService', () => {
     });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-aaaa',
         operation: 'documents.create',
@@ -379,7 +379,7 @@ describe('OfflineSyncService', () => {
     });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-aaaa',
         operation: 'documents.update',
@@ -404,7 +404,7 @@ describe('OfflineSyncService', () => {
     session = null;
     rows.push({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       sourceKey: 'documents',
       localId: '019d-aaaa',
       serverId: null,
@@ -416,7 +416,7 @@ describe('OfflineSyncService', () => {
     });
     commands.push({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       commandId: 'interrupted',
       aggregateType: 'documents',
       aggregateLocalId: '019d-aaaa',
@@ -432,7 +432,7 @@ describe('OfflineSyncService', () => {
       lastErrorCode: null,
     });
     await service.initialize();
-    session = { userId: 1, scopes: [{ userId: 1, groupId: 10 }] };
+    session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     await service.refreshSession();
     expect(service.pendingCommands()[0]?.state).toBe('pending');
   });
@@ -440,7 +440,7 @@ describe('OfflineSyncService', () => {
   it('未同期createを破棄するとoutboxと未確定replica rowを同時に除く', async () => {
     const commandId = await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-new',
         operation: 'documents.create',
@@ -457,7 +457,7 @@ describe('OfflineSyncService', () => {
   it('既存replica rowの未同期updateを破棄するとserver確定値へ戻す', async () => {
     rows.push({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       sourceKey: 'documents',
       localId: '019d-existing',
       serverId: 38142,
@@ -469,7 +469,7 @@ describe('OfflineSyncService', () => {
     });
     const commandId = await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-existing',
         operation: 'documents.update',
@@ -493,7 +493,7 @@ describe('OfflineSyncService', () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -504,7 +504,7 @@ describe('OfflineSyncService', () => {
     );
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '2',
         operation: 'documents.upsert',
@@ -522,7 +522,7 @@ describe('OfflineSyncService', () => {
   it('locale非依存のkey順で同じJSON payloadを同一hashにする', async () => {
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -533,7 +533,7 @@ describe('OfflineSyncService', () => {
     );
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '2',
         operation: 'documents.upsert',
@@ -549,7 +549,7 @@ describe('OfflineSyncService', () => {
     await expect(
       service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'documents',
           aggregateLocalId: '1',
           operation: 'documents.upsert',
@@ -569,7 +569,7 @@ describe('OfflineSyncService', () => {
   ] as const)('HTTP %sを%sへ分類して操作を保持する', async (status, state, rowSyncState) => {
     execute.mockRejectedValueOnce({ status });
     await service.enqueue(
-      { groupId: 10, aggregateType: 'documents', aggregateLocalId: '1', operation: 'documents.upsert', payload: {}, optimisticValue: {} },
+      { scopeId: '10', aggregateType: 'documents', aggregateLocalId: '1', operation: 'documents.upsert', payload: {}, optimisticValue: {} },
       { flush: false },
     );
     connected.set(true);
@@ -583,7 +583,7 @@ describe('OfflineSyncService', () => {
     execute.mockImplementationOnce(() => new Promise((resolve) => (resolveExecute = resolve)));
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -594,7 +594,7 @@ describe('OfflineSyncService', () => {
     );
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -619,7 +619,7 @@ describe('OfflineSyncService', () => {
     execute.mockImplementationOnce(() => new Promise((resolve) => (resolveExecute = resolve)));
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -630,7 +630,7 @@ describe('OfflineSyncService', () => {
     );
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -647,7 +647,7 @@ describe('OfflineSyncService', () => {
     await reset;
     commands = commands.filter((command) => command.userId !== 1);
     connected.set(false);
-    session = { userId: 2, scopes: [{ userId: 2, groupId: 20 }] };
+    session = { userId: 2, scopes: [{ userId: 2, scopeId: '20' }] };
     await service.refreshSession();
     await oldFlush;
     expect(execute).toHaveBeenCalledOnce();
@@ -659,7 +659,7 @@ describe('OfflineSyncService', () => {
     execute.mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)));
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -705,7 +705,7 @@ describe('OfflineSyncService', () => {
     };
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -736,7 +736,7 @@ describe('OfflineSyncService', () => {
     const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository;
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -768,7 +768,7 @@ describe('OfflineSyncService', () => {
     });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -789,7 +789,7 @@ describe('OfflineSyncService', () => {
     execute.mockRejectedValueOnce(new Error('programming failure'));
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -808,7 +808,7 @@ describe('OfflineSyncService', () => {
     execute.mockRejectedValueOnce({ status: -1 });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -826,7 +826,7 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValueOnce({ serverId: 0, serverRevision: 1, confirmedValues: {}, response: null });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-invalid-id',
         operation: 'documents.create',
@@ -842,7 +842,7 @@ describe('OfflineSyncService', () => {
   it('reassigned serverIdはhard failする', async () => {
     rows.push({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       sourceKey: 'documents',
       localId: '019d-existing',
       serverId: 38142,
@@ -855,7 +855,7 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValueOnce({ serverId: 99999, serverRevision: 2, confirmedValues: {}, response: null });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-existing',
         operation: 'documents.update',
@@ -872,7 +872,7 @@ describe('OfflineSyncService', () => {
   it('enqueue時のserverId採用は初回pull前にreplica rowへ永続化する', async () => {
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-adopted',
         serverId: 38142,
@@ -893,7 +893,7 @@ describe('OfflineSyncService', () => {
   it('採用済みserverIdはflush時にdelete操作のexecutor targetへ渡す', async () => {
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-adopted',
         serverId: 38142,
@@ -913,7 +913,7 @@ describe('OfflineSyncService', () => {
     await expect(
       service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'documents',
           aggregateLocalId: '019d-invalid',
           serverId,
@@ -931,7 +931,7 @@ describe('OfflineSyncService', () => {
   it('別localIdへ既存serverIdを割り当てようとするとrejectする', async () => {
     rows.push({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       sourceKey: 'documents',
       localId: '019d-existing',
       serverId: 38142,
@@ -944,7 +944,7 @@ describe('OfflineSyncService', () => {
     await expect(
       service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'documents',
           aggregateLocalId: '019d-new',
           serverId: 38142,
@@ -961,7 +961,7 @@ describe('OfflineSyncService', () => {
   it('同一localIdへのserverId再指定は許容する', async () => {
     rows.push({
       userId: 1,
-      groupId: 10,
+      scopeId: '10',
       sourceKey: 'documents',
       localId: '019d-same',
       serverId: 38142,
@@ -973,7 +973,7 @@ describe('OfflineSyncService', () => {
     });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-same',
         serverId: 38142,
@@ -991,7 +991,7 @@ describe('OfflineSyncService', () => {
   it('採用済み未確定rowはdiscardでoutboxとreplica rowを同時に除く', async () => {
     const commandId = await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-adopted',
         serverId: 38142,
@@ -1009,7 +1009,7 @@ describe('OfflineSyncService', () => {
   it('採用済み未確定rowはdiscardAllでoutboxとreplica rowを同時に除く', async () => {
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '019d-adopted',
         serverId: 38142,
@@ -1028,7 +1028,7 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValueOnce({ serverRevision: Number.NaN, confirmedValues: {}, response: null });
     await service.enqueue(
       {
-        groupId: 10,
+        scopeId: '10',
         aggregateType: 'documents',
         aggregateLocalId: '1',
         operation: 'documents.upsert',
@@ -1041,7 +1041,7 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('Offline command returned invalid serverRevision NaN.');
   });
 
-  describe('user-scoped cross-group aggregate fixes', () => {
+  describe('user-scoped cross-partition aggregate fixes', () => {
     const userReplicaSchema = defineOfflineReplicaSchema({
       version: 1,
       entities: [
@@ -1057,7 +1057,7 @@ describe('OfflineSyncService', () => {
         defineReplicaEntity<{ id: number; name: string }>()({
           table: 'test_group_items',
           sourceKey: 'test_group_items',
-          scope: 'group',
+          scope: 'partition',
           fields: {
             id: serverId(),
             name: text(),
@@ -1069,8 +1069,8 @@ describe('OfflineSyncService', () => {
     const multiScopeSession = {
       userId: 1,
       scopes: [
-        { userId: 1, groupId: 10 },
-        { userId: 1, groupId: 11 },
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '11' },
       ] as OfflineScope[],
     };
     const userScopedSourceKeys = new Set(['test_items']);
@@ -1082,12 +1082,12 @@ describe('OfflineSyncService', () => {
     function findReplicaRow(scope: OfflineScope, sourceKey: string, localId: string): OfflineReplicaRow | undefined {
       return rows.find((item) => {
         if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.localId !== localId) return false;
-        return userScopedSourceKeys.has(sourceKey) ? true : item.groupId === scope.groupId;
+        return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
       });
     }
 
     function projectReplicaRow(row: OfflineReplicaRow, scope: OfflineScope): OfflineReplicaRow {
-      return userScopedSourceKeys.has(row.sourceKey) ? { ...row, groupId: scope.groupId } : row;
+      return userScopedSourceKeys.has(row.sourceKey) ? { ...row, scopeId: scope.scopeId } : row;
     }
 
     beforeEach(() => {
@@ -1104,7 +1104,7 @@ describe('OfflineSyncService', () => {
       const repository = {
         initialize: vi.fn(async () => undefined),
         getCommands: vi.fn(async (scope: OfflineScope) =>
-          commands.filter((item) => item.userId === scope.userId && item.groupId === scope.groupId).sort(compareCommands),
+          commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId).sort(compareCommands),
         ),
         getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId).sort(compareCommands)),
         putCommand: vi.fn(async (command: OfflineCommand) => {
@@ -1128,7 +1128,7 @@ describe('OfflineSyncService', () => {
         getReplicaRowByServerId: vi.fn(async (scope: OfflineScope, sourceKey: string, serverId: number) => {
           const row = rows.find((item) => {
             if (item.userId !== scope.userId || item.sourceKey !== sourceKey || item.serverId !== serverId) return false;
-            return userScopedSourceKeys.has(sourceKey) ? true : item.groupId === scope.groupId;
+            return userScopedSourceKeys.has(sourceKey) ? true : item.scopeId === scope.scopeId;
           });
           return row ? projectReplicaRow(row, scope) : null;
         }),
@@ -1141,7 +1141,7 @@ describe('OfflineSyncService', () => {
                 item.userId !== row.userId ||
                 item.sourceKey !== row.sourceKey ||
                 item.localId !== row.localId ||
-                (!userScopedSourceKeys.has(row.sourceKey) && item.groupId !== row.groupId),
+                (!userScopedSourceKeys.has(row.sourceKey) && item.scopeId !== row.scopeId),
             );
             rows.push(structuredClone(existing ? { ...existing, ...row } : row));
           }
@@ -1151,7 +1151,7 @@ describe('OfflineSyncService', () => {
                 item.userId !== key.userId ||
                 item.sourceKey !== key.sourceKey ||
                 item.localId !== key.localId ||
-                (!userScopedSourceKeys.has(key.sourceKey) && item.groupId !== key.groupId),
+                (!userScopedSourceKeys.has(key.sourceKey) && item.scopeId !== key.scopeId),
             );
           }
           for (const command of transaction.putCommands ?? []) {
@@ -1189,7 +1189,7 @@ describe('OfflineSyncService', () => {
       service = TestBed.inject(OfflineSyncService);
       rows.push({
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         sourceKey: 'test_items',
         localId: '019d-user-item',
         serverId: 42,
@@ -1201,7 +1201,7 @@ describe('OfflineSyncService', () => {
       });
     });
 
-    it('同一user rowの別group commandは1 aggregateに直列化し、先頭完了後に後続をrebaseする', async () => {
+    it('同一user rowの別partition commandは1 aggregateに直列化し、先頭完了後に後続をrebaseする', async () => {
       let resolveFirst!: (value: OfflineCommandResult) => void;
       let resolveSecond!: (value: OfflineCommandResult) => void;
       execute
@@ -1209,7 +1209,7 @@ describe('OfflineSyncService', () => {
         .mockImplementationOnce(() => new Promise((resolve) => (resolveSecond = resolve)));
       await service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'test_items',
           aggregateLocalId: '019d-user-item',
           operation: 'test_items.update',
@@ -1221,7 +1221,7 @@ describe('OfflineSyncService', () => {
       );
       const secondId = await service.enqueue(
         {
-          groupId: 11,
+          scopeId: '11',
           aggregateType: 'test_items',
           aggregateLocalId: '019d-user-item',
           operation: 'test_items.update',
@@ -1241,7 +1241,7 @@ describe('OfflineSyncService', () => {
         baseRevision: 2,
         optimisticValue: { id: 42, title: 'G11 edit' },
       });
-      expect(findReplicaRow({ userId: 1, groupId: 10 }, 'test_items', '019d-user-item')).toMatchObject({
+      expect(findReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', '019d-user-item')).toMatchObject({
         values: { title: 'G11 edit' },
         confirmedValues: { title: 'G10 edit' },
         serverRevision: 2,
@@ -1256,10 +1256,10 @@ describe('OfflineSyncService', () => {
       expect(service.pendingCount()).toBe(0);
     });
 
-    it('cross-group commandの一方discardでも他方のoptimistic valueを保持する', async () => {
+    it('cross-partition commandの一方discardでも他方のoptimistic valueを保持する', async () => {
       const firstId = await service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'test_items',
           aggregateLocalId: '019d-user-item',
           operation: 'test_items.update',
@@ -1271,7 +1271,7 @@ describe('OfflineSyncService', () => {
       );
       await service.enqueue(
         {
-          groupId: 11,
+          scopeId: '11',
           aggregateType: 'test_items',
           aggregateLocalId: '019d-user-item',
           operation: 'test_items.update',
@@ -1283,21 +1283,21 @@ describe('OfflineSyncService', () => {
       );
       await service.discard(firstId, { flush: false });
       expect(commands).toHaveLength(1);
-      expect(commands[0]).toMatchObject({ groupId: 11, optimisticValue: { id: 42, title: 'G11 edit' } });
-      expect(findReplicaRow({ userId: 1, groupId: 11 }, 'test_items', '019d-user-item')).toMatchObject({
+      expect(commands[0]).toMatchObject({ scopeId: '11', optimisticValue: { id: 42, title: 'G11 edit' } });
+      expect(findReplicaRow({ userId: 1, scopeId: '11' }, 'test_items', '019d-user-item')).toMatchObject({
         values: { title: 'G11 edit' },
         confirmedValues: { title: 'Baseline' },
         syncState: 'pending',
       });
     });
 
-    it('group-scopedの同一localIdはgroupごとに独立aggregateのまま並列送信する', async () => {
+    it('partition-scopedの同一localIdはpartitionごとに独立aggregateのまま並列送信する', async () => {
       let resolveFirst!: (value: OfflineCommandResult) => void;
       execute.mockImplementationOnce(() => new Promise((resolve) => (resolveFirst = resolve)));
       execute.mockResolvedValueOnce({ serverRevision: 2, confirmedValues: { id: 55, name: 'G11 name' }, response: null });
       rows.push({
         userId: 1,
-        groupId: 11,
+        scopeId: '11',
         sourceKey: 'test_group_items',
         localId: '019d-group-same',
         serverId: 55,
@@ -1309,7 +1309,7 @@ describe('OfflineSyncService', () => {
       });
       rows.push({
         userId: 1,
-        groupId: 10,
+        scopeId: '10',
         sourceKey: 'test_group_items',
         localId: '019d-group-same',
         serverId: 56,
@@ -1321,7 +1321,7 @@ describe('OfflineSyncService', () => {
       });
       await service.enqueue(
         {
-          groupId: 10,
+          scopeId: '10',
           aggregateType: 'test_group_items',
           aggregateLocalId: '019d-group-same',
           operation: 'test_group_items.update',
@@ -1333,7 +1333,7 @@ describe('OfflineSyncService', () => {
       );
       await service.enqueue(
         {
-          groupId: 11,
+          scopeId: '11',
           aggregateType: 'test_group_items',
           aggregateLocalId: '019d-group-same',
           operation: 'test_group_items.update',
@@ -1348,7 +1348,7 @@ describe('OfflineSyncService', () => {
       await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
       resolveFirst({ serverRevision: 2, confirmedValues: { id: 56, name: 'G10 name' }, response: null });
       await flush;
-      expect(execute.mock.calls.map(([command]) => command.groupId).sort()).toEqual([10, 11]);
+      expect(execute.mock.calls.map(([command]) => command.scopeId).sort()).toEqual(['10', '11']);
       expect(service.pendingCount()).toBe(0);
     });
   });

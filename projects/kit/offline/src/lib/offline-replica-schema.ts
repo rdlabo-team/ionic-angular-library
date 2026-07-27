@@ -10,7 +10,7 @@ export type OfflineReplicaSqliteAffinity = 'TEXT' | 'INTEGER' | 'REAL';
 export type OfflineReplicaStorageKind = 'text' | 'integer' | 'real' | 'booleanColumn' | 'json' | 'datetime';
 
 /** Scope partition persisted on every replica table row. */
-export type OfflineReplicaEntityScope = 'user' | 'group';
+export type OfflineReplicaEntityScope = 'user' | 'partition';
 
 /** Field projection policy for a source-model property. */
 export type OfflineReplicaFieldPolicy = 'column' | 'serverId' | 'ignored';
@@ -39,7 +39,7 @@ export interface OfflineReplicaEntitySchema<TSelect extends Record<string, unkno
   readonly tableName: string;
   /** Stable source key used by sync and repository layers. */
   readonly sourceKey: string;
-  /** Whether rows are partitioned by user only or user plus group. */
+  /** Whether rows are partitioned by user only or user plus scope partition. */
   readonly scope: OfflineReplicaEntityScope;
   /** Ordered field descriptors derived from the DSL definition. */
   readonly fields: readonly OfflineReplicaFieldDescriptor[];
@@ -135,7 +135,7 @@ const IDENTIFIER_PATTERN = /^[a-z][a-z0-9_]*$/;
 const RESERVED_COLUMN_NAMES = new Set([
   'local_id',
   '_offline_user_id',
-  '_offline_group_id',
+  '_offline_scope_id',
   'server_id',
   '_offline_confirmed_json',
   '_offline_server_revision_json',
@@ -312,8 +312,8 @@ function buildCreateTableSql(
   hasServerId: boolean,
 ): readonly string[] {
   const columnLines = ['local_id TEXT NOT NULL', '_offline_user_id INTEGER NOT NULL'];
-  if (scope === 'group') {
-    columnLines.push('_offline_group_id INTEGER NOT NULL');
+  if (scope === 'partition') {
+    columnLines.push('_offline_scope_id TEXT NOT NULL');
   }
   if (hasServerId) {
     columnLines.push('server_id INTEGER');
@@ -336,7 +336,7 @@ function buildCreateTableSql(
   const statements = [`CREATE TABLE IF NOT EXISTS ${tableName} (\n  ${columnLines.join(',\n  ')},\n  PRIMARY KEY (local_id)\n)`];
 
   if (hasServerId) {
-    const indexColumns = scope === 'group' ? '_offline_user_id, _offline_group_id, server_id' : '_offline_user_id, server_id';
+    const indexColumns = scope === 'partition' ? '_offline_user_id, _offline_scope_id, server_id' : '_offline_user_id, server_id';
     statements.push(
       `CREATE UNIQUE INDEX IF NOT EXISTS uq_${tableName}_server_id ON ${tableName} (${indexColumns}) WHERE server_id IS NOT NULL`,
     );

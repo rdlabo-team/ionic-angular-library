@@ -8,7 +8,7 @@ import { createOfflineAuthBridge, type OfflineAuthExchangeContext, type OfflineR
 import type { OfflineCoordinatorService } from './offline-coordinator.service';
 
 const stateStub = {} as RouterStateSnapshot;
-const identity: OfflineRemoteIdentity = { userId: 1, scopeIds: [2], authSubject: 'subject-a' };
+const identity: OfflineRemoteIdentity = { userId: 1, scopeIds: ['2'], authSubject: 'subject-a' };
 
 function assertRecovery(value: unknown): KitRemoteAccessRecovery {
   expect(value).toEqual(expect.objectContaining({ activate: expect.any(Function), resume: expect.any(Function) }));
@@ -79,7 +79,7 @@ describe('createOfflineAuthBridge', () => {
     expect(order).toEqual(['exchange-authorize', 'prepare']);
     expect(offline.prepareRemoteSession).toHaveBeenCalledWith(
       1,
-      [2],
+      ['2'],
       'subject-a',
       expect.objectContaining({ isCurrent: expect.any(Function) }),
     );
