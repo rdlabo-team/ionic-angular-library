@@ -218,6 +218,24 @@ describe('bundled email/password flows (uniform hooks + no-throw null/false)', (
     expect(error).toHaveBeenCalledWith(boom);
   });
 
+  it('kitSignOut reports before-hook cleanup failures without signing out', async () => {
+    const boom = new Error('SQLite wipe failed');
+    const error = vi.fn();
+    const finallyHook = vi.fn();
+
+    await expect(
+      kitSignOut(authWith(null), {
+        before: () => Promise.reject(boom),
+        error,
+        finally: finallyHook,
+      }),
+    ).resolves.toBe(false);
+
+    expect(signOut).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(boom);
+    expect(finallyHook).toHaveBeenCalledOnce();
+  });
+
   it('kitSignOut skips a newer Firebase session that replaces the expected user during before', async () => {
     const expectedUser = { uid: 'same-uid' };
     const newerUser = { uid: 'same-uid' };

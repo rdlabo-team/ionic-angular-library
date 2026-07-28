@@ -118,8 +118,8 @@ export const kitSignOut = async (
   hooks?: KitAuthHooks,
   options?: KitSignOutOptions,
 ): Promise<boolean> => {
-  await hooks?.before?.();
   try {
+    await hooks?.before?.();
     if (options?.expectedUser !== undefined && auth.currentUser !== options.expectedUser) {
       return false;
     }
