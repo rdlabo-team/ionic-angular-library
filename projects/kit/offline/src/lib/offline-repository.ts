@@ -71,6 +71,8 @@ interface OfflineCommandBase<T> extends OfflineScope {
   payload: T;
   /** Full optimistic entity value displayed while this command is pending. */
   optimisticValue: unknown;
+  /** Product-owned companion rows changed atomically with this command. */
+  optimisticCompanions?: readonly OfflineOptimisticReplicaCompanion[];
   /** Durable intent used to preserve a hidden tombstone across restart and replay. */
   replicaMutation?: OfflineReplicaMutation;
   payloadHash: string;
@@ -80,6 +82,13 @@ interface OfflineCommandBase<T> extends OfflineScope {
   retryAt: number | null;
   createdAt: number;
   lastErrorCode: string | null;
+}
+
+/** Durable before/after image used to reconcile product-owned derived rows. */
+export interface OfflineOptimisticReplicaCompanion {
+  key: OfflineReplicaRowKey;
+  before: OfflineReplicaRow | null;
+  after: OfflineReplicaRow | null;
 }
 
 export type OfflineCommand<T = unknown> = OfflineCommandBase<T>;

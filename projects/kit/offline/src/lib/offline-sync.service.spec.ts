@@ -10,6 +10,7 @@ import {
 import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
+import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import { defineOfflineReplicaSchema, defineReplicaEntity, integer, naturalKey, generatedId, text } from './offline-replica-schema';
 import {
   canonicalOfflineReplicaIdentity,
@@ -119,7 +120,7 @@ describe('OfflineSyncService', () => {
       removeCommand: vi.fn(async (commandId: string) => {
         commands = commands.filter((item) => item.commandId !== commandId);
       }),
-      getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineCommandIdentity) => {
+      getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineReplicaAddress) => {
         await beforeGetReplicaRow?.();
         return (
           rows.find((item) => {
@@ -127,17 +128,23 @@ describe('OfflineSyncService', () => {
             if (identity.kind === 'generated') {
               return item.identity.kind === 'generated' && item.identity.localId === identity.localId;
             }
+            if (identity.kind === 'local') {
+              return item.identity.kind === 'local' && item.identity.localId === identity.localId;
+            }
             return item.identity.kind === 'natural' && JSON.stringify(item.identity.naturalKey) === JSON.stringify(identity.naturalKey);
           }) ?? null
         );
       }),
-      getReplicaRowIncludingPendingDelete: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineCommandIdentity) => {
+      getReplicaRowIncludingPendingDelete: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineReplicaAddress) => {
         await beforeGetReplicaRow?.();
         return (
           rows.find((item) => {
             if (item.userId !== scope.userId || item.scopeId !== scope.scopeId || item.sourceKey !== sourceKey) return false;
             if (identity.kind === 'generated') {
               return item.identity.kind === 'generated' && item.identity.localId === identity.localId;
+            }
+            if (identity.kind === 'local') {
+              return item.identity.kind === 'local' && item.identity.localId === identity.localId;
             }
             return item.identity.kind === 'natural' && JSON.stringify(item.identity.naturalKey) === JSON.stringify(identity.naturalKey);
           }) ?? null
@@ -252,6 +259,199 @@ describe('OfflineSyncService', () => {
     ).rejects.toThrow('read-only cache');
     expect(commands).toEqual([]);
     expect(rows).toEqual([]);
+  });
+
+  it('prepared enqueue persists the base row, companion row, and Outbox command together', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'view-1' },
+      values: { title: 'Optimistic view' },
+      confirmedValues: { title: 'Baseline view' },
+      serverRevision: null,
+      fetchedAt: 2,
+      syncState: 'confirmed',
+    };
+    rows.push({ ...structuredClone(companion), values: { title: 'Baseline view' } });
+
+    await service.enqueuePrepared(
+      async (repository) => {
+        const current = await repository.getReplicaRow({ userId: 1, scopeId: '10' }, 'document_views', companion.identity);
+        expect(current?.values).toEqual({ title: 'Baseline view' });
+        return {
+          request: {
+            scopeId: '10',
+            aggregateType: 'documents',
+            identity: { kind: 'generated', localId: 'prepared-1' },
+            operation: 'documents.create',
+            payload: { title: 'Optimistic' },
+            optimisticValue: { id: 0, title: 'Optimistic' },
+          },
+          replicaTransaction: { putRows: [companion] },
+        };
+      },
+      { flush: false },
+    );
+
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sourceKey: 'documents', values: { id: 0, title: 'Optimistic' } }),
+        expect.objectContaining({ sourceKey: 'document_views', values: { title: 'Optimistic view' } }),
+      ]),
+    );
+    expect(commands[0]?.optimisticCompanions).toEqual([
+      expect.objectContaining({
+        before: expect.objectContaining({ values: { title: 'Baseline view' } }),
+        after: expect.objectContaining({ values: { title: 'Optimistic view' } }),
+      }),
+    ]);
+  });
+
+  it('prepared enqueue persists nothing when preparation fails', async () => {
+    await expect(
+      service.enqueuePrepared(async () => {
+        throw new Error('derive failed');
+      }),
+    ).rejects.toThrow('derive failed');
+    expect(rows).toEqual([]);
+    expect(commands).toEqual([]);
+  });
+
+  it('prepared enqueue rejects duplicate or cross-scope companion rows before persistence', async () => {
+    const base = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local' as const, localId: 'duplicate' },
+      values: {},
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed' as const,
+    };
+    const request = {
+      scopeId: '10',
+      aggregateType: 'documents',
+      identity: { kind: 'generated' as const, localId: 'prepared-invalid' },
+      operation: 'documents.create',
+      payload: {},
+      optimisticValue: { id: 0, title: 'x' },
+    };
+    await expect(
+      service.enqueuePrepared(async () => ({
+        request,
+        replicaTransaction: { putRows: [base, structuredClone(base)] },
+      })),
+    ).rejects.toThrow('duplicate replica row');
+    await expect(
+      service.enqueuePrepared(async () => ({
+        request,
+        replicaTransaction: { putRows: [{ ...base, scopeId: '11' }] },
+      })),
+    ).rejects.toThrow('must use the command scope');
+    await expect(
+      service.enqueuePrepared(async () => ({
+        request,
+        replicaTransaction: { putCommands: [] } as never,
+      })),
+    ).rejects.toThrow('cannot mutate putCommands');
+    expect(rows).toEqual([]);
+    expect(commands).toEqual([]);
+  });
+
+  it('discard restores a prepared companion before-image', async () => {
+    const before: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'discard-view' },
+      values: { title: 'Baseline' },
+      confirmedValues: { title: 'Baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(before);
+    const commandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'discard-prepared' },
+          operation: 'documents.create',
+          payload: {},
+          optimisticValue: { id: 0, title: 'Optimistic' },
+        },
+        replicaTransaction: { putRows: [{ ...before, values: { title: 'Optimistic' } }] },
+      }),
+      { flush: false },
+    );
+
+    await service.discard(commandId, { flush: false });
+
+    expect(rows.find((row) => row.sourceKey === 'document_views')?.values).toEqual({ title: 'Baseline' });
+    expect(commands).toEqual([]);
+  });
+
+  it('pull適用中の複数command一括discardは最新confirmed companionを待って復元する', async () => {
+    const before: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'discard-race-view' },
+      values: { title: 'Baseline' },
+      confirmedValues: { title: 'Baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(before);
+    for (const [index, title] of ['First optimistic', 'Second optimistic'].entries()) {
+      await service.enqueuePrepared(
+        async () => ({
+          request: {
+            scopeId: '10',
+            aggregateType: 'documents',
+            identity: { kind: 'generated', localId: 'discard-race' },
+            operation: 'documents.update',
+            payload: { title },
+            optimisticValue: { id: 1, title },
+          },
+          replicaTransaction: {
+            putRows: [{ ...before, values: { title }, fetchedAt: index + 2 }],
+          },
+        }),
+        { flush: false },
+      );
+    }
+
+    const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+    let release!: () => void;
+    let started!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const applying = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const pullApply = coordinator.run(async () => {
+      started();
+      await barrier;
+      rows = rows.map((row) =>
+        row.sourceKey === 'document_views' ? { ...row, confirmedValues: { title: 'Server after pull' }, fetchedAt: 10 } : row,
+      );
+    });
+    await applying;
+
+    const discard = service.discardAllPending();
+    await Promise.resolve();
+    expect(commands).toHaveLength(2);
+
+    release();
+    await Promise.all([pullApply, discard]);
+    expect(commands).toEqual([]);
+    expect(rows.find((row) => row.sourceKey === 'document_views')?.values).toEqual({ title: 'Server after pull' });
   });
 
   it('Outbox件数上限では既存commandを失わず新規enqueueを拒否する', async () => {

@@ -157,6 +157,7 @@ const SCHEMA = [
   operation TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   optimistic_value_json TEXT NOT NULL,
+  optimistic_companions_json TEXT,
   replica_mutation TEXT NOT NULL DEFAULT 'upsert',
   payload_hash TEXT NOT NULL,
   base_revision_json TEXT,
@@ -418,6 +419,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
     });
     this.#databaseId = databaseId;
     for (const statement of SCHEMA) await this.#execute(databaseId, statement);
+    const commandColumns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_sync_commands)');
+    if (!commandColumns.some((row) => row['name'] === 'optimistic_companions_json')) {
+      await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT');
+    }
     const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
     if (metadata.length === 0) {
       await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [
@@ -557,6 +562,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       operation: this.#string(row['operation']),
       payload: this.#parse(row['payload_json']),
       optimisticValue: this.#parse(row['optimistic_value_json']),
+      ...(row['optimistic_companions_json'] === null || row['optimistic_companions_json'] === undefined
+        ? {}
+        : { optimisticCompanions: this.#parse(row['optimistic_companions_json']) }),
       replicaMutation: this.#string(row['replica_mutation']) as 'upsert' | 'delete',
       payloadHash: this.#string(row['payload_hash']),
       baseRevision: this.#parseNullable(row['base_revision_json']),
@@ -573,13 +581,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
       databaseId,
       `INSERT INTO offline_sync_commands
         (command_id, user_id, scope_id, aggregate_type, source_key, identity_json, operation, payload_json, optimistic_value_json,
-         replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         optimistic_companions_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
         user_id = excluded.user_id, scope_id = excluded.scope_id, aggregate_type = excluded.aggregate_type,
         source_key = excluded.source_key,
         identity_json = excluded.identity_json, operation = excluded.operation, payload_json = excluded.payload_json,
-        optimistic_value_json = excluded.optimistic_value_json, replica_mutation = excluded.replica_mutation,
+        optimistic_value_json = excluded.optimistic_value_json, optimistic_companions_json = excluded.optimistic_companions_json,
+        replica_mutation = excluded.replica_mutation,
         payload_hash = excluded.payload_hash,
         base_revision_json = excluded.base_revision_json, state = excluded.state, attempts = excluded.attempts,
         retry_at = excluded.retry_at, created_at = excluded.created_at, last_error_code = excluded.last_error_code`,
@@ -593,6 +602,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         command.operation,
         JSON.stringify(command.payload),
         JSON.stringify(command.optimisticValue),
+        command.optimisticCompanions === undefined ? null : JSON.stringify(command.optimisticCompanions),
         command.replicaMutation ?? 'upsert',
         command.payloadHash,
         this.#stringifyNullable(command.baseRevision),

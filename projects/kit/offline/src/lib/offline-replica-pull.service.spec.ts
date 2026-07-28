@@ -12,6 +12,7 @@ import {
   type OfflineReplicaPullRequest,
 } from './offline-replica-puller';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
+import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import { generatedCommandIdentity, generatedReplicaIdentity } from './offline-test-helpers';
 import {
   defineOfflineReplicaSchema,
@@ -179,6 +180,55 @@ describe('OfflineReplicaPullService', () => {
       cursor: '',
       schemaVersion: replicaSchema.version,
       schemaHash,
+    });
+  });
+
+  it('does not hold the mutation lane during transport and preserves an enqueue completed before stale page apply', async () => {
+    let releasePull!: (value: OfflineReplicaPullPage) => void;
+    pull.mockImplementationOnce(() => new Promise((resolve) => (releasePull = resolve)));
+    const pendingPull = service.pull(scope);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledOnce());
+    const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+    const optimisticRow: OfflineReplicaRow = {
+      ...scope,
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: 'race-local', remoteId: 42 },
+      values: { id: 42, title: 'Optimistic edit' },
+      confirmedValues: { id: 42, title: 'Baseline' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'pending',
+    };
+    await coordinator.run(() =>
+      repository.transactReplica({
+        putRows: [optimisticRow],
+        putCommands: [
+          {
+            ...scope,
+            commandId: 'race-command',
+            aggregateType: 'test_items',
+            sourceKey: 'test_items',
+            identity: { kind: 'generated', localId: 'race-local' },
+            operation: 'test_items.update',
+            payload: { title: 'Optimistic edit' },
+            optimisticValue: optimisticRow.values,
+            payloadHash: 'hash',
+            baseRevision: 2,
+            state: 'pending',
+            attempts: 0,
+            retryAt: null,
+            createdAt: 1,
+            lastErrorCode: null,
+          },
+        ],
+      }),
+    );
+    releasePull(page([itemChange(42, 'Server edit', { serverRevision: 2 })]));
+    await pendingPull;
+
+    await expect(repository.getReplicaRow(scope, 'test_items', optimisticRow.identity)).resolves.toMatchObject({
+      values: { title: 'Optimistic edit' },
+      confirmedValues: { title: 'Server edit' },
     });
   });
 

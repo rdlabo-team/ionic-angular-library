@@ -369,6 +369,95 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(insert?.values).toContain('delete');
   });
 
+  it('persists and restores prepared companion metadata while old rows remain readable', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    const companion = {
+      key: {
+        userId: 1,
+        scopeId: '10',
+        sourceKey: 'local_projections',
+        identity: { kind: 'local' as const, localId: 'view-1' },
+      },
+      before: null,
+      after: {
+        userId: 1,
+        scopeId: '10',
+        sourceKey: 'local_projections',
+        identity: { kind: 'local' as const, localId: 'view-1' },
+        values: { feedKey: 'optimistic' },
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'confirmed' as const,
+      },
+    };
+    const command: OfflineCommand = {
+      userId: 1,
+      scopeId: '10',
+      commandId: 'prepared-command',
+      aggregateType: 'test_items',
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: 'prepared-local' },
+      operation: 'test_items.update',
+      payload: { title: 'Optimistic' },
+      optimisticValue: { id: 42, title: 'Optimistic' },
+      optimisticCompanions: [companion],
+      payloadHash: 'hash',
+      baseRevision: 1,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    };
+    await repository.putCommand(command);
+    const insert = plugin.execute.mock.calls
+      .map(([options]) => options as { statement: string; values?: unknown[] })
+      .find(({ statement }) => statement.startsWith('INSERT INTO offline_sync_commands'));
+    expect(insert?.statement).toContain('optimistic_companions_json');
+    expect(insert?.values).toContain(JSON.stringify([companion]));
+
+    const sqliteRow = {
+      command_id: command.commandId,
+      user_id: 'n:1',
+      scope_id: command.scopeId,
+      aggregate_type: command.aggregateType,
+      source_key: command.sourceKey,
+      identity_json: JSON.stringify(command.identity),
+      operation: command.operation,
+      payload_json: JSON.stringify(command.payload),
+      optimistic_value_json: JSON.stringify(command.optimisticValue),
+      optimistic_companions_json: JSON.stringify([companion]),
+      replica_mutation: 'upsert',
+      payload_hash: command.payloadHash,
+      base_revision_json: JSON.stringify(command.baseRevision),
+      state: command.state,
+      attempts: command.attempts,
+      retry_at: command.retryAt,
+      created_at: command.createdAt,
+      last_error_code: command.lastErrorCode,
+    };
+    plugin.query.mockResolvedValueOnce({ rows: [sqliteRow] });
+    await expect(repository.getCommands({ userId: 1, scopeId: '10' })).resolves.toEqual([
+      expect.objectContaining({ optimisticCompanions: [companion] }),
+    ]);
+    plugin.query.mockResolvedValueOnce({ rows: [{ ...sqliteRow, optimistic_companions_json: null }] });
+    await expect(repository.getCommands({ userId: 1, scopeId: '10' })).resolves.toEqual([
+      expect.not.objectContaining({ optimisticCompanions: expect.anything() }),
+    ]);
+  });
+
+  it('adds the nullable companion column to an existing version-1 native database', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT',
+      }),
+    );
+  });
+
   it('replicaとoutboxを単一transactionで更新する', async () => {
     const repository = createRepository();
     await repository.initialize();

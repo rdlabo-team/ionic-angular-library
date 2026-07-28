@@ -529,6 +529,34 @@ The write lifecycle is: update the replica immediately → append an outbox comm
 the optimistic value → replay in the background → validate the server revision → store the confirmed value and
 revision. The server remains authoritative; SQLite is the durable local working database, not an HTTP response cache.
 
+When an API response is assembled from a base replica row plus product-owned local-only view rows, use
+`enqueuePrepared()`. Its callback runs inside the shared replica mutation lane, so every read used to derive the
+optimistic projection happens after earlier enqueue/ACK/pull applies. The base optimistic row, companion rows, and
+Outbox command are then committed by one `transactReplica()` call. Preparation failure, invalid cross-scope rows,
+duplicate row keys, non-JSON values, or an attempt to mutate commands/cursors leaves durable state unchanged.
+
+```ts
+await offlineSync.enqueuePrepared(async (repository) => {
+  const view = await readProductView(repository, scope, row);
+  return {
+    request: {
+      scopeId: scope.scopeId,
+      aggregateType: 'items',
+      identity: { kind: 'generated', localId: row.identity.localId },
+      operation: 'items.rename',
+      payload: { title },
+      optimisticValue: { ...row.values, title },
+    },
+    replicaTransaction: { putRows: [buildProductViewRow(scope, { ...view, title })] },
+  };
+});
+```
+
+Product-specific pullers that materialize their own aggregate tables must keep HTTP transport outside
+`OfflineReplicaMutationCoordinator.run()` and wrap only the response apply read/derive/write section. This shares the
+same short local critical section as enqueue, ACK, discard, and the generic pull service without holding a lock during
+network latency.
+
 For a DB row whose deletion is represented by absence, enqueue the same full row values with
 `replicaMutation: 'delete'`. The runtime stores a library-owned durable tombstone: normal `getReplicaRow()` and
 `getReplicaRows()` reads stop returning the row immediately, while synchronization retains its immutable generated

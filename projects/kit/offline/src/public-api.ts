@@ -3,6 +3,7 @@ export * from './lib/offline-replica-schema';
 export * from './lib/offline-identity';
 export * from './lib/offline-replica-puller';
 export * from './lib/offline-replica-pull.service';
+export * from './lib/offline-replica-mutation-coordinator';
 export * from './lib/offline-command-executor';
 export * from './lib/offline-command-hooks';
 export * from './lib/offline-auth-bridge';
