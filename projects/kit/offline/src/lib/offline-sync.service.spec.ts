@@ -443,6 +443,120 @@ describe('OfflineSyncService', () => {
     await service.flush();
     expect(execute.mock.calls.map(([command]) => (command as OfflineCommand<{ seq: number }>).payload.seq)).toEqual([1, 2]);
     expect(service.pendingCount()).toBe(0);
+    expect(pull).toHaveBeenCalledTimes(2);
+  });
+
+  it('送信成功後は同一scopeの複数aggregateを一度だけ再pullする', async () => {
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'post-pull-1' },
+        operation: 'documents.create',
+        payload: { title: 'one' },
+        optimisticValue: { id: 0, title: 'one' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'post-pull-2' },
+        operation: 'documents.create',
+        payload: { title: 'two' },
+        optimisticValue: { id: 0, title: 'two' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await service.flush();
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(pull).toHaveBeenCalledTimes(2);
+    expect(pull.mock.calls.map(([scope]) => scope)).toEqual([
+      { userId: 1, scopeId: '10' },
+      { userId: 1, scopeId: '10' },
+    ]);
+    expect(commands).toEqual([]);
+  });
+
+  it('送信ACK後のpullが完了するまでflushを完了せずauthoritative projectionを公開する', async () => {
+    const commandCountsAtPull: number[] = [];
+    execute.mockResolvedValueOnce({
+      remoteId: 55,
+      serverRevision: 2,
+      confirmedValues: { id: 55, title: 'base response' },
+      response: null,
+    });
+    pull.mockImplementation(async () => {
+      commandCountsAtPull.push(commands.length);
+      if (commandCountsAtPull.length !== 2) return;
+      const row = rows.find(
+        (candidate) =>
+          candidate.sourceKey === 'documents' && candidate.identity.kind === 'generated' && candidate.identity.localId === 'snap-back',
+      );
+      if (!row) throw new Error('post-send pull requires the acknowledged replica row');
+      // Product pullers materialize sibling-table state here. Model that server-authoritative
+      // projection explicitly so this test catches a regression that resolves flush after ACK
+      // but before the post-send pull has replaced the transient base-only projection.
+      row.values = { id: 55, title: 'authoritative projection' };
+      row.confirmedValues = row.values;
+      row.serverRevision = 3;
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'snap-back' },
+        operation: 'documents.create',
+        payload: { title: 'optimistic projection' },
+        optimisticValue: { id: 0, title: 'optimistic projection' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await service.flush();
+
+    expect(commandCountsAtPull).toEqual([1, 0]);
+    expect(rows).toContainEqual(
+      expect.objectContaining({
+        identity: expect.objectContaining({ localId: 'snap-back', remoteId: 55 }),
+        values: { id: 55, title: 'authoritative projection' },
+        confirmedValues: { id: 55, title: 'authoritative projection' },
+        serverRevision: 3,
+        syncState: 'confirmed',
+      }),
+    );
+    expect(service.pendingCount()).toBe(0);
+  });
+
+  it('送信後pull失敗ではcommit済みcommandを再送せず次flushのpre-pullで回収する', async () => {
+    const postPullError = new Error('post-send pull failed');
+    pull.mockResolvedValueOnce(undefined).mockRejectedValueOnce(postPullError).mockResolvedValue(undefined);
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'post-pull-failure' },
+        operation: 'documents.create',
+        payload: { title: 'one' },
+        optimisticValue: { id: 0, title: 'one' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(postPullError);
+    expect(commands).toEqual([]);
+    expect(execute).toHaveBeenCalledOnce();
+
+    await service.flush();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(pull).toHaveBeenCalledTimes(3);
+    expect(service.pendingCount()).toBe(0);
   });
 
   it('local_idを不変主キーにして送信直前に最新server_idへ解決する', async () => {
@@ -705,6 +819,29 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.flush();
     expect(service.pendingCommands()[0]).toMatchObject({ state: 'retry_wait', retryAt: expect.any(Number) });
+
+    await service.retryNow(commandId);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(service.pendingCommands()).toEqual([]);
+  });
+
+  it('retryNowは再認証後のblocked_authを解除して選択したcommandを再送する', async () => {
+    execute.mockRejectedValueOnce({ status: 401 }).mockResolvedValueOnce({ response: null });
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'reauth-retry' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'blocked_auth', lastErrorCode: '401' });
 
     await service.retryNow(commandId);
 

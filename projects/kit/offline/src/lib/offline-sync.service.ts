@@ -86,6 +86,7 @@ export class OfflineOutboxCapacityError extends Error {
 
 const MAX_PARALLEL_AGGREGATES = 3;
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
+const POST_SEND_PULL_RETRY_MS = 1_000;
 const DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER = 1_000;
 const DEFAULT_MAX_OUTBOX_BYTES_PER_USER = 10 * 1024 * 1024;
 
@@ -390,7 +391,7 @@ export class OfflineSyncService {
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
-  /** Clears a retry backoff selected explicitly by the user and sends the durable command now. */
+  /** Clears a retry backoff/auth block selected explicitly by the user and sends the durable command now. */
   async retryNow(commandId: string): Promise<void> {
     await this.initialize();
     this.#invalidateFlush();
@@ -402,8 +403,8 @@ export class OfflineSyncService {
       // resurrect such a command from an object captured before invalidation.
       const current = (await this.#readKnownCommands()).find((item) => item.commandId === commandId);
       if (!current) return false;
-      if (current.state !== 'retry_wait') {
-        throw new Error(`Offline command ${commandId} is not waiting for retry.`);
+      if (current.state !== 'retry_wait' && current.state !== 'blocked_auth') {
+        throw new Error(`Offline command ${commandId} is not waiting for retry or reauthentication.`);
       }
       await repository.putCommand({ ...current, state: 'pending', retryAt: null, lastErrorCode: null });
       return true;
@@ -448,6 +449,7 @@ export class OfflineSyncService {
       if (!this.#isCurrent(generation) || !this.#network.connected()) return;
       await this.#pull.pull(scope);
     }
+    const dirtyScopes = new Map<string, OfflineScope>();
     while (this.#network.connected() && this.#isCurrent(generation)) {
       const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands());
       if (!this.#isCurrent(generation)) return;
@@ -456,12 +458,31 @@ export class OfflineSyncService {
       const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
         while (cursor < groups.length) {
           const group = groups[cursor++];
-          if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation);
+          if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation, dirtyScopes);
         }
       });
       await Promise.all(workers);
     }
+    const postPullFailures: unknown[] = [];
+    for (const scope of dirtyScopes.values()) {
+      if (!this.#isCurrent(generation) || !this.#network.connected()) break;
+      try {
+        // A command response may contain only the aggregate's base row. Pull
+        // once per dirty scope so sibling-table journal entries are visible
+        // before the completed Outbox state is exposed to product UI.
+        await this.#pull.pull(scope);
+      } catch (error) {
+        postPullFailures.push(error);
+      }
+    }
     await this.#refreshState(generation);
+    if (postPullFailures.length > 0 && this.#isCurrent(generation)) {
+      // The server command is already committed and acknowledged locally, so
+      // never resend it. Retry only the idempotent scope pull and surface the
+      // failure to explicit flush callers/ErrorHandler.
+      this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
+      throw postPullFailures[0];
+    }
   }
 
   #eligibleAggregateGroups(commands: OfflineCommand[]): OfflineCommand[][] {
@@ -479,7 +500,7 @@ export class OfflineSyncService {
     });
   }
 
-  async #sendAggregate(commands: OfflineCommand[], generation: number): Promise<void> {
+  async #sendAggregate(commands: OfflineCommand[], generation: number, dirtyScopes: Map<string, OfflineScope>): Promise<void> {
     for (const command of commands) {
       if (!this.#isCurrent(generation)) return;
       if (command.state === 'retry_wait' && (command.retryAt ?? 0) > Date.now()) break;
@@ -514,6 +535,10 @@ export class OfflineSyncService {
       }
       if (!this.#isCurrent(generation)) return;
       await this.#completeCommand(commands, sending, result, generation);
+      if (this.#isCurrent(generation)) {
+        const scope = { userId: sending.userId, scopeId: sending.scopeId };
+        dirtyScopes.set(this.#scopeKey(scope), scope);
+      }
     }
   }
 
