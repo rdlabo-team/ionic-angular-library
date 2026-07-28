@@ -390,6 +390,27 @@ export class OfflineSyncService {
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
+  /** Clears a retry backoff selected explicitly by the user and sends the durable command now. */
+  async retryNow(commandId: string): Promise<void> {
+    await this.initialize();
+    this.#invalidateFlush();
+    await this.#waitForSendingTransitions();
+    await this.#restoreInterruptedCommands();
+    const retried = await this.runSerializedReplicaMutation(async (repository) => {
+      // Re-read only after every interrupted transport transition has settled.
+      // An ACK may have removed the command while retryNow was waiting; never
+      // resurrect such a command from an object captured before invalidation.
+      const current = (await this.#readKnownCommands()).find((item) => item.commandId === commandId);
+      if (!current) return false;
+      if (current.state !== 'retry_wait') {
+        throw new Error(`Offline command ${commandId} is not waiting for retry.`);
+      }
+      await repository.putCommand({ ...current, state: 'pending', retryAt: null, lastErrorCode: null });
+      return true;
+    });
+    if (retried && this.#network.connected()) await this.flush();
+  }
+
   async discardAllPending(): Promise<void> {
     await this.initialize();
     this.#invalidateFlush();

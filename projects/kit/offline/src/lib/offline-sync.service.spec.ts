@@ -75,6 +75,7 @@ describe('OfflineSyncService', () => {
   let session: { userId: number; scopes: OfflineScope[] } | null;
   let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
   let beforePutCommand: ((command: OfflineCommand) => Promise<void>) | null;
+  let beforeGetCommands: (() => Promise<void>) | null;
   let beforeGetReplicaRow: (() => Promise<void>) | null;
   let pull: ReturnType<typeof vi.fn<(scope: OfflineScope) => Promise<void>>>;
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
@@ -90,6 +91,7 @@ describe('OfflineSyncService', () => {
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     localSession = undefined;
     beforePutCommand = null;
+    beforeGetCommands = null;
     beforeGetReplicaRow = null;
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
@@ -98,9 +100,10 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValue({ response: null });
     const repository = {
       initialize: vi.fn(async () => undefined),
-      getCommands: vi.fn(async (scope: OfflineScope) =>
-        commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId),
-      ),
+      getCommands: vi.fn(async (scope: OfflineScope) => {
+        await beforeGetCommands?.();
+        return commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId);
+      }),
       getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId)),
       putCommand: vi.fn(async (command: OfflineCommand) => {
         await beforePutCommand?.(command);
@@ -684,6 +687,59 @@ describe('OfflineSyncService', () => {
     await service.flush();
     expect(service.pendingCommands()[0]).toMatchObject({ state, lastErrorCode: String(status) });
     expect(rows[0]?.syncState).toBe(rowSyncState);
+  });
+
+  it('retryNowは未来のbackoffを解除して選択したcommandを直ちに再送する', async () => {
+    execute.mockRejectedValueOnce({ status: 500 }).mockResolvedValueOnce({ response: null });
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'manual-retry' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'retry_wait', retryAt: expect.any(Number) });
+
+    await service.retryNow(commandId);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(service.pendingCommands()).toEqual([]);
+  });
+
+  it('retryNow待機中にACK削除されたcommandを古いsnapshotから復活させない', async () => {
+    execute.mockRejectedValueOnce({ status: 500 });
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'retry-ack-race' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    connected.set(false);
+    expect(commands[0]).toMatchObject({ commandId, state: 'retry_wait' });
+
+    let readsAfterRetryStarted = 0;
+    beforeGetCommands = async () => {
+      readsAfterRetryStarted += 1;
+      if (readsAfterRetryStarted === 2) commands = commands.filter((command) => command.commandId !== commandId);
+    };
+
+    await service.retryNow(commandId);
+
+    expect(commands.some((command) => command.commandId === commandId)).toBe(false);
+    expect(service.pendingCommands()).toEqual([]);
   });
 
   it.each([
