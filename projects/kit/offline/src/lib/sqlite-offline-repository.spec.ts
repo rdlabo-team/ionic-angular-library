@@ -21,6 +21,7 @@ import {
   type CommunitySqliteDatabase,
   type CommunitySqliteDriver,
   createCommunitySqliteDriver,
+  createRandomOfflineEncryptionKey,
   SqliteOfflineRepository,
 } from './sqlite-offline-repository';
 
@@ -137,6 +138,17 @@ const replicaSchemaV1HashDrift = defineOfflineReplicaSchema({
   version: 1,
   entities: [testItemWithSubtitleEntity],
   migrations: [],
+});
+
+describe('createRandomOfflineEncryptionKey', () => {
+  it('returns a fresh 256-bit lower-case hexadecimal key', async () => {
+    const first = await createRandomOfflineEncryptionKey();
+    const second = await createRandomOfflineEncryptionKey();
+
+    expect(first).toMatch(/^[0-9a-f]{64}$/u);
+    expect(second).toMatch(/^[0-9a-f]{64}$/u);
+    expect(second).not.toBe(first);
+  });
 });
 
 describe('createCommunitySqliteDriver', () => {

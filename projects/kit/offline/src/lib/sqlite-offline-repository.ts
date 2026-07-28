@@ -83,6 +83,17 @@ export const COMMUNITY_SQLITE = new InjectionToken<CommunitySqliteDriver | null>
   factory: () => null,
 });
 
+/**
+ * Create a cryptographically random 256-bit key for a first-install offline SQLite database.
+ *
+ * The returned lower-case hexadecimal value is suitable for
+ * `OfflineKitOptions.createEncryptionKey` and contains no device or user identifiers.
+ */
+export function createRandomOfflineEncryptionKey(): Promise<string> {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return Promise.resolve(Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(''));
+}
+
 /** Create the standard encrypted `@capacitor-community/sqlite` driver. */
 export function createCommunitySqliteDriver(connection: CommunitySqliteConnection): CommunitySqliteDriver {
   const databases = new Map<string, CommunitySqliteDatabase>();

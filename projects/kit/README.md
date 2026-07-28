@@ -496,9 +496,7 @@ identifier, or access token; generate a cryptographically random value for the f
 
 ```ts
 import { CapacitorSQLite, SQLiteConnection } from '@capacitor-community/sqlite';
-
-const createRandomOfflineEncryptionKey = async () =>
-  Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+import { createRandomOfflineEncryptionKey, provideOffline } from '@rdlabo/ionic-angular-kit/offline';
 
 provideOffline({
   databaseName: 'product-offline',
