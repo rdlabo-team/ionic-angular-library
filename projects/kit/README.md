@@ -391,11 +391,13 @@ A fleet-canonical HTTP interceptor with:
 
 The optional `offline` entry point provides a user/partition-scoped local replica, durable outbox, authenticated
 session boundary, cursor-based delta pull, aggregate-ordered replay, optimistic updates, retry classification, and a
-read-only request-policy interceptor. Synchronized applications provide URL/DTO read policies, a replica puller, and
-a command executor through `provideOffline(...)`. External-source or HTTP read caches use
+request-policy interceptor. Synchronized applications provide URL/DTO read policies, optional local-first mutation
+policies, a replica puller, and a command executor through `provideOffline(...)`. External-source or HTTP read caches use
 `mode: 'readCacheOnly'`; the kit then supplies the empty pull/executor boundary instead of making every product
 declare dummy adapters.
-Mutations are queued explicitly with `OfflineSyncService.enqueue`, not through HTTP interceptor policy.
+Mutations may still call `OfflineSyncService.enqueue` explicitly. A product that must keep ordinary HTTP services
+offline-unaware can instead register `mutationPolicies`; a matched `POST` / `PUT` / `PATCH` / `DELETE` is prepared
+locally before transport and returns an optimistic response while the Outbox owns remote replay.
 Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
 primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
 
@@ -447,8 +449,51 @@ returned.
 
 The offline interceptor observes real transport responses to update API reachability. For matched `GET`
 requests only, a transport failure with `status=0` may return a local replica response tagged
-`X-Offline-Response: local`. `POST` and other write methods always go to transport unchanged; outbox replay
-requests bypass policy with `OFFLINE_BYPASS` while still using the same transport observation.
+`X-Offline-Response: local`. A read policy's optional `projectResponse(response, source)` hook receives both remote
+and local results, so the remote branch can persist first and both branches can return a body from one composer.
+Matched mutation policies return `X-Offline-Response: optimistic` without starting transport. Unmatched writes go to
+transport unchanged. Outbox replay requests bypass policy with `OFFLINE_BYPASS` while still using the same auth
+interceptor and transport observation. Mutation policy matchers must be mutually exclusive: zero matches use normal
+transport, exactly one match runs its `prepare()`, and multiple matches throw `OfflineMutationPolicyConflictError`
+before either `prepare()` or transport starts. This fail-fast boundary prevents provider registration order from
+silently selecting the wrong replica/outbox mutation.
+
+```ts
+@Injectable()
+class ItemReadPolicy implements OfflineRequestPolicy {
+  resolve(request: HttpRequest<unknown>): OfflineRequestPlan | null {
+    if (request.method !== 'GET' || !request.url.endsWith('/items')) return null;
+    return {
+      kind: 'read',
+      readLocal: () => this.items.readResponse(),
+      projectResponse: async (response, source) => {
+        if (source === 'remote') await this.items.persist(response.body);
+        return response.clone({ body: await this.items.compose() });
+      },
+    };
+  }
+}
+
+@Injectable()
+class ItemMutationPolicy implements OfflineMutationRequestPolicy {
+  resolve(request: HttpRequest<unknown>): OfflineMutationRequestPlan | null {
+    if (request.method !== 'POST' || !request.url.endsWith('/items')) return null;
+    return {
+      kind: 'mutation',
+      prepare: async () => {
+        const optimistic = await this.items.enqueueCreate(request.body);
+        return new HttpResponse({ status: 202, body: optimistic });
+      },
+    };
+  }
+}
+
+provideOffline({
+  // repository/schema/executor/puller options omitted
+  requestPolicies: [ItemReadPolicy],
+  mutationPolicies: [ItemMutationPolicy],
+});
+```
 
 The native offline runtime uses `@capacitor-community/sqlite` on iOS and Android. Install the plugin in the app and
 sync native projects:

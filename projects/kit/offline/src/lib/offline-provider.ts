@@ -9,8 +9,8 @@ import type { OfflineKitOptions } from './offline-kit-options';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
 import { IonicOfflineRepository, OFFLINE_REPOSITORY, selectOfflineRepository } from './offline-repository';
-import type { OfflineRequestPolicy } from './offline-request-policy';
-import { provideOfflineRequestPolicy } from './offline-request-policy';
+import type { OfflineMutationRequestPolicy, OfflineRequestPolicy } from './offline-request-policy';
+import { provideOfflineMutationRequestPolicy, provideOfflineRequestPolicy } from './offline-request-policy';
 import type { OfflineReplicaPuller } from './offline-replica-puller';
 import { OFFLINE_REPLICA_PULLER } from './offline-replica-puller';
 import { OfflineSessionService } from './offline-session.service';
@@ -36,6 +36,8 @@ interface ProvideOfflineOptionsBase extends OfflineKitOptions {
 /** Full replica pull and durable Outbox synchronization. */
 export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptionsBase {
   mode?: 'synchronized';
+  /** Product policies that replace matched writes with atomic local-first mutations. */
+  mutationPolicies?: readonly Type<OfflineMutationRequestPolicy>[];
   /** Product adapter that sends opaque commands to its API. */
   commandExecutor: Type<OfflineCommandExecutor>;
   /** Product transport for explicit cursor-based server delta pulls. */
@@ -45,6 +47,7 @@ export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptions
 /** Server- or external-source read cache with no mutation transport or Outbox. */
 export interface ProvideReadCacheOfflineOptions extends ProvideOfflineOptionsBase {
   mode: 'readCacheOnly';
+  mutationPolicies?: never;
   commandExecutor?: never;
   replicaPuller?: never;
 }
@@ -107,6 +110,7 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
       : { provide: OFFLINE_REPLICA_PULLER, useValue: READ_CACHE_ONLY_REPLICA_PULLER },
     ...(options.commandHooks ? [options.commandHooks, { provide: OFFLINE_COMMAND_HOOKS, useExisting: options.commandHooks }] : []),
     ...options.requestPolicies.flatMap((policy) => provideOfflineRequestPolicy(policy)),
+    ...(options.mutationPolicies ?? []).flatMap((policy) => provideOfflineMutationRequestPolicy(policy)),
     ...(options.providers ?? []),
     provideAppInitializer(() => inject(OfflineCoordinatorService).initialize()),
   ]);

@@ -2,22 +2,53 @@ import type { HttpEvent, HttpInterceptorFn, HttpRequest } from '@angular/common/
 import { HttpResponse as AngularHttpResponse } from '@angular/common/http';
 import { ErrorHandler, inject, Injectable } from '@angular/core';
 import type { Observable } from 'rxjs';
-import { catchError, concatMap, defer, from, of, tap, throwError } from 'rxjs';
+import { catchError, concatMap, defer, from, map, of, tap, throwError } from 'rxjs';
 import { isOfflineFallbackError, OfflineNetworkService } from './offline-network.service';
-import { OFFLINE_BYPASS, OFFLINE_RESPONSE_HEADER, OfflineRequestPolicyRegistry } from './offline-request-policy';
+import {
+  OFFLINE_BYPASS,
+  OFFLINE_RESPONSE_HEADER,
+  OfflineMutationRequestPolicyRegistry,
+  OfflineRequestPolicyRegistry,
+  type OfflineReadRequestPlan,
+} from './offline-request-policy';
 
-/** Applies product offline read policies while observing real API reachability. */
+const LOCAL_FIRST_MUTATION_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Applies product read and local-first mutation policies while observing real API reachability. */
 export const offlineInterceptor: HttpInterceptorFn = (request, next) => {
   const network = inject(OfflineNetworkService);
   const transport = () => observeTransport(next(request), network);
   if (request.context.get(OFFLINE_BYPASS)) return transport();
-  if (request.method !== 'GET') return transport();
-  const registry = inject(OfflineRequestPolicyRegistry);
-  const fallback = inject(OfflineRequestFallbackService);
-  const plan = registry.resolve(request);
-  if (!plan) return transport();
-  return defer(transport).pipe(catchError((error: unknown) => fallback.handle(request, error, plan) ?? throwError(() => error)));
+  if (request.method === 'GET') {
+    const registry = inject(OfflineRequestPolicyRegistry);
+    const fallback = inject(OfflineRequestFallbackService);
+    const plan = registry.resolve(request);
+    if (!plan) return transport();
+    return defer(transport).pipe(
+      catchError((error: unknown) => fallback.handle(request, error, plan) ?? throwError(() => error)),
+      concatMap((event) => projectRemoteResponse(event, plan)),
+    );
+  }
+  if (LOCAL_FIRST_MUTATION_METHODS.has(request.method)) {
+    const plan = inject(OfflineMutationRequestPolicyRegistry).resolve(request);
+    if (plan) {
+      return defer(() => from(plan.prepare())).pipe(
+        map((response) => response.clone({ headers: response.headers.set(OFFLINE_RESPONSE_HEADER, 'optimistic') })),
+      );
+    }
+  }
+  return transport();
 };
+
+function projectRemoteResponse(event: HttpEvent<unknown>, plan: OfflineReadRequestPlan): Observable<HttpEvent<unknown>> {
+  if (!(event instanceof AngularHttpResponse) || !plan.projectResponse) return of(event);
+  const source = event.headers.get(OFFLINE_RESPONSE_HEADER) === 'local' ? 'local' : 'remote';
+  return from(plan.projectResponse(event, source)).pipe(
+    map((response) =>
+      source === 'local' ? response.clone({ headers: response.headers.set(OFFLINE_RESPONSE_HEADER, 'local') }) : response,
+    ),
+  );
+}
 
 function observeTransport(source: Observable<HttpEvent<unknown>>, network: OfflineNetworkService): Observable<HttpEvent<unknown>> {
   return source.pipe(
