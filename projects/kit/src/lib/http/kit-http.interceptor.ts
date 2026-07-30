@@ -21,6 +21,13 @@ import { isExplicitAuthDenial, KitAuthAccessService } from '../auth/auth-access.
 export const KIT_AUTH_BOOTSTRAP_REQUEST = new HttpContextToken<boolean>(() => false);
 
 /**
+ * Marks an auth-recovery replay so {@link KitHttpConfig.recoverAuthAccess} is not invoked again.
+ *
+ * @internal
+ */
+const KIT_AUTH_RECOVERY_REPLAY = new HttpContextToken<boolean>(() => false);
+
+/**
  * HTTP methods that are safe to retry automatically.
  *
  * @remarks
@@ -305,6 +312,31 @@ export interface KitHttpConfig {
    * @returns `true` when shared remote access should be cleared.
    */
   isAuthAccessDenial?(request: HttpRequest<unknown>, error: unknown): boolean;
+  /**
+   * Attempt to recover credentials after an explicit HTTP `401` / `403` before denial hooks run.
+   *
+   * @remarks
+   * Invoked at most once per original request — only on the first explicit auth denial from the
+   * server, and never on a recovery replay (which carries {@link KIT_AUTH_RECOVERY_REPLAY}). When
+   * this hook resolves `true`, {@link KitHttpConfig.getAuthHeaders} is called again and the
+   * original request is sent exactly once more with fresh auth and extra headers. A second denial
+   * follows the normal revocation / status-hook path with no further recovery.
+   *
+   * Unlike transient transport retries, this replay is allowed for writes (`POST` / `PATCH` /
+   * `DELETE`) because the server returned an explicit auth denial — the request was rejected
+   * before (or without) being processed, not lost after a successful write. Apps must still ensure
+   * {@link KitHttpConfig.recoverAuthAccess} only returns `true` when credentials were refreshed
+   * and a single replay is safe for the endpoint.
+   *
+   * When the hook is absent, resolves `false`, or throws, the original {@link HttpErrorResponse}
+   * is preserved and the existing denial / fallback pipeline runs unchanged; hook failures do not
+   * replace the server error.
+   *
+   * @param request - The outgoing request that received the denial (before header merge).
+   * @param error - The explicit `401` / `403` response.
+   * @returns `true` to replay once with regenerated headers; `false` to proceed with normal denial handling.
+   */
+  recoverAuthAccess?(request: HttpRequest<unknown>, error: HttpErrorResponse): Promise<boolean>;
 }
 
 /**
@@ -360,6 +392,52 @@ const shouldRevokeAuthAccess = (config: KitHttpConfig, req: HttpRequest<unknown>
   config.isAuthAccessDenial?.(req, error) ?? isExplicitAuthDenial(error);
 
 /**
+ * Invoke {@link KitHttpConfig.recoverAuthAccess} without letting hook failures replace the server error.
+ *
+ * @internal
+ */
+const tryRecoverAuthAccess = async (config: KitHttpConfig, request: HttpRequest<unknown>, error: HttpErrorResponse): Promise<boolean> => {
+  if (!config.recoverAuthAccess) {
+    return false;
+  }
+  try {
+    return (await config.recoverAuthAccess(request, error)) === true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Final error handling after retries and optional auth recovery have been exhausted.
+ *
+ * @internal
+ */
+const handleTransportError = (
+  config: KitHttpConfig,
+  access: KitAuthAccessService,
+  req: HttpRequest<unknown>,
+  error: HttpErrorResponse,
+  isAuthBootstrap: boolean,
+): Observable<HttpEvent<unknown>> => {
+  if (config.enforceAuthAccessMode && isExplicitAuthDenial(error)) {
+    if (shouldRevokeAuthAccess(config, req, error)) {
+      access.clear();
+      config.onAuthAccessDenial?.(req, error);
+    }
+    dispatchError(config, req, error);
+    return throwError(() => error);
+  }
+  if (!isAuthBootstrap) {
+    const fallback = config.offlineFallback?.(req, error);
+    if (fallback) {
+      return fallback;
+    }
+  }
+  dispatchError(config, req, error);
+  return throwError(() => error);
+};
+
+/**
  * Classify a final (post-retry) error and invoke the matching {@link KitHttpConfig} hook.
  *
  * @internal
@@ -407,7 +485,9 @@ const dispatchError = (config: KitHttpConfig, req: HttpRequest<unknown>, error: 
  *    `Idempotency-Key`), and the status is a {@link RETRYABLE_STATUSES | transient status}. The
  *    backoff is `retryCount * 500ms` plus up to 250ms of jitter, or the server's `Retry-After`.
  *    When the device is offline it stops retrying immediately.
- * 5. On the final error, enforced 401/403 revokes shared access and is rejected before fallback.
+ * 5. On the first explicit HTTP `401`/`403`, {@link KitHttpConfig.recoverAuthAccess} may replay the
+ *    request once with regenerated headers before denial hooks run; recovery replays never recurse.
+ * 6. On the final error, enforced 401/403 revokes shared access and is rejected before fallback.
  *    For every other error, `offlineFallback` is consulted first; otherwise the error is classified by
  *    status (see {@link dispatchError}): `401`→`onUnauthorized`, `403`→`onForbidden`, `0`→
  *    `onNetworkError` (when connected), `429`→`onRateLimited`, maintenance `503`→`onMaintenance`,
@@ -447,80 +527,84 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
     return throwError(() => error);
   }
 
-  return from(Promise.resolve(config.getAuthHeaders(request))).pipe(
-    catchError((headerError: unknown) => {
-      // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
-      if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError) && shouldRevokeAuthAccess(config, request, headerError)) {
-        access.clear();
-        config.onAuthAccessDenial?.(request, headerError);
-      }
-      config.onAuthError?.(request, headerError);
-      return throwError(() => headerError);
-    }),
-    mergeMap((authHeaders) => {
-      const req = request.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders?.(request) } });
-      const retryable = RETRYABLE_METHODS.includes(req.method) || req.headers.has('Idempotency-Key');
+  const sendAuthenticated = (outgoing: HttpRequest<unknown>, allowAuthRecovery: boolean): Observable<HttpEvent<unknown>> =>
+    from(Promise.resolve(config.getAuthHeaders(outgoing))).pipe(
+      catchError((headerError: unknown) => {
+        // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
+        if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError) && shouldRevokeAuthAccess(config, outgoing, headerError)) {
+          access.clear();
+          config.onAuthAccessDenial?.(outgoing, headerError);
+        }
+        config.onAuthError?.(outgoing, headerError);
+        return throwError(() => headerError);
+      }),
+      mergeMap((authHeaders) => {
+        const req = outgoing.clone({ setHeaders: { ...authHeaders, ...config.buildExtraHeaders?.(outgoing) } });
+        const retryable = RETRYABLE_METHODS.includes(req.method) || req.headers.has('Idempotency-Key');
 
-      const base = next(req).pipe(
-        timeout({
-          each: DEFAULT_TIMEOUT_MS,
-          with: () => throwError(() => new HttpErrorResponse({ status: 408, statusText: 'Request Timeout', url: req.url })),
-        }),
-      );
+        const base = next(req).pipe(
+          timeout({
+            each: DEFAULT_TIMEOUT_MS,
+            with: () => throwError(() => new HttpErrorResponse({ status: 408, statusText: 'Request Timeout', url: req.url })),
+          }),
+        );
 
-      return base.pipe(
-        map((event) => {
-          // A backend may signal an error condition with a 2xx status (e.g. 204/206); surface it as an error.
-          if (event instanceof HttpResponse && config.treatAsError?.(event)) {
-            throw event;
-          }
-          return event;
-        }),
-        retry({
-          count: MAX_RETRIES,
-          delay: (error: HttpErrorResponse, retryCount: number) =>
-            from(Network.getStatus()).pipe(
-              mergeMap((network) => {
-                // Offline → don't wait out the retries; fail fast so offlineFallback can take over.
-                if (!network.connected) {
-                  return throwError(() => error);
-                }
-                // Only replay idempotent requests, and only on a transient status.
-                // Maintenance 503 is intentional — never retry; go straight to onMaintenance.
-                if (!retryable || !RETRYABLE_STATUSES.includes(error.status) || isMaintenanceError(error)) {
-                  return throwError(() => error);
-                }
-                // Short linear backoff (500ms, 1000ms, …) plus jitter to de-correlate a fleet of
-                // clients reconnecting at once; the server's Retry-After wins when present.
-                const backoff = parseRetryAfterMs(error) ?? retryCount * 500 + Math.random() * 250;
-                return timer(backoff);
-              }),
-            ),
-        }),
-        tap((event) => {
-          if (event instanceof HttpResponse) {
-            config.onResponse?.(event);
-          }
-        }),
-        catchError((error: HttpErrorResponse) => {
-          if (config.enforceAuthAccessMode && isExplicitAuthDenial(error)) {
-            if (shouldRevokeAuthAccess(config, req, error)) {
-              access.clear();
-              config.onAuthAccessDenial?.(req, error);
+        return base.pipe(
+          map((event) => {
+            // A backend may signal an error condition with a 2xx status (e.g. 204/206); surface it as an error.
+            if (event instanceof HttpResponse && config.treatAsError?.(event)) {
+              throw event;
             }
-            dispatchError(config, req, error);
-            return throwError(() => error);
-          }
-          if (!isAuthBootstrap) {
-            const fallback = config.offlineFallback?.(req, error);
-            if (fallback) {
-              return fallback;
+            return event;
+          }),
+          retry({
+            count: MAX_RETRIES,
+            delay: (error: HttpErrorResponse, retryCount: number) =>
+              from(Network.getStatus()).pipe(
+                mergeMap((network) => {
+                  // Offline → don't wait out the retries; fail fast so offlineFallback can take over.
+                  if (!network.connected) {
+                    return throwError(() => error);
+                  }
+                  // Only replay idempotent requests, and only on a transient status.
+                  // Maintenance 503 is intentional — never retry; go straight to onMaintenance.
+                  if (!retryable || !RETRYABLE_STATUSES.includes(error.status) || isMaintenanceError(error)) {
+                    return throwError(() => error);
+                  }
+                  // Short linear backoff (500ms, 1000ms, …) plus jitter to de-correlate a fleet of
+                  // clients reconnecting at once; the server's Retry-After wins when present.
+                  const backoff = parseRetryAfterMs(error) ?? retryCount * 500 + Math.random() * 250;
+                  return timer(backoff);
+                }),
+              ),
+          }),
+          tap((event) => {
+            if (event instanceof HttpResponse) {
+              config.onResponse?.(event);
             }
-          }
-          dispatchError(config, req, error);
-          return throwError(() => error);
-        }),
-      );
-    }),
-  );
+          }),
+          catchError((error: HttpErrorResponse) => {
+            const mayRecover =
+              allowAuthRecovery && isExplicitAuthDenial(error) && !outgoing.context.get(KIT_AUTH_RECOVERY_REPLAY) && config.recoverAuthAccess;
+
+            if (mayRecover) {
+              return from(tryRecoverAuthAccess(config, outgoing, error)).pipe(
+                mergeMap((recovered) => {
+                  if (recovered) {
+                    const replay = outgoing.clone({
+                      context: outgoing.context.set(KIT_AUTH_RECOVERY_REPLAY, true),
+                    });
+                    return sendAuthenticated(replay, false);
+                  }
+                  return handleTransportError(config, access, req, error, isAuthBootstrap);
+                }),
+              );
+            }
+            return handleTransportError(config, access, req, error, isAuthBootstrap);
+          }),
+        );
+      }),
+    );
+
+  return sendAuthenticated(request, true);
 };

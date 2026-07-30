@@ -473,6 +473,155 @@ describe('kitAuthInterceptor', () => {
     });
   });
 
+  // ---- recoverAuthAccess ----------------------------------------------------
+  describe('recoverAuthAccess', () => {
+    afterEach(() => {
+      TestBed.inject(KitAuthAccessService).clear();
+    });
+
+    const freshReq = () => new HttpRequest<unknown>('GET', '/api/test');
+    it('without the hook, 401 handling is unchanged', async () => {
+      const req = freshReq();
+      const config = makeConfig();
+      setupInterceptor(config);
+
+      const error401 = new HttpErrorResponse({ status: 401 });
+      const next = vi.fn().mockReturnValue(throwError(() => error401));
+
+      await expect(firstValueFrom(runInterceptor(req, next))).rejects.toBe(error401);
+      expect(config.getAuthHeaders).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(expect.any(HttpRequest), error401);
+      expect(next).toHaveBeenCalledOnce();
+    });
+
+    it('when the hook resolves true, replays once with fresh headers and succeeds', async () => {
+      const req = freshReq();
+      let token = 'stale';
+      const success = new HttpResponse({ status: 200, body: { ok: true } });
+      const error401 = new HttpErrorResponse({ status: 401 });
+      const config = makeConfig({
+        getAuthHeaders: vi.fn().mockImplementation(async () => ({ Authorization: `Bearer ${token}` })),
+        buildExtraHeaders: vi.fn().mockReturnValue({ 'X-Trace': '1' }),
+        recoverAuthAccess: vi.fn().mockImplementation(async () => {
+          token = 'fresh';
+          return true;
+        }),
+      });
+      setupInterceptor(config);
+
+      const next = vi.fn().mockImplementation((req: HttpRequest<unknown>) => {
+        if (req.headers.get('Authorization') === 'Bearer stale') {
+          return throwError(() => error401);
+        }
+        return of(success);
+      });
+
+      const result = await firstValueFrom(runInterceptor(req, next));
+
+      expect(result).toBe(success);
+      expect(config.recoverAuthAccess).toHaveBeenCalledOnce();
+      expect(config.recoverAuthAccess).toHaveBeenCalledWith(req, error401);
+      expect(config.getAuthHeaders).toHaveBeenCalledTimes(2);
+      expect(config.getAuthHeaders).toHaveBeenNthCalledWith(1, req);
+      expect(config.getAuthHeaders).toHaveBeenNthCalledWith(2, expect.objectContaining({ url: req.url, method: req.method }));
+      expect(next).toHaveBeenCalledTimes(2);
+      expect(next.mock.calls[1][0].headers.get('Authorization')).toBe('Bearer fresh');
+      expect(next.mock.calls[1][0].headers.get('X-Trace')).toBe('1');
+      expect(config.onUnauthorized).not.toHaveBeenCalled();
+      expect(config.onResponse).toHaveBeenCalledWith(success);
+    });
+
+    it('when the hook resolves false, follows existing denial handling', async () => {
+      const req = freshReq();
+      const error401 = new HttpErrorResponse({ status: 401 });
+      const config = makeConfig({
+        recoverAuthAccess: vi.fn().mockImplementation(async () => false),
+      });
+      setupInterceptor(config);
+
+      const next = vi.fn().mockImplementation(() => throwError(() => error401));
+
+      await expect(firstValueFrom(runInterceptor(req, next))).rejects.toBe(error401);
+
+      expect(config.recoverAuthAccess).toHaveBeenCalledOnce();
+      expect(config.getAuthHeaders).toHaveBeenCalledOnce();
+      expect(next).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(expect.any(HttpRequest), error401);
+    });
+
+    it('when the hook throws, preserves the original HttpErrorResponse', async () => {
+      const req = freshReq();
+      const error401 = new HttpErrorResponse({ status: 401 });
+      const config = makeConfig({
+        recoverAuthAccess: vi.fn().mockImplementation(async () => {
+          throw new Error('refresh failed');
+        }),
+      });
+      setupInterceptor(config);
+
+      const next = vi.fn().mockImplementation(() => throwError(() => error401));
+
+      await expect(firstValueFrom(runInterceptor(req, next))).rejects.toBe(error401);
+
+      expect(config.recoverAuthAccess).toHaveBeenCalledOnce();
+      expect(config.getAuthHeaders).toHaveBeenCalledOnce();
+      expect(next).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(expect.any(HttpRequest), error401);
+    });
+
+    it('after recovery, a second 401 invokes recovery only once and then denies normally', async () => {
+      const req = freshReq();
+      const error401 = new HttpErrorResponse({ status: 401 });
+      const config = makeConfig({
+        enforceAuthAccessMode: true,
+        recoverAuthAccess: vi.fn().mockImplementation(async () => true),
+      });
+      setupInterceptor(config);
+      const access = TestBed.inject(KitAuthAccessService);
+      access.grantRemote();
+
+      const next = vi.fn().mockImplementation(() => throwError(() => error401));
+
+      await expect(firstValueFrom(runInterceptor(req, next))).rejects.toBe(error401);
+
+      expect(config.recoverAuthAccess).toHaveBeenCalledOnce();
+      expect(config.getAuthHeaders).toHaveBeenCalledTimes(2);
+      expect(next).toHaveBeenCalledTimes(2);
+      expect(access.mode).toBe('none');
+      expect(config.onUnauthorized).toHaveBeenCalledOnce();
+      expect(config.onUnauthorized).toHaveBeenCalledWith(expect.any(HttpRequest), error401);
+    });
+
+    it('recovers a POST once after an explicit 401 without auto-retrying transient failures', async () => {
+      const postRequest = new HttpRequest<unknown>('POST', '/api/save', { id: 1 });
+      const error401 = new HttpErrorResponse({ status: 401 });
+      const success = new HttpResponse({ status: 201, body: { saved: true } });
+      let calls = 0;
+      const config = makeConfig({
+        recoverAuthAccess: vi.fn().mockResolvedValue(true),
+      });
+      setupInterceptor(config);
+
+      const next = vi.fn().mockImplementation(() => {
+        calls++;
+        if (calls === 1) {
+          return throwError(() => error401);
+        }
+        return of(success);
+      });
+
+      const result = await firstValueFrom(runInterceptor(postRequest, next));
+
+      expect(result).toBe(success);
+      expect(config.recoverAuthAccess).toHaveBeenCalledOnce();
+      expect(config.getAuthHeaders).toHaveBeenCalledTimes(2);
+      expect(next).toHaveBeenCalledTimes(2);
+      expect(next.mock.calls[0][0].method).toBe('POST');
+      expect(next.mock.calls[1][0].method).toBe('POST');
+      expect(config.onUnauthorized).not.toHaveBeenCalled();
+    });
+  });
+
   // ---- 400 with message → onServerError -------------------------------------
   describe('400 with error.message', () => {
     it('calls onServerError with the message and re-throws', async () => {
