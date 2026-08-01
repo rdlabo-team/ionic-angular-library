@@ -781,6 +781,22 @@ describe('offline-replica-schema bundle runtime', () => {
   it('rejects non-consecutive migrations and empty SQL statements', () => {
     expect(() =>
       defineOfflineReplicaSchema({
+        version: 2,
+        entities: [sampleSchema],
+        migrations: [],
+      }),
+    ).toThrow('Missing offline replica schema migration from version 1 to 2.');
+
+    expect(() =>
+      defineOfflineReplicaSchema({
+        version: 3,
+        entities: [sampleSchema],
+        migrations: [{ fromVersion: 1, statements: ['SELECT 1'], migrateWebRow: (row) => row }],
+      }),
+    ).toThrow('Missing offline replica schema migration from version 2 to 3.');
+
+    expect(() =>
+      defineOfflineReplicaSchema({
         version: 4,
         entities: [sampleSchema],
         migrations: [

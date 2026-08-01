@@ -1047,6 +1047,14 @@ function normalizeOfflineReplicaMigrations(
     );
   }
 
+  const finalRequiredFromVersion = bundleVersion - 1;
+  if (finalRequiredFromVersion > 0 && sorted.at(-1)?.fromVersion !== finalRequiredFromVersion) {
+    const firstMissingVersion = (sorted.at(-1)?.fromVersion ?? 0) + 1;
+    throw new Error(
+      `Missing offline replica schema migration from version ${firstMissingVersion} to ${firstMissingVersion + 1}.`,
+    );
+  }
+
   return sorted;
 }
 

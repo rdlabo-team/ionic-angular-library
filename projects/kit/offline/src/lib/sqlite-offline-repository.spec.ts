@@ -128,11 +128,12 @@ const replicaSchemaV2 = defineOfflineReplicaSchema({
   ],
 });
 
-const replicaSchemaV3MissingMigration = defineOfflineReplicaSchema({
+const replicaSchemaV3MissingMigration: OfflineReplicaSchemaBundle = {
+  ...replicaSchemaV1,
   version: 3,
-  entities: [testItemEntity],
   migrations: [{ fromVersion: 1, statements: ['SELECT 1'], migrateWebRow: (row) => row }],
-});
+  schemaFingerprintInput: 'deliberately-invalid-missing-v2-to-v3-migration',
+};
 
 const replicaSchemaV1HashDrift = defineOfflineReplicaSchema({
   version: 1,
