@@ -38,6 +38,7 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   targetCount = 1;
   failTargets = false;
   failFailureHook = false;
+  failEventDispatch = false;
   pendingFailureHook: Promise<void> | null = null;
   failureCalls = 0;
   readonly sockets: FakeWebSocket[] = [];
@@ -79,6 +80,20 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
       return Promise.reject(new Error('storage unavailable'));
     }
     return Promise.resolve();
+  }
+
+  protected override parseMessage(data: string): TestEvent[] {
+    if (this.failEventDispatch) {
+      return [
+        Object.defineProperty({ topic: 'broken' }, 'originId', {
+          enumerable: true,
+          get: () => {
+            throw new Error('event dispatch failed');
+          },
+        }) as TestEvent,
+      ];
+    }
+    return super.parseMessage(data);
   }
 
   protected override createWebSocket(): WebSocket {
@@ -204,6 +219,18 @@ describe('KitRealtimeConnection', () => {
       { topic: 'one', originId: 'self', isSelf: true },
       { topic: 'two', originId: 'other', isSelf: false },
     ]);
+    connection.stop();
+  });
+
+  it('ignores malformed messages but does not hide failures after parsing succeeds', async () => {
+    const connection = new TestConnection();
+    await connection.openForTest();
+    connection.sockets[0].open();
+
+    expect(() => connection.sockets[0].message('{malformed')).not.toThrow();
+
+    connection.failEventDispatch = true;
+    expect(() => connection.sockets[0].message('{}')).toThrow('event dispatch failed');
     connection.stop();
   });
 
@@ -339,6 +366,7 @@ describe('KitRealtimeConnection', () => {
 
   it('reconnects even when the connection-failure hook rejects', async () => {
     vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const connection = new TestConnection();
     connection.failFailureHook = true;
     await connection.openForTest();
@@ -346,7 +374,12 @@ describe('KitRealtimeConnection', () => {
     await vi.runAllTicks();
     await vi.advanceTimersByTimeAsync(1000);
     expect(connection.sockets).toHaveLength(2);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[kitRealtime] connection failure hook failed',
+      expect.objectContaining({ message: 'storage unavailable' }),
+    );
     connection.stop();
+    consoleError.mockRestore();
   });
 
   it('removes an app listener that resolves after lifecycle teardown', async () => {
