@@ -38,6 +38,15 @@ describe('provideKitAppUpdate', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
+  it('does not delay startup when no service worker controls the page', async () => {
+    const { service, checkForUpdate, reload } = setup(new Promise<boolean>(() => undefined), true, false);
+
+    await expect(service.initialize()).resolves.toBeUndefined();
+
+    expect(checkForUpdate).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it('continues startup without reloading when the update check fails', async () => {
     const error = new Error('offline');
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -70,7 +79,7 @@ describe('provideKitAppUpdate', () => {
   });
 });
 
-function setup(result: boolean | Error | Promise<boolean>, isEnabled = true) {
+function setup(result: boolean | Error | Promise<boolean>, isEnabled = true, isControlled = true) {
   const checkForUpdate = vi.fn(() =>
     result instanceof Promise ? result : result instanceof Error ? Promise.reject(result) : Promise.resolve(result),
   );
@@ -80,7 +89,13 @@ function setup(result: boolean | Error | Promise<boolean>, isEnabled = true) {
       provideZonelessChangeDetection(),
       provideKitAppUpdate(),
       { provide: SwUpdate, useValue: { isEnabled, checkForUpdate } },
-      { provide: DOCUMENT, useValue: { location: { reload } } },
+      {
+        provide: DOCUMENT,
+        useValue: {
+          defaultView: { navigator: { serviceWorker: { controller: isControlled ? {} : null } } },
+          location: { reload },
+        },
+      },
     ],
   });
   return { service: TestBed.inject(KitAppUpdateService), checkForUpdate, reload };

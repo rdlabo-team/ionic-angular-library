@@ -19,7 +19,7 @@ export class KitAppUpdateService {
   }
 
   async #initialize(): Promise<void> {
-    if (!this.#updates.isEnabled) {
+    if (!this.#updates.isEnabled || !this.#document.defaultView?.navigator.serviceWorker?.controller) {
       return;
     }
     try {
