@@ -32,21 +32,14 @@ const keyboardWillShow = (elementRef: ElementRef, type: KitKeyboardAdjust): Prom
     if (type === 'transform') {
       elementRef.nativeElement.style.transition = 'transform 420ms';
       elementRef.nativeElement.style.willChange = 'transform';
-      requestAnimationFrame(
-        () => (elementRef.nativeElement.style.transform = `translateY(${info.keyboardHeight * -1 + safeArea}px)`),
-      );
-    } else if (type === 'offset') {
-      requestAnimationFrame(() => {
-        const keyboardOffset = elementRef.nativeElement.style.getPropertyValue('--keyboard-offset');
-        if (!keyboardOffset || parseInt(keyboardOffset, 10) === 0) {
-          elementRef.nativeElement.style.setProperty('--offset-bottom', `${info.keyboardHeight * -1}px`);
-        }
-      });
+      requestAnimationFrame(() => (elementRef.nativeElement.style.transform = `translateY(${info.keyboardHeight * -1 + safeArea}px)`));
     } else {
+      const property = type === 'offset' ? '--offset-bottom' : '--padding-bottom';
+      const height = type === 'offset' ? info.keyboardHeight * -1 : info.keyboardHeight;
       requestAnimationFrame(() => {
         const keyboardOffset = elementRef.nativeElement.style.getPropertyValue('--keyboard-offset');
         if (!keyboardOffset || parseInt(keyboardOffset, 10) === 0) {
-          elementRef.nativeElement.style.setProperty('--padding-bottom', `${info.keyboardHeight}px`);
+          elementRef.nativeElement.style.setProperty(property, `${height}px`);
         }
       });
     }
@@ -67,10 +60,9 @@ const keyboardWillHide = (elementRef: ElementRef, type: KitKeyboardAdjust): Prom
       elementRef.nativeElement.style.transition = 'transform 0ms';
       elementRef.nativeElement.style.transform = `translateY(0px)`;
       elementRef.nativeElement.style.willChange = 'transform';
-    } else if (type === 'offset') {
-      elementRef.nativeElement.style.setProperty('--offset-bottom', '0px');
     } else {
-      elementRef.nativeElement.style.setProperty('--padding-bottom', '0px');
+      const property = type === 'offset' ? '--offset-bottom' : '--padding-bottom';
+      elementRef.nativeElement.style.setProperty(property, '0px');
     }
   });
 
