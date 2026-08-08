@@ -1,53 +1,64 @@
-import type { EnvironmentProviders } from '@angular/core';
-import {
-  ApplicationRef,
-  Injectable,
-  inject,
-  makeEnvironmentProviders,
-  provideEnvironmentInitializer,
-} from '@angular/core';
 import { DOCUMENT } from '@angular/common';
+import type { EnvironmentProviders } from '@angular/core';
+import { Injectable, inject, makeEnvironmentProviders, provideAppInitializer } from '@angular/core';
 import { SwUpdate } from '@angular/service-worker';
-import { filter, first } from 'rxjs';
 
-/** Checks for and activates a complete Angular service-worker update when the application starts. */
+const UPDATE_CHECK_TIMEOUT_MS = 10_000;
+
+/** Checks for a complete Angular service-worker update before users can interact with the application. */
 @Injectable({ providedIn: 'root' })
 export class KitAppUpdateService {
-  readonly #applicationRef = inject(ApplicationRef);
   readonly #document = inject(DOCUMENT);
   readonly #updates = inject(SwUpdate);
-  #started = false;
+  #initialization: Promise<void> | null = null;
 
-  /** Starts one non-blocking update check after Angular reports the application as stable. */
-  start(): void {
-    if (this.#started || !this.#updates.isEnabled) {
-      return;
-    }
-    this.#started = true;
-    this.#applicationRef.isStable
-      .pipe(
-        filter((stable) => stable),
-        first(),
-      )
-      .subscribe(() => void this.#activateUpdate());
+  /** Runs one startup update check and reloads directly into a downloaded version when one is available. */
+  initialize(): Promise<void> {
+    this.#initialization ??= this.#initialize();
+    return this.#initialization;
   }
 
-  async #activateUpdate(): Promise<void> {
+  async #initialize(): Promise<void> {
+    if (!this.#updates.isEnabled) {
+      return;
+    }
     try {
-      if (!(await this.#updates.checkForUpdate())) {
-        return;
+      const available = await withTimeout(this.#updates.checkForUpdate(), UPDATE_CHECK_TIMEOUT_MS);
+      if (available) {
+        this.#document.location?.reload();
       }
-      await this.#updates.activateUpdate();
-      this.#document.location?.reload();
     } catch (error) {
       console.error('Angular service-worker update check failed', error);
     }
   }
 }
 
-/** Provides a startup check that activates and reloads into the latest complete web application version. */
+/**
+ * Provides a startup check that reloads into the latest complete web application version.
+ *
+ * @remarks
+ * The check finishes before application bootstrap so a delayed update cannot discard user input. It times out rather
+ * than preventing offline startup. API deployments must remain backward compatible while a newly adopted updater is
+ * rolling out because code already running in older application versions cannot gain this behavior retroactively.
+ */
 export function provideKitAppUpdate(): EnvironmentProviders {
   return makeEnvironmentProviders([
-    provideEnvironmentInitializer(() => inject(KitAppUpdateService).start()),
+    provideAppInitializer(() => inject(KitAppUpdateService).initialize()),
   ]);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => resolve(undefined), timeoutMs);
+    void promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
