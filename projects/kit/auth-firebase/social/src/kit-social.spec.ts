@@ -67,7 +67,10 @@ beforeEach(() => {
   isNativePlatform.mockReturnValue(true);
   getPlatform.mockReturnValue('android');
 });
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
+});
 
 describe('kitFacebookLogin', () => {
   it("mode 'new' signs in, then runs before → success (with payload) → finally", async () => {
@@ -85,12 +88,65 @@ describe('kitFacebookLogin', () => {
     expect(h.finally).toHaveBeenCalledTimes(1);
   });
 
-  it('returns {status:false} when the plugin login is cancelled/fails', async () => {
+  it('returns {status:false} without reporting when the plugin login is cancelled', async () => {
     facebookLogin.mockResolvedValueOnce(undefined);
     const h = hooks();
     const res = await kitFacebookLogin(authWith(null), { mode: 'new', permissions: [], ...h });
     expect(res).toEqual({ status: false });
+    expect(h.error).not.toHaveBeenCalled();
     expect(signInWithCredential).not.toHaveBeenCalled();
+  });
+
+  it('treats the web plugin null-token rejection as a silent cancellation', async () => {
+    isNativePlatform.mockReturnValue(false);
+    facebookLogin.mockRejectedValueOnce({ accessToken: { token: null } });
+    const animationFrame = vi.spyOn(globalThis, 'requestAnimationFrame');
+    const h = hooks();
+
+    await expect(kitFacebookLogin(authWith(null), { mode: 'new', permissions: [], ...h })).resolves.toEqual({ status: false });
+
+    expect(animationFrame).toHaveBeenCalledOnce();
+    expect(h.error).not.toHaveBeenCalled();
+    expect(signInWithCredential).not.toHaveBeenCalled();
+    expect(h.finally).toHaveBeenCalledOnce();
+  });
+
+  it('reports a rejected plugin login as an operational error', async () => {
+    const boom = new Error('Facebook SDK unavailable');
+    facebookLogin.mockRejectedValueOnce(boom);
+    const animationFrame = vi.spyOn(globalThis, 'requestAnimationFrame');
+    const h = hooks();
+
+    await expect(kitFacebookLogin(authWith(null), { mode: 'new', permissions: [], ...h })).resolves.toEqual({ status: false });
+
+    expect(h.error).toHaveBeenCalledWith('other', boom);
+    expect(animationFrame).toHaveBeenCalledOnce();
+    expect(signInWithCredential).not.toHaveBeenCalled();
+    expect(h.finally).toHaveBeenCalledOnce();
+  });
+
+  it.each([null, {}])('reports a malformed access token (%j) instead of treating it as cancellation', async (accessToken) => {
+    const malformed = { accessToken };
+    facebookLogin.mockRejectedValueOnce(malformed);
+    const h = hooks();
+
+    await expect(kitFacebookLogin(authWith(null), { mode: 'new', permissions: [], ...h })).resolves.toEqual({ status: false });
+
+    expect(h.error).toHaveBeenCalledWith('other', malformed);
+    expect(signInWithCredential).not.toHaveBeenCalled();
+    expect(h.finally).toHaveBeenCalledOnce();
+  });
+
+  it('rethrows a before-hook failure after running finally without calling the plugin', async () => {
+    const boom = new Error('preflight failed');
+    const h = hooks();
+    h.before.mockRejectedValueOnce(boom);
+
+    await expect(kitFacebookLogin(authWith(null), { mode: 'new', permissions: [], ...h })).rejects.toBe(boom);
+
+    expect(facebookLogin).not.toHaveBeenCalled();
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.finally).toHaveBeenCalledOnce();
   });
 
   it("classifies 'already-in-use' and calls error without success (finally still runs)", async () => {
@@ -143,6 +199,18 @@ describe('kitFacebookLogin', () => {
 });
 
 describe('kitAppleLogin', () => {
+  it('rethrows a before-hook failure after running finally without calling the plugin', async () => {
+    const boom = new Error('preflight failed');
+    const h = hooks();
+    h.before.mockRejectedValueOnce(boom);
+
+    await expect(kitAppleLogin(authWith(null), { mode: 'new', ...h })).rejects.toBe(boom);
+
+    expect(appleAuthorize).not.toHaveBeenCalled();
+    expect(h.error).not.toHaveBeenCalled();
+    expect(h.finally).toHaveBeenCalledOnce();
+  });
+
   it('native: authorizes, applies credential, success gets the apple response', async () => {
     isNativePlatform.mockReturnValue(true);
     appleAuthorize.mockResolvedValueOnce({ response: { identityToken: 'it', email: 'a@b.com' } });
