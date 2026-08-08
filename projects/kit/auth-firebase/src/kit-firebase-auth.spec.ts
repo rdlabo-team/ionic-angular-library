@@ -183,6 +183,24 @@ describe('bundled email/password flows (uniform hooks + no-throw null/false)', (
     expect(fin).toHaveBeenCalledTimes(1);
   });
 
+  it('kitSignIn reports a before-hook failure, skips Firebase, and still runs finally', async () => {
+    const boom = new Error('preflight failed');
+    const error = vi.fn();
+    const fin = vi.fn();
+
+    await expect(
+      kitSignIn(authWith(null), 'a@b.com', 'pw', {
+        before: () => Promise.reject(boom),
+        error,
+        finally: fin,
+      }),
+    ).resolves.toBeNull();
+
+    expect(signInWithEmailAndPassword).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(boom);
+    expect(fin).toHaveBeenCalledOnce();
+  });
+
   it('kitSignUp creates the account then sends verification', async () => {
     const user = { uid: 'u1' };
     createUserWithEmailAndPassword.mockResolvedValueOnce({ user });

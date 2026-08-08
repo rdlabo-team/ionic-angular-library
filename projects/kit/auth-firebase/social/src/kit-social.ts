@@ -142,6 +142,18 @@ const nextFrame = (): Promise<void> =>
     }
   });
 
+/** Web plugin cancellation shape: the login promise rejects with a response whose token is null. */
+const isFacebookCancellation = (error: unknown): boolean => {
+  if (typeof error !== 'object' || error === null || !('accessToken' in error)) {
+    return false;
+  }
+  const { accessToken } = error;
+  if (typeof accessToken !== 'object' || accessToken === null || !('token' in accessToken)) {
+    return false;
+  }
+  return accessToken.token === null;
+};
+
 /**
  * Facebook login / link, bundled: native plugin → credential → the shared 3-mode state machine.
  *
@@ -152,11 +164,24 @@ const nextFrame = (): Promise<void> =>
  * hooks).
  */
 export const kitFacebookLogin = async (auth: Auth, options: KitFacebookLoginOptions): Promise<{ status: boolean }> => {
-  await options.before?.();
   try {
+    await options.before?.();
     const nonce = generateNonce();
-    const event = await FacebookLogin.login({ permissions: options.permissions, nonce }).catch(() => undefined);
+    let pluginFailed = false;
+    let pluginError: unknown;
+    const event = await FacebookLogin.login({ permissions: options.permissions, nonce }).catch((error: unknown) => {
+      pluginFailed = true;
+      pluginError = error;
+      return undefined;
+    });
     await nextFrame();
+    if (pluginFailed) {
+      if (isFacebookCancellation(pluginError)) {
+        return { status: false };
+      }
+      await options.error?.('other', pluginError);
+      return { status: false };
+    }
     if (!event || !event.accessToken?.token) {
       return { status: false };
     }
@@ -206,8 +231,8 @@ export const kitFacebookLogout = async (): Promise<void> => {
  * Every failure path (including popup errors) is routed through `onError`.
  */
 export const kitAppleLogin = async (auth: Auth, options: KitAppleLoginOptions): Promise<{ status: boolean }> => {
-  await options.before?.();
   try {
+    await options.before?.();
     if (Capacitor.isNativePlatform()) {
       const authorize = await SignInWithApple.authorize().catch(() => undefined);
       if (!authorize) {

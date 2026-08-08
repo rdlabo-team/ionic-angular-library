@@ -59,8 +59,8 @@ export interface KitSignOutOptions {
 
 /** Run a value-returning op through the {@link KitAuthHooks} lifecycle; resolve `null` on failure. */
 const runAuthFlow = async <T>(op: () => Promise<T>, hooks?: KitAuthHooks): Promise<T | null> => {
-  await hooks?.before?.();
   try {
+    await hooks?.before?.();
     const result = await op();
     await hooks?.success?.();
     return result;
