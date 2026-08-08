@@ -66,8 +66,6 @@ export class KitAuthInputDirective implements OnInit {
   /** Mode selector; see {@link KitAuthInputMode}. */
   readonly kitAuthInput = input<KitAuthInputMode>('autofill');
 
-  constructor() {}
-
   /**
    * Register the iOS autofill workaround and, in `'email'` mode, seed the field from storage.
    */
@@ -79,21 +77,21 @@ export class KitAuthInputDirective implements OnInit {
       return;
     }
     setTimeout(() => {
-      try {
-        this.#el.nativeElement.children[0].addEventListener(
-          'change',
-          (e: Event) => {
-            this.#el.nativeElement.value = (e.target as HTMLInputElement).value;
-          },
-          {
-            capture: false,
-            once: true,
-            passive: true,
-          },
-        );
-      } catch {
-        /* empty */
+      const input = this.#el.nativeElement.children[0];
+      if (!input) {
+        return;
       }
+      input.addEventListener(
+        'change',
+        (e: Event) => {
+          this.#el.nativeElement.value = (e.target as HTMLInputElement).value;
+        },
+        {
+          capture: false,
+          once: true,
+          passive: true,
+        },
+      );
     }, 100); // Need some time for the ion-input to create the input element
   }
 
