@@ -366,12 +366,15 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
           if (data === this.#options.pong) {
             return;
           }
+          let events: TEvent[];
           try {
-            for (const event of this.parseMessage(data)) {
-              this.#events$.next({ ...event, isSelf: event.originId === this.id });
-            }
+            events = this.parseMessage(data);
           } catch {
             // Ignore malformed application messages while retaining the healthy socket.
+            return;
+          }
+          for (const event of events) {
+            this.#events$.next({ ...event, isSelf: event.originId === this.id });
           }
         };
         socket.onerror = () => this.#connectionFailed(generation, socket);
@@ -418,7 +421,7 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
     }
     this.#reconnectPendingGeneration = generation;
     void this.handleConnectionFailure()
-      .catch(() => undefined)
+      .catch((error: unknown) => console.error('[kitRealtime] connection failure hook failed', error))
       .finally(() => {
         if (this.#reconnectPendingGeneration === generation) {
           this.#reconnectPendingGeneration = null;
