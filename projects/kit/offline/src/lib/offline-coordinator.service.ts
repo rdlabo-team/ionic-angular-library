@@ -9,6 +9,11 @@ import { OfflineSyncService } from './offline-sync.service';
 /** User choice when logout encounters unconfirmed local mutations. */
 export type OfflineLogoutAction = 'sync' | 'discard' | 'cancel';
 
+/** Options for {@link OfflineCoordinatorService.resumeRemoteSession}. */
+export interface OfflineResumeRemoteSessionOptions {
+  readonly foregroundScopeIds?: readonly string[];
+}
+
 /** Coordinates local persistence, session boundaries, network state, and outbox synchronization. */
 @Injectable({ providedIn: 'root' })
 export class OfflineCoordinatorService {
@@ -53,8 +58,8 @@ export class OfflineCoordinatorService {
   }
 
   /** Starts pull and outbox replay after the caller has published remote access. */
-  async resumeRemoteSession(): Promise<void> {
-    await this.#sync.refreshSession();
+  async resumeRemoteSession(options?: OfflineResumeRemoteSessionOptions): Promise<void> {
+    await this.#sync.refreshSession(options?.foregroundScopeIds);
   }
 
   /**

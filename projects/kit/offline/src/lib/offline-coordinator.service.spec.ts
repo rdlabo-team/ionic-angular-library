@@ -217,4 +217,12 @@ describe('OfflineCoordinatorService', () => {
     expect(manifest).toMatchObject({ userId: 7, scopeIds: ['0'], authSubject: 'subject' });
     expect(pull).toHaveBeenCalledWith({ userId: 7, scopeId: '0' });
   });
+
+  it('forwards foregroundScopeIds to refreshSession on resume', async () => {
+    const { coordinator, sync } = setup();
+
+    await coordinator.resumeRemoteSession({ foregroundScopeIds: ['2', '9'] });
+
+    expect(sync.refreshSession).toHaveBeenCalledWith(['2', '9']);
+  });
 });

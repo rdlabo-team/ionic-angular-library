@@ -12,6 +12,8 @@ export interface OfflineRemoteIdentity {
   readonly userId: OfflinePrincipalId;
   readonly scopeIds: readonly string[];
   readonly authSubject: string;
+  /** Scope partitions to pull eagerly on automatic resume; remaining scopes require an explicit flush. */
+  readonly foregroundScopeIds?: readonly string[];
 }
 
 /** Phase that distinguishes route authorization from background remote recovery. */
@@ -125,7 +127,9 @@ export function createOfflineAuthBridge<TIdentity extends OfflineRemoteIdentity>
         const resumeStillCurrent = (): boolean =>
           (resumeLease?.isCurrent() ?? true) && currentAuthSubject() === identity.authSubject && (isIdentityCurrent?.(identity) ?? true);
         if (!resumeStillCurrent()) return;
-        await offline.resumeRemoteSession();
+        await offline.resumeRemoteSession(
+          identity.foregroundScopeIds !== undefined ? { foregroundScopeIds: identity.foregroundScopeIds } : undefined,
+        );
         if (!resumeStillCurrent()) return;
         if (onRemoteResumed) {
           await onRemoteResumed({
@@ -164,5 +168,19 @@ function assertOfflineRemoteIdentity(identity: OfflineRemoteIdentity): void {
   }
   if (typeof identity.authSubject !== 'string' || identity.authSubject.length === 0) {
     throw new Error('Offline remote identity authSubject must be a non-empty string.');
+  }
+  if (identity.foregroundScopeIds !== undefined) {
+    if (
+      !Array.isArray(identity.foregroundScopeIds) ||
+      identity.foregroundScopeIds.some((scopeId) => typeof scopeId !== 'string' || scopeId.length === 0)
+    ) {
+      throw new Error('Offline remote identity foregroundScopeIds must contain only non-empty strings.');
+    }
+    const scopeIds = new Set(identity.scopeIds);
+    for (const scopeId of identity.foregroundScopeIds) {
+      if (!scopeIds.has(scopeId)) {
+        throw new Error(`Offline remote identity foregroundScopeIds must be a subset of scopeIds: "${scopeId}".`);
+      }
+    }
   }
 }

@@ -2647,4 +2647,299 @@ describe('OfflineSyncService', () => {
       expect(service.pendingCount()).toBe(0);
     });
   });
+
+  describe('lazy foreground pull', () => {
+    beforeEach(() => {
+      session = {
+        userId: 1,
+        scopes: [
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+          { userId: 1, scopeId: '30' },
+        ],
+      };
+      connected.set(true);
+    });
+
+    it('pulls foreground scopes immediately while clean non-foreground scopes wait', async () => {
+      await service.refreshSession(['10']);
+
+      await vi.waitFor(() => expect(pull).toHaveBeenCalled());
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('pulls non-foreground scopes immediately when they contain durable Outbox commands', async () => {
+      await service.enqueue(
+        {
+          scopeId: '30',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'outbox-scope' },
+          operation: 'documents.create',
+          payload: { title: 'queued' },
+          optimisticValue: { id: 0, title: 'queued' },
+        },
+        { flush: false },
+      );
+      pull.mockClear();
+
+      await service.refreshSession(['10']);
+
+      await vi.waitFor(() => expect(pull.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+    });
+
+    it('reconnect automatic flush respects foreground policy', async () => {
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      pull.mockClear();
+
+      connected.set(false);
+      connected.set(true);
+
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('explicit flush later pulls all remaining scopes sequentially', async () => {
+      const pullOrder: string[] = [];
+      pull.mockImplementation(async (scope: OfflineScope) => {
+        pullOrder.push(scope.scopeId);
+      });
+
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull.mock.calls.length).toBeGreaterThan(0));
+      expect(pullOrder.every((scopeId) => scopeId === '10')).toBe(true);
+      pullOrder.length = 0;
+
+      await service.flush();
+
+      expect(pullOrder).toEqual(['10', '20', '30']);
+    });
+
+    it('chains explicit flush after an in-flight partial flush', async () => {
+      let releaseForegroundPull: (() => void) | undefined;
+      const foregroundPullGate = new Promise<void>((resolve) => {
+        releaseForegroundPull = resolve;
+      });
+      pull.mockImplementation(async (scope: OfflineScope) => {
+        if (scope.scopeId === '10') await foregroundPullGate;
+      });
+
+      void service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+
+      const fullFlush = service.flush();
+      releaseForegroundPull?.();
+      await fullFlush;
+
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('reset prevents stale chained full flush from full-pulling replacement session scopes', async () => {
+      let releaseForegroundPull: (() => void) | undefined;
+      const foregroundPullGate = new Promise<void>((resolve) => {
+        releaseForegroundPull = resolve;
+      });
+      const pulledScopeIds: string[] = [];
+      pull.mockImplementation(async (scope: OfflineScope) => {
+        pulledScopeIds.push(`${scope.userId}:${scope.scopeId}`);
+        if (scope.scopeId === '10') await foregroundPullGate;
+      });
+
+      void service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+
+      const staleFullFlush = service.flush();
+      const reset = service.resetSession();
+      session = {
+        userId: 2,
+        scopes: [
+          { userId: 2, scopeId: '10' },
+          { userId: 2, scopeId: '20' },
+          { userId: 2, scopeId: '30' },
+        ],
+      };
+      void service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 2, scopeId: '10' }));
+      pulledScopeIds.length = 0;
+      pull.mockClear();
+
+      releaseForegroundPull?.();
+      await staleFullFlush;
+      await reset;
+
+      expect(pulledScopeIds).toEqual([]);
+      expect(pull).not.toHaveBeenCalledWith({ userId: 2, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 2, scopeId: '30' });
+    });
+
+    it('retryNow preserves foreground policy so reconnect automatic flush stays partial', async () => {
+      execute.mockRejectedValueOnce({ status: 500 }).mockResolvedValueOnce({ response: null });
+      const commandId = await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'retry-foreground-policy' },
+          operation: 'documents.create',
+          payload: { title: 'queued' },
+          optimisticValue: { id: 0, title: 'queued' },
+        },
+        { flush: false },
+      );
+
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      await vi.waitFor(() => expect(service.pendingCommands()[0]?.state).toBe('retry_wait'));
+      pull.mockClear();
+
+      await service.retryNow(commandId);
+      expect(execute).toHaveBeenCalledTimes(2);
+      pull.mockClear();
+
+      connected.set(false);
+      connected.set(true);
+
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('discard preserves foreground policy so reconnect automatic flush stays partial', async () => {
+      const commandId = await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'discard-foreground-policy' },
+          operation: 'documents.create',
+          payload: { title: 'queued' },
+          optimisticValue: { id: 0, title: 'queued' },
+        },
+        { flush: false },
+      );
+
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      pull.mockClear();
+
+      await service.discard(commandId, { flush: false });
+      pull.mockClear();
+
+      connected.set(false);
+      connected.set(true);
+
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('discardAllPending preserves foreground policy so reconnect automatic flush stays partial', async () => {
+      await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'discard-all-foreground-policy' },
+          operation: 'documents.create',
+          payload: { title: 'queued' },
+          optimisticValue: { id: 0, title: 'queued' },
+        },
+        { flush: false },
+      );
+
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      pull.mockClear();
+
+      await service.discardAllPending();
+      pull.mockClear();
+
+      connected.set(false);
+      connected.set(true);
+
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('revokeSession clears foreground policy so reconnect automatic flush pulls all scopes', async () => {
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      pull.mockClear();
+
+      service.revokeSession();
+      await service.refreshSession();
+      pull.mockClear();
+
+      connected.set(false);
+      connected.set(true);
+
+      await vi.waitFor(() => expect(pull.mock.calls.length).toBeGreaterThanOrEqual(3));
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+
+    it('queued explicit flush retries full pull after partial failure and remains chainable', async () => {
+      const partialError = new Error('partial foreground pull failed');
+      let releaseForegroundPull!: () => void;
+      const foregroundPullGate = new Promise<void>((resolve) => {
+        releaseForegroundPull = resolve;
+      });
+      let scope10PullCount = 0;
+      pull.mockImplementation(async (scope: OfflineScope) => {
+        if (scope.scopeId === '10') {
+          scope10PullCount += 1;
+          if (scope10PullCount === 1) {
+            await foregroundPullGate;
+            throw partialError;
+          }
+        }
+      });
+
+      void service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+
+      const fullFlush = service.flush();
+      releaseForegroundPull();
+
+      await expect(fullFlush).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(partialError));
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+
+      pull.mockClear();
+      scope10PullCount = 0;
+      handleError.mockClear();
+      let releaseSecondPartialPull!: () => void;
+      const secondPartialGate = new Promise<void>((resolve) => {
+        releaseSecondPartialPull = resolve;
+      });
+      pull.mockImplementation(async (scope: OfflineScope) => {
+        if (scope.scopeId === '10') {
+          scope10PullCount += 1;
+          if (scope10PullCount === 1) {
+            await secondPartialGate;
+            throw partialError;
+          }
+        }
+      });
+
+      connected.set(false);
+      connected.set(true);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+
+      const secondFullFlush = service.flush();
+      releaseSecondPartialPull();
+
+      await expect(secondFullFlush).resolves.toBeUndefined();
+      await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(partialError));
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+    });
+  });
 });

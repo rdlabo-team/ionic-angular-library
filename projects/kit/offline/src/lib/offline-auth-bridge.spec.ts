@@ -310,4 +310,28 @@ describe('createOfflineAuthBridge', () => {
     await expect(bridge.onAuthorized!(stateStub, lease)).rejects.toThrow('Offline principal id number must be a finite safe integer.');
     expect(offline.prepareRemoteSession).not.toHaveBeenCalled();
   });
+
+  it('forwards foregroundScopeIds to resumeRemoteSession', async () => {
+    const foregroundIdentity = { ...identity, scopeIds: ['2', '3'], foregroundScopeIds: ['2'] as const };
+    const { bridge, offline } = setupBridge({ exchangeImpl: async () => foregroundIdentity });
+    const { lease } = createLease();
+    const recovery = assertRecovery(await bridge.onAuthorized!(stateStub, lease));
+
+    await recovery.activate(lease);
+    await recovery.resume(lease);
+
+    expect(offline.resumeRemoteSession).toHaveBeenCalledWith({ foregroundScopeIds: ['2'] });
+  });
+
+  it('rejects foregroundScopeIds that are not a subset of scopeIds', async () => {
+    const { bridge, offline } = setupBridge({
+      exchangeImpl: async () => ({ ...identity, scopeIds: ['2'], foregroundScopeIds: ['missing'] }),
+    });
+    const { lease } = createLease();
+
+    await expect(bridge.onAuthorized!(stateStub, lease)).rejects.toThrow(
+      'Offline remote identity foregroundScopeIds must be a subset of scopeIds: "missing".',
+    );
+    expect(offline.prepareRemoteSession).not.toHaveBeenCalled();
+  });
 });
