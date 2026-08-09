@@ -61,6 +61,9 @@ export class OfflineReplicaPullService {
       if (page.hasMore && page.nextCursor === cursor) {
         throw new Error(`Offline replica pull cursor did not advance for scope ${scope.userId}:${scope.scopeId}.`);
       }
+      if (page.changes.length === 0 && !page.hasMore && page.nextCursor === cursor) {
+        return;
+      }
 
       const applied = await this.#replicaMutations.run(async () => {
         const currentCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';

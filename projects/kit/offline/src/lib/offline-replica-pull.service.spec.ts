@@ -506,6 +506,40 @@ describe('OfflineReplicaPullService', () => {
     expect(await repository.getReplicaRows(scope, 'test_items')).toEqual([]);
   });
 
+  it('unchanged empty deltaはmutation laneとrepository applyをスキップする', async () => {
+    await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
+    pull.mockResolvedValueOnce(page([], { nextCursor: 'cursor-v0', hasMore: false }));
+    const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+    const run = vi.spyOn(coordinator, 'run');
+    const transactReplica = vi.spyOn(repository, 'transactReplica');
+    const getCommands = vi.spyOn(repository, 'getCommands');
+
+    await service.pull(scope);
+
+    expect(run).not.toHaveBeenCalled();
+    expect(transactReplica).not.toHaveBeenCalled();
+    expect(getCommands).not.toHaveBeenCalled();
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
+  });
+
+  it('cursorを進めるempty pageはtransactReplicaでcursorを永続化する', async () => {
+    await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
+    pull.mockResolvedValueOnce(page([], { nextCursor: 'cursor-v1', hasMore: false }));
+    const transactReplica = vi.spyOn(repository, 'transactReplica');
+
+    await service.pull(scope);
+
+    expect(transactReplica).toHaveBeenCalledOnce();
+    expect(transactReplica.mock.calls[0]?.[0]).toMatchObject({
+      putRows: [],
+      removeRows: [],
+      putCommands: [],
+      removeCommandIds: [],
+      putCursors: [{ ...scope, cursor: 'cursor-v1' }],
+    });
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v1' });
+  });
+
   it('pending optimistic rowはconfirmed baselineだけ更新しoptimistic valuesを保持する', async () => {
     await repository.transactReplica({
       putRows: [
