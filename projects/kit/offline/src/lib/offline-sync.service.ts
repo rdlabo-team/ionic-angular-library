@@ -119,10 +119,14 @@ export class OfflineSyncService {
   readonly #knownScopes = new Map<string, OfflineScope>();
   #activeUserId: OfflinePrincipalId | null = null;
   #flushPromise: Promise<void> | null = null;
+  #partialFlushInFlight = false;
+  #chainedFullFlush: Promise<void> | null = null;
   readonly #flushTransitions = new Set<Promise<void>>();
   #generation = 0;
   readonly #sendingTransitions = new Set<Promise<void>>();
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When non-null, automatic flushes pull only foreground scopes plus Outbox scopes. */
+  #foregroundScopePolicy: readonly string[] | null = null;
   #initialized = false;
   #lastCommandCreatedAt = 0;
 
@@ -143,7 +147,7 @@ export class OfflineSyncService {
     });
   }
 
-  async initialize(): Promise<void> {
+  async initialize(options: { flush?: boolean } = {}): Promise<void> {
     if (this.#initialized) return;
     await this.#repository.initialize();
     await this.#discoverScopes();
@@ -155,7 +159,7 @@ export class OfflineSyncService {
     );
     this.#initialized = true;
     await this.#refreshState();
-    if (this.#network.connected()) this.#flushInBackground();
+    if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
   noteScope(scope: OfflineScope): void {
@@ -167,8 +171,9 @@ export class OfflineSyncService {
     await this.#refreshState();
   }
 
-  async refreshSession(): Promise<void> {
-    await this.initialize();
+  async refreshSession(foregroundScopeIds?: readonly string[]): Promise<void> {
+    this.#setForegroundScopePolicy(foregroundScopeIds);
+    await this.initialize({ flush: false });
     await this.#discoverScopes();
     await this.#restoreInterruptedCommands();
     await this.#refreshState();
@@ -197,6 +202,7 @@ export class OfflineSyncService {
   /** Synchronously invalidate in-flight enqueue and transport work owned by the current session. */
   revokeSession(): void {
     this.#invalidateFlush();
+    this.#foregroundScopePolicy = null;
   }
 
   enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean } = {}): Promise<string> {
@@ -530,29 +536,64 @@ export class OfflineSyncService {
   }
 
   #flushInBackground(): void {
-    void this.flush().catch((error) => this.#errorHandler.handleError(error));
+    void this.#beginFlush(false).catch((error) => this.#errorHandler.handleError(error));
   }
 
   flush(): Promise<void> {
-    if (this.#flushPromise) return this.#flushPromise;
+    return this.#beginFlush(true);
+  }
+
+  #beginFlush(explicitFull: boolean): Promise<void> {
+    const isPartial = !explicitFull && this.#foregroundScopePolicy !== null;
+    if (this.#flushPromise) {
+      if (explicitFull && this.#partialFlushInFlight) {
+        if (!this.#chainedFullFlush) {
+          const generation = this.#generation;
+          const partial = this.#flushPromise;
+          const chain = partial
+            .then(
+              () => undefined,
+              () => undefined,
+            )
+            .then(() => {
+              if (!this.#isCurrent(generation)) return;
+              return this.#beginFlush(true);
+            })
+            .finally(() => {
+              if (this.#chainedFullFlush === chain) this.#chainedFullFlush = null;
+            });
+          this.#chainedFullFlush = chain;
+        }
+        return this.#chainedFullFlush;
+      }
+      return this.#flushPromise;
+    }
     const generation = this.#generation;
-    const promise = this.#runFlush(generation).finally(() => {
+    const promise = this.#runFlush(generation, explicitFull).finally(() => {
       this.#flushTransitions.delete(promise);
-      if (this.#flushPromise === promise) this.#flushPromise = null;
+      if (this.#flushPromise === promise) {
+        this.#flushPromise = null;
+        this.#partialFlushInFlight = false;
+      }
     });
     this.#flushPromise = promise;
+    this.#partialFlushInFlight = isPartial;
     this.#flushTransitions.add(promise);
     return promise;
   }
 
-  async #runFlush(generation: number): Promise<void> {
+  async #runFlush(generation: number, explicitFull: boolean): Promise<void> {
     if (!this.#isCurrent(generation)) return;
     if (!this.#network.connected()) {
       await this.#refreshState(generation);
       return;
     }
     if (!(await this.#discoverScopes(generation))) return;
-    for (const scope of this.#knownScopes.values()) {
+    const isPartial = !explicitFull && this.#foregroundScopePolicy !== null;
+    const pullScopes = isPartial
+      ? this.#scopesForPartialPull(this.#foregroundScopePolicy!, await this.#readKnownCommands())
+      : [...this.#knownScopes.values()];
+    for (const scope of pullScopes) {
       if (!this.#isCurrent(generation) || !this.#network.connected()) return;
       await this.#pull.pull(scope);
     }
@@ -590,6 +631,18 @@ export class OfflineSyncService {
       this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
       throw postPullFailures[0];
     }
+  }
+
+  #setForegroundScopePolicy(foregroundScopeIds?: readonly string[]): void {
+    this.#foregroundScopePolicy = foregroundScopeIds !== undefined ? foregroundScopeIds : null;
+  }
+
+  #scopesForPartialPull(foregroundScopeIds: readonly string[], commands: readonly OfflineCommand[]): OfflineScope[] {
+    const foregroundScopeSet = new Set(foregroundScopeIds);
+    const outboxScopeKeys = new Set(commands.map((command) => this.#scopeKey({ userId: command.userId, scopeId: command.scopeId })));
+    return [...this.#knownScopes.values()].filter(
+      (scope) => foregroundScopeSet.has(scope.scopeId) || outboxScopeKeys.has(this.#scopeKey(scope)),
+    );
   }
 
   #eligibleAggregateGroups(commands: OfflineCommand[]): OfflineCommand[][] {
@@ -1103,6 +1156,8 @@ export class OfflineSyncService {
   #invalidateFlush(): void {
     this.#generation += 1;
     this.#flushPromise = null;
+    this.#partialFlushInFlight = false;
+    this.#chainedFullFlush = null;
     this.#scheduleRetry(null);
   }
 
