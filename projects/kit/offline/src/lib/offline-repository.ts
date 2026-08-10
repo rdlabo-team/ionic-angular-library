@@ -82,6 +82,8 @@ interface OfflineCommandBase<T> extends OfflineScope {
   retryAt: number | null;
   createdAt: number;
   lastErrorCode: string | null;
+  /** True when transport started but the client cannot prove whether the server committed. */
+  serverCommitUnknown?: boolean;
 }
 
 /** Durable before/after image used to reconcile product-owned derived rows. */
@@ -141,6 +143,10 @@ export interface OfflineReplicaTransaction {
   putCommands?: readonly OfflineCommand[];
   removeCommandIds?: readonly string[];
   putCursors?: readonly OfflineReplicaCursor[];
+  /** Scopes whose acknowledged server changes still require an authoritative pull. */
+  putReconciliationScopes?: readonly OfflineScope[];
+  /** Scopes whose authoritative post-acknowledgement pull completed successfully. */
+  removeReconciliationScopes?: readonly OfflineScope[];
 }
 
 /** Durable local replica and outbox persistence contract. */
@@ -173,6 +179,7 @@ export interface OfflineRepository {
     identity: OfflineReplicaRemoteIdentity,
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
+  getReconciliationScopes?(userId: OfflinePrincipalId): Promise<OfflineScope[]>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
   getCommandsForUser?(userId: OfflinePrincipalId): Promise<OfflineCommand[]>;
   putCommand(command: OfflineCommand): Promise<void>;
@@ -218,6 +225,7 @@ const CURSORS_KEY = 'offline:replica:cursors';
 const OUTBOX_KEY = 'offline:outbox:commands';
 const REPLICA_TRANSACTION_KEY = 'offline:replica:transaction';
 const REPLICA_SCHEMA_MIGRATION_KEY = 'offline:replica:schema-migration';
+const RECONCILIATION_SCOPES_KEY = 'offline:replica:reconciliation-scopes';
 
 function compareOfflineCommands(left: OfflineCommand, right: OfflineCommand): number {
   return left.createdAt - right.createdAt || (left.commandId < right.commandId ? -1 : left.commandId > right.commandId ? 1 : 0);
@@ -344,12 +352,20 @@ export class IonicOfflineRepository implements OfflineRepository {
     return cursor === undefined ? null : { ...scope, cursor };
   }
 
+  async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
+    await this.initialize();
+    await this.#writes;
+    const scopes = await this.#readRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY);
+    return Object.values(scopes).filter((scope) => scope.userId === userId);
+  }
+
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     await this.initialize();
     await this.#writes;
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === scope.userId && command.scopeId === scope.scopeId)
+      .map((command) => this.#normalizeCommand(command))
       .sort(compareOfflineCommands);
   }
 
@@ -359,7 +375,16 @@ export class IonicOfflineRepository implements OfflineRepository {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === userId)
+      .map((command) => this.#normalizeCommand(command))
       .sort(compareOfflineCommands);
+  }
+
+  #normalizeCommand(command: OfflineCommand): OfflineCommand {
+    if (command.serverCommitUnknown !== undefined) return command;
+    const legacyAmbiguousFailure = command.attempts >= 2 && ['blocked_auth', 'conflict', 'rejected'].includes(command.state);
+    return command.state === 'sending' || command.state === 'retry_wait' || legacyAmbiguousFailure
+      ? { ...command, serverCommitUnknown: true }
+      : command;
   }
 
   async putCommand(command: OfflineCommand): Promise<void> {
@@ -393,6 +418,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       this.#filterRecord<OfflineReplicaRow>(ROWS_KEY, (value) => value.userId !== userId),
       this.#filterRecord<OfflineCommand>(OUTBOX_KEY, (value) => value.userId !== userId),
       this.#filterRecord<string>(CURSORS_KEY, (_value, key) => !key.startsWith(`${canonicalOfflinePrincipalId(userId)}:`)),
+      this.#filterRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => value.userId !== userId),
     ]);
     const metadata = await this.#metadata();
     if (metadata.lastUserId === userId) {
@@ -413,6 +439,7 @@ export class IonicOfflineRepository implements OfflineRepository {
         return schema.scope === 'user' || !belongsToGroup(value);
       }),
       this.#filterRecord<string>(CURSORS_KEY, (_value, key) => key !== this.#cursorKey(scope)),
+      this.#filterRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => !belongsToGroup(value)),
     ]);
   }
 
@@ -601,10 +628,11 @@ export class IonicOfflineRepository implements OfflineRepository {
   async #applyReplicaTransaction(transaction: OfflineReplicaTransaction, journal: boolean): Promise<void> {
     await this.#assertReplicaSchemaLocked();
     for (const row of transaction.putRows ?? []) this.#validateReplicaRow(row);
-    const [rows, commands, cursors] = await Promise.all([
+    const [rows, commands, cursors, reconciliationScopes] = await Promise.all([
       this.#readRecord<OfflineReplicaRow>(ROWS_KEY),
       this.#readRecord<OfflineCommand>(OUTBOX_KEY),
       this.#readRecord<string>(CURSORS_KEY),
+      this.#readRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY),
     ]);
     const identityCheckRows = { ...rows };
     const releases = new Map<string, OfflineReplicaRemoteIdRelease>();
@@ -654,10 +682,17 @@ export class IonicOfflineRepository implements OfflineRepository {
     for (const cursor of transaction.putCursors ?? []) {
       cursors[this.#cursorKey(cursor)] = cursor.cursor;
     }
+    for (const scope of transaction.putReconciliationScopes ?? []) {
+      reconciliationScopes[this.#cursorKey(scope)] = scope;
+    }
+    for (const scope of transaction.removeReconciliationScopes ?? []) {
+      delete reconciliationScopes[this.#cursorKey(scope)];
+    }
     await Promise.all([
       this.#storage.set(ROWS_KEY, rows),
       this.#storage.set(OUTBOX_KEY, commands),
       this.#storage.set(CURSORS_KEY, cursors),
+      this.#storage.set(RECONCILIATION_SCOPES_KEY, reconciliationScopes),
     ]);
     await this.#storage.remove(REPLICA_TRANSACTION_KEY);
   }

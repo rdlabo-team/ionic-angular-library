@@ -97,6 +97,14 @@ export class OfflineOutboxCapacityError extends Error {
   }
 }
 
+/** Raised when a discard could race a request whose server commit is unknown. */
+export class OfflineCommandInFlightError extends Error {
+  constructor(readonly commandIds: readonly string[]) {
+    super('Offline commands are being synchronized and cannot be discarded until their server result is known');
+    this.name = 'OfflineCommandInFlightError';
+  }
+}
+
 const MAX_PARALLEL_AGGREGATES = 3;
 const MAX_BACKOFF_MS = 60 * 60 * 1000;
 const POST_SEND_PULL_RETRY_MS = 1_000;
@@ -117,18 +125,21 @@ export class OfflineSyncService {
   readonly #errorHandler = inject(ErrorHandler);
   readonly #commands = signal<OfflineCommand[]>([]);
   readonly #knownScopes = new Map<string, OfflineScope>();
+  /** ACKed scopes whose authoritative post-send pull has not completed yet. */
+  readonly #pendingPullScopes = new Map<string, OfflineScope>();
   #activeUserId: OfflinePrincipalId | null = null;
   #flushPromise: Promise<void> | null = null;
   #partialFlushInFlight = false;
   #chainedFullFlush: Promise<void> | null = null;
   readonly #flushTransitions = new Set<Promise<void>>();
   #generation = 0;
-  readonly #sendingTransitions = new Set<Promise<void>>();
+  readonly #sendingTransitions = new Set<Promise<unknown>>();
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** When non-null, automatic flushes pull only foreground scopes plus Outbox scopes. */
   #foregroundScopePolicy: readonly string[] | null = null;
   #initialized = false;
   #lastCommandCreatedAt = 0;
+  #coldReconciliationRequired = this.#repository.getReconciliationScopes === undefined;
 
   readonly pendingCommands = this.#commands.asReadonly();
   readonly pendingCount = computed(() => this.pendingCommands().length);
@@ -155,7 +166,13 @@ export class OfflineSyncService {
     await Promise.all(
       commands
         .filter((command) => command.state === 'sending')
-        .map((command) => this.#repository.putCommand({ ...command, state: 'pending' })),
+        .map((command) =>
+          this.#repository.putCommand({
+            ...command,
+            state: 'pending',
+            serverCommitUnknown: command.serverCommitUnknown ?? true,
+          }),
+        ),
     );
     this.#initialized = true;
     await this.#refreshState();
@@ -195,6 +212,7 @@ export class OfflineSyncService {
     await this.#restoreInterruptedCommands();
     this.#activeUserId = null;
     this.#knownScopes.clear();
+    this.#pendingPullScopes.clear();
     this.#commands.set([]);
     this.#scheduleRetry(null);
   }
@@ -482,8 +500,6 @@ export class OfflineSyncService {
 
   async discard(commandId: string, options: { flush?: boolean } = {}): Promise<void> {
     await this.initialize();
-    this.#invalidateFlush();
-    await this.#waitForSendingTransitions();
     // A pull may have completed while transport was being cancelled. Re-read
     // and project the discard inside the same local mutation lane used by
     // enqueue, ACK, and pull application so an old before-image cannot replace
@@ -491,13 +507,15 @@ export class OfflineSyncService {
     const command = await this.#replicaMutations.run(async () => {
       const current = (await this.#readKnownCommands()).find((item) => item.commandId === commandId);
       if (!current) return null;
+      this.#assertDiscardable([current]);
+      this.#invalidateFlush();
       await this.#discardCommands([current]);
       return current;
     });
     if (!command) return;
-    await this.#hooks.onCommandRemoved?.(command);
     await this.#restoreInterruptedCommands();
     await this.#refreshState();
+    await this.#hooks.onCommandRemoved?.(command).catch((error) => this.#reportError(error));
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
@@ -513,10 +531,15 @@ export class OfflineSyncService {
       // resurrect such a command from an object captured before invalidation.
       const current = (await this.#readKnownCommands()).find((item) => item.commandId === commandId);
       if (!current) return false;
-      if (current.state !== 'retry_wait' && current.state !== 'blocked_auth') {
+      if (current.state !== 'retry_wait' && current.state !== 'blocked_auth' && current.serverCommitUnknown !== true) {
         throw new Error(`Offline command ${commandId} is not waiting for retry or reauthentication.`);
       }
-      await repository.putCommand({ ...current, state: 'pending', retryAt: null, lastErrorCode: null });
+      await repository.putCommand({
+        ...current,
+        state: 'pending',
+        retryAt: null,
+        lastErrorCode: null,
+      });
       return true;
     });
     if (retried && this.#network.connected()) await this.flush();
@@ -524,15 +547,22 @@ export class OfflineSyncService {
 
   async discardAllPending(): Promise<void> {
     await this.initialize();
-    this.#invalidateFlush();
-    await this.#waitForSendingTransitions();
     const commands = await this.#replicaMutations.run(async () => {
       const current = await this.#readKnownCommands();
+      this.#assertDiscardable(current);
+      this.#invalidateFlush();
       await this.#discardCommands(current);
       return current;
     });
-    await Promise.all(commands.map((command) => this.#hooks.onCommandRemoved?.(command)));
     await this.#refreshState();
+    await Promise.all(commands.map((command) => this.#hooks.onCommandRemoved?.(command).catch((error) => this.#reportError(error))));
+  }
+
+  #assertDiscardable(commands: readonly OfflineCommand[]): void {
+    const ambiguous = commands.filter((command) => command.state === 'sending' || command.serverCommitUnknown === true);
+    if (ambiguous.length > 0) {
+      throw new OfflineCommandInFlightError(ambiguous.map((command) => command.commandId));
+    }
   }
 
   #flushInBackground(): void {
@@ -544,7 +574,7 @@ export class OfflineSyncService {
   }
 
   #beginFlush(explicitFull: boolean): Promise<void> {
-    const isPartial = !explicitFull && this.#foregroundScopePolicy !== null;
+    const isPartial = !explicitFull && !this.#coldReconciliationRequired && this.#foregroundScopePolicy !== null;
     if (this.#flushPromise) {
       if (explicitFull && this.#partialFlushInFlight) {
         if (!this.#chainedFullFlush) {
@@ -595,7 +625,15 @@ export class OfflineSyncService {
       : [...this.#knownScopes.values()];
     for (const scope of pullScopes) {
       if (!this.#isCurrent(generation) || !this.#network.connected()) return;
-      await this.#pull.pull(scope);
+      try {
+        await this.#pull.pull(scope);
+        await this.#markScopeReconciled(scope, generation);
+      } catch (error) {
+        if (this.#pendingPullScopes.has(this.#scopeKey(scope))) {
+          this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
+        }
+        throw error;
+      }
     }
     const dirtyScopes = new Map<string, OfflineScope>();
     while (this.#network.connected() && this.#isCurrent(generation)) {
@@ -611,14 +649,18 @@ export class OfflineSyncService {
       });
       await Promise.all(workers);
     }
-    const postPullFailures: unknown[] = [];
     for (const scope of dirtyScopes.values()) {
+      this.#pendingPullScopes.set(this.#scopeKey(scope), scope);
+    }
+    const postPullFailures: unknown[] = [];
+    for (const scope of this.#pendingPullScopes.values()) {
       if (!this.#isCurrent(generation) || !this.#network.connected()) break;
       try {
         // A command response may contain only the aggregate's base row. Pull
         // once per dirty scope so sibling-table journal entries are visible
         // before the completed Outbox state is exposed to product UI.
         await this.#pull.pull(scope);
+        await this.#markScopeReconciled(scope, generation);
       } catch (error) {
         postPullFailures.push(error);
       }
@@ -631,6 +673,7 @@ export class OfflineSyncService {
       this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
       throw postPullFailures[0];
     }
+    if (this.#isCurrent(generation)) this.#coldReconciliationRequired = false;
   }
 
   #setForegroundScopePolicy(foregroundScopeIds?: readonly string[]): void {
@@ -641,7 +684,10 @@ export class OfflineSyncService {
     const foregroundScopeSet = new Set(foregroundScopeIds);
     const outboxScopeKeys = new Set(commands.map((command) => this.#scopeKey({ userId: command.userId, scopeId: command.scopeId })));
     return [...this.#knownScopes.values()].filter(
-      (scope) => foregroundScopeSet.has(scope.scopeId) || outboxScopeKeys.has(this.#scopeKey(scope)),
+      (scope) =>
+        foregroundScopeSet.has(scope.scopeId) ||
+        outboxScopeKeys.has(this.#scopeKey(scope)) ||
+        this.#pendingPullScopes.has(this.#scopeKey(scope)),
     );
   }
 
@@ -665,37 +711,49 @@ export class OfflineSyncService {
       if (!this.#isCurrent(generation)) return;
       if (command.state === 'retry_wait' && (command.retryAt ?? 0) > Date.now()) break;
       if (!['pending', 'retry_wait'].includes(command.state)) break;
-      const sending: OfflineCommand = {
-        ...command,
-        state: 'sending',
-        attempts: command.attempts + 1,
-        retryAt: null,
-        lastErrorCode: null,
-      };
-      await this.#putSendingCommand(sending);
+      let sending = await this.#claimSendingCommand(command, generation);
+      if (!sending) return;
       if (!this.#isCurrent(generation)) return;
       await this.#refreshState(generation);
       if (!this.#isCurrent(generation)) return;
-      const row = await this.#rowForCommand(sending);
-      if (!row)
-        throw new Error(`Offline replica row not found: ${sending.aggregateType}/${canonicalOfflineCommandIdentity(sending.identity)}`);
+      let row: OfflineReplicaRow | null;
+      try {
+        row = await this.#rowForCommand(sending);
+      } catch (error) {
+        if (!this.#isCurrent(generation)) return;
+        await this.#persistFailedCommand(sending, error, generation, null, sending.serverCommitUnknown === true);
+        throw error;
+      }
+      if (!row) {
+        const error = new Error(
+          `Offline replica row not found: ${sending.aggregateType}/${canonicalOfflineCommandIdentity(sending.identity)}`,
+        );
+        await this.#persistFailedCommand(sending, error, generation, null, sending.serverCommitUnknown === true);
+        throw error;
+      }
+      const priorCommitUnknown = sending.serverCommitUnknown === true;
+      const transportCommand = await this.#markTransportStarted(sending, generation);
+      if (!transportCommand) return;
+      sending = transportCommand;
       let result: OfflineCommandResult;
       try {
         result = await this.#executor.execute(sending, offlineCommandTargetFromReplicaRow(row));
       } catch (error) {
         if (!this.#isCurrent(generation)) return;
+        await this.#persistFailedCommand(sending, error, generation, row, priorCommitUnknown || this.#serverCommitCouldBeUnknown(error));
         if (!this.#isClassifiableTransportError(error)) throw error;
-        const failed = this.#failedCommand(sending, error);
-        await this.#repository.transactReplica({
-          putRows: [{ ...row, syncState: this.#replicaState(failed.state) }],
-          putCommands: [failed],
-        });
-        if (failed.state === 'retry_wait') this.#scheduleRetry(failed.retryAt);
         break;
       }
       if (!this.#isCurrent(generation)) return;
-      await this.#completeCommand(commands, sending, result, generation);
+      try {
+        await this.#completeCommand(commands, sending, result, generation);
+      } catch (error) {
+        if (!this.#isCurrent(generation)) return;
+        await this.#persistFailedCommand(sending, error, generation, row, true);
+        throw error;
+      }
       if (this.#isCurrent(generation)) {
+        await this.#hooks.onCommandRemoved?.(sending).catch((error) => this.#reportError(error));
         const scope = { userId: sending.userId, scopeId: sending.scopeId };
         dirtyScopes.set(this.#scopeKey(scope), scope);
       }
@@ -817,7 +875,10 @@ export class OfflineSyncService {
       removeRows: [...(removesReplica && rebased.length === 0 ? [current] : []), ...(companionTransaction.removeRows ?? [])],
       putCommands: rebased,
       removeCommandIds: [command.commandId],
+      putReconciliationScopes: [{ userId: command.userId, scopeId: command.scopeId }],
     });
+    const scope = { userId: command.userId, scopeId: command.scopeId };
+    this.#pendingPullScopes.set(this.#scopeKey(scope), scope);
     commands.splice(0, commands.length, ...latestCommands);
   }
 
@@ -964,15 +1025,48 @@ export class OfflineSyncService {
     return `${canonicalOfflinePrincipalId(command.userId)}:${partition}:${sourceKey}:${canonicalOfflineCommandIdentity(command.identity)}`;
   }
 
-  #failedCommand(command: OfflineCommand, error: unknown): OfflineCommand {
+  #failedCommand(command: OfflineCommand, error: unknown, serverCommitUnknown: boolean): OfflineCommand {
     const status = this.#errorStatus(error);
-    if (status === 401 || status === 403) return { ...command, state: 'blocked_auth', lastErrorCode: String(status) };
-    if (status === 409 || status === 412) return { ...command, state: 'conflict', lastErrorCode: String(status) };
+    if (status === 401 || status === 403) {
+      return { ...command, state: 'blocked_auth', lastErrorCode: String(status), serverCommitUnknown };
+    }
+    if (status === 409 || status === 412) {
+      return { ...command, state: 'conflict', lastErrorCode: String(status), serverCommitUnknown };
+    }
     if (status >= 400 && status < 500 && status !== 429) {
-      return { ...command, state: 'rejected', lastErrorCode: String(status) };
+      return { ...command, state: 'rejected', lastErrorCode: String(status), serverCommitUnknown };
     }
     const retryAt = Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.max(0, command.attempts - 1));
-    return { ...command, state: 'retry_wait', retryAt, lastErrorCode: status > 0 ? String(status) : 'network' };
+    return {
+      ...command,
+      state: 'retry_wait',
+      retryAt,
+      lastErrorCode: status > 0 ? String(status) : 'network',
+      serverCommitUnknown,
+    };
+  }
+
+  async #persistFailedCommand(
+    command: OfflineCommand,
+    error: unknown,
+    generation: number,
+    row?: OfflineReplicaRow | null,
+    serverCommitUnknown = true,
+  ): Promise<void> {
+    const failed = this.#failedCommand(command, error, serverCommitUnknown);
+    const current = row === undefined ? await this.#rowForCommand(command) : row;
+    if (!this.#isCurrent(generation)) return;
+    if (current) {
+      await this.#repository.transactReplica({
+        putRows: [{ ...current, syncState: this.#replicaState(failed.state) }],
+        putCommands: [failed],
+      });
+    } else {
+      await this.#repository.putCommand(failed);
+    }
+    if (!this.#isCurrent(generation)) return;
+    if (failed.state === 'retry_wait') this.#scheduleRetry(failed.retryAt);
+    await this.#refreshState(generation);
   }
 
   #errorStatus(error: unknown): number {
@@ -985,6 +1079,17 @@ export class OfflineSyncService {
     if (typeof error !== 'object' || error === null) return false;
     const status = (error as { status?: unknown }).status;
     return typeof status === 'number' && Number.isInteger(status) && status >= 0;
+  }
+
+  #serverCommitCouldBeUnknown(error: unknown): boolean {
+    const status = this.#errorStatus(error);
+    return status === 0 || status === 429 || status >= 500;
+  }
+
+  #reportError(error: unknown): void {
+    void Promise.resolve()
+      .then(() => this.#errorHandler.handleError(error))
+      .catch(() => undefined);
   }
 
   #assertServerRevision(revision: string | number | undefined): void {
@@ -1070,6 +1175,7 @@ export class OfflineSyncService {
     this.#setActiveUser(session.userId);
     this.#knownScopes.clear();
     for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
+    await this.#restorePendingPullScopes(session.userId, generation);
     return true;
   }
 
@@ -1085,6 +1191,7 @@ export class OfflineSyncService {
     this.#setActiveUser(session.userId);
     this.#knownScopes.clear();
     for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
+    await this.#restorePendingPullScopes(session.userId, generation);
     return true;
   }
 
@@ -1095,6 +1202,7 @@ export class OfflineSyncService {
   #setActiveUser(userId: OfflinePrincipalId): void {
     if (this.#activeUserId === userId) return;
     this.#knownScopes.clear();
+    this.#pendingPullScopes.clear();
     this.#activeUserId = userId;
     this.#lastCommandCreatedAt = 0;
   }
@@ -1170,18 +1278,74 @@ export class OfflineSyncService {
     await Promise.all(
       commands
         .filter((command) => command.state === 'sending')
-        .map((command) => this.#repository.putCommand({ ...command, state: 'pending' })),
+        .map((command) =>
+          this.#repository.putCommand({
+            ...command,
+            state: 'pending',
+            serverCommitUnknown: command.serverCommitUnknown ?? true,
+          }),
+        ),
     );
   }
 
-  #putSendingCommand(command: OfflineCommand): Promise<void> {
-    const transition = this.#repository.putCommand(command);
+  #claimSendingCommand(command: OfflineCommand, generation: number): Promise<OfflineCommand | null> {
+    const transition = this.#serializeReplicaMutation(async () => {
+      if (!this.#isCurrent(generation)) return null;
+      const scope = { userId: command.userId, scopeId: command.scopeId };
+      const current = (await this.#repository.getCommands(scope)).find((candidate) => candidate.commandId === command.commandId);
+      if (!current || !['pending', 'retry_wait'].includes(current.state)) return null;
+      const sending: OfflineCommand = {
+        ...current,
+        state: 'sending',
+        attempts: current.attempts + 1,
+        retryAt: null,
+        lastErrorCode: null,
+      };
+      await this.#repository.putCommand(sending);
+      return sending;
+    });
     this.#sendingTransitions.add(transition);
     void transition.then(
       () => this.#sendingTransitions.delete(transition),
       () => this.#sendingTransitions.delete(transition),
     );
     return transition;
+  }
+
+  #markTransportStarted(command: OfflineCommand, generation: number): Promise<OfflineCommand | null> {
+    return this.#serializeReplicaMutation(async () => {
+      if (!this.#isCurrent(generation)) return null;
+      const scope = { userId: command.userId, scopeId: command.scopeId };
+      const current = (await this.#repository.getCommands(scope)).find((candidate) => candidate.commandId === command.commandId);
+      if (!current || current.state !== 'sending') return null;
+      const transportCommand = { ...current, serverCommitUnknown: true };
+      await this.#repository.putCommand(transportCommand);
+      return transportCommand;
+    });
+  }
+
+  async #restorePendingPullScopes(userId: OfflinePrincipalId, generation: number): Promise<void> {
+    if (!this.#repository.getReconciliationScopes) return;
+    const durableScopes = await this.#repository.getReconciliationScopes(userId);
+    if (!this.#isCurrent(generation) || this.#activeUserId !== userId) return;
+    const currentKeys = new Set(this.#knownScopes.keys());
+    this.#pendingPullScopes.clear();
+    const revoked: OfflineScope[] = [];
+    for (const scope of durableScopes) {
+      const key = this.#scopeKey(scope);
+      if (scope.userId === userId && currentKeys.has(key)) this.#pendingPullScopes.set(key, scope);
+      else revoked.push(scope);
+    }
+    if (revoked.length > 0) {
+      await this.#repository.transactReplica({ removeReconciliationScopes: revoked });
+    }
+  }
+
+  async #markScopeReconciled(scope: OfflineScope, generation: number): Promise<void> {
+    if (!this.#isCurrent(generation)) return;
+    await this.#repository.transactReplica({ removeReconciliationScopes: [scope] });
+    if (!this.#isCurrent(generation)) return;
+    this.#pendingPullScopes.delete(this.#scopeKey(scope));
   }
 
   async #waitForSendingTransitions(): Promise<void> {

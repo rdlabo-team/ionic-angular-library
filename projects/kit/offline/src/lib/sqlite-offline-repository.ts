@@ -165,7 +165,8 @@ const SCHEMA = [
   attempts INTEGER NOT NULL,
   retry_at INTEGER,
   created_at INTEGER NOT NULL,
-  last_error_code TEXT
+  last_error_code TEXT,
+  server_commit_unknown INTEGER NOT NULL DEFAULT 0
 )`,
   `CREATE INDEX IF NOT EXISTS offline_sync_commands_scope_created
   ON offline_sync_commands (user_id, scope_id, created_at)`,
@@ -178,6 +179,11 @@ const SCHEMA = [
   user_id TEXT NOT NULL,
   scope_id TEXT NOT NULL,
   cursor TEXT NOT NULL,
+  PRIMARY KEY (user_id, scope_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS offline_reconciliation_scopes (
+  user_id TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
   PRIMARY KEY (user_id, scope_id)
 )`,
 ];
@@ -316,6 +322,13 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return { ...scope, cursor: this.#string(row['cursor']) };
   }
 
+  async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
+    const rows = await this.#query('SELECT scope_id FROM offline_reconciliation_scopes WHERE user_id = ? ORDER BY scope_id', [
+      canonicalOfflinePrincipalId(userId),
+    ]);
+    return rows.map((row) => ({ userId, scopeId: this.#string(row['scope_id']) }));
+  }
+
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     const rows = await this.#query(
       'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC',
@@ -349,6 +362,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       await this.#execute(database, 'DELETE FROM offline_session_manifests WHERE user_id = ?', [principal]);
       await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ?', [principal]);
       await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ?', [principal]);
+      await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ?', [principal]);
       for (const entity of this.#options.replicaSchema.entities) {
         await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ?`, [principal]);
       }
@@ -371,6 +385,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         );
       }
       await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', values);
+      await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', values);
       for (const entity of this.#options.replicaSchema.entities) {
         if (entity.scope !== 'partition') continue;
         await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_scope_id = ?`, values);
@@ -408,6 +423,20 @@ export class SqliteOfflineRepository implements OfflineRepository {
         await this.#execute(databaseId, 'DELETE FROM offline_sync_commands WHERE command_id = ?', [commandId]);
       }
       for (const cursor of transaction.putCursors ?? []) await this.#putReplicaCursor(databaseId, cursor);
+      for (const scope of transaction.putReconciliationScopes ?? []) {
+        await this.#execute(
+          databaseId,
+          `INSERT INTO offline_reconciliation_scopes (user_id, scope_id) VALUES (?, ?)
+           ON CONFLICT(user_id, scope_id) DO NOTHING`,
+          [canonicalOfflinePrincipalId(scope.userId), scope.scopeId],
+        );
+      }
+      for (const scope of transaction.removeReconciliationScopes ?? []) {
+        await this.#execute(databaseId, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', [
+          canonicalOfflinePrincipalId(scope.userId),
+          scope.scopeId,
+        ]);
+      }
     });
   }
 
@@ -422,6 +451,15 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const commandColumns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_sync_commands)');
     if (!commandColumns.some((row) => row['name'] === 'optimistic_companions_json')) {
       await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT');
+    }
+    if (!commandColumns.some((row) => row['name'] === 'server_commit_unknown')) {
+      await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN server_commit_unknown INTEGER NOT NULL DEFAULT 0');
+      await this.#execute(
+        databaseId,
+        `UPDATE offline_sync_commands SET server_commit_unknown = 1
+         WHERE state IN ('sending', 'retry_wait')
+            OR (attempts >= 2 AND state IN ('blocked_auth', 'conflict', 'rejected'))`,
+      );
     }
     const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
     if (metadata.length === 0) {
@@ -573,6 +611,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       retryAt: this.#numberOrNull(row['retry_at']),
       createdAt: this.#number(row['created_at']),
       lastErrorCode: this.#stringOrNull(row['last_error_code']),
+      serverCommitUnknown: this.#numberOrNull(row['server_commit_unknown']) === 1,
     };
   }
 
@@ -581,8 +620,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       databaseId,
       `INSERT INTO offline_sync_commands
         (command_id, user_id, scope_id, aggregate_type, source_key, identity_json, operation, payload_json, optimistic_value_json,
-         optimistic_companions_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         optimistic_companions_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code,
+         server_commit_unknown)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
         user_id = excluded.user_id, scope_id = excluded.scope_id, aggregate_type = excluded.aggregate_type,
         source_key = excluded.source_key,
@@ -591,7 +631,8 @@ export class SqliteOfflineRepository implements OfflineRepository {
         replica_mutation = excluded.replica_mutation,
         payload_hash = excluded.payload_hash,
         base_revision_json = excluded.base_revision_json, state = excluded.state, attempts = excluded.attempts,
-        retry_at = excluded.retry_at, created_at = excluded.created_at, last_error_code = excluded.last_error_code`,
+        retry_at = excluded.retry_at, created_at = excluded.created_at, last_error_code = excluded.last_error_code,
+        server_commit_unknown = excluded.server_commit_unknown`,
       [
         command.commandId,
         canonicalOfflinePrincipalId(command.userId),
@@ -611,6 +652,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         command.retryAt,
         command.createdAt,
         command.lastErrorCode,
+        command.serverCommitUnknown === true ? 1 : 0,
       ],
     );
   }

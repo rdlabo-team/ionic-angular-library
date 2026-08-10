@@ -842,6 +842,48 @@ describe('IonicOfflineRepository', () => {
     expect((await repository.getCommandsForUser!(1)).map((item) => item.commandId)).toEqual(['cmd-a', 'cmd-m', 'cmd-z']);
   });
 
+  it('legacy web outboxの送信中と複数回試行済みの最終失敗をcommit不明として安全側へnormalizeする', async () => {
+    const base: OfflineCommand = {
+      userId: 1,
+      scopeId: '10',
+      commandId: 'legacy-pending',
+      aggregateType: 'test_items',
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: 'legacy' },
+      operation: 'test_items.update',
+      payload: {},
+      optimisticValue: {},
+      payloadHash: 'hash',
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    };
+    storage.values.set('offline:outbox:commands', {
+      pending: base,
+      sending: { ...base, commandId: 'legacy-sending', state: 'sending' },
+      retry: { ...base, commandId: 'legacy-retry', state: 'retry_wait' },
+      conflict: { ...base, commandId: 'legacy-conflict', state: 'conflict', attempts: 2 },
+      rejected: { ...base, commandId: 'legacy-rejected', state: 'rejected', attempts: 2 },
+      firstRejected: { ...base, commandId: 'legacy-first-rejected', state: 'rejected', attempts: 1 },
+      explicitSafe: { ...base, commandId: 'new-pretransport', state: 'retry_wait', serverCommitUnknown: false },
+    });
+
+    const restored = await repository.getCommands({ userId: 1, scopeId: '10' });
+    expect(restored).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ commandId: 'legacy-sending', serverCommitUnknown: true }),
+        expect.objectContaining({ commandId: 'legacy-retry', serverCommitUnknown: true }),
+        expect.objectContaining({ commandId: 'legacy-conflict', serverCommitUnknown: true }),
+        expect.objectContaining({ commandId: 'legacy-rejected', serverCommitUnknown: true }),
+        expect.objectContaining({ commandId: 'new-pretransport', serverCommitUnknown: false }),
+      ]),
+    );
+    expect(restored.find(({ commandId }) => commandId === 'legacy-first-rejected')).not.toHaveProperty('serverCommitUnknown');
+  });
+
   it('outboxを作成順で保持し、scope削除時もuser-scoped commandを保持する', async () => {
     const base: Omit<OfflineCommand, 'scopeId' | 'commandId' | 'createdAt'> = {
       userId: 1,
