@@ -7,6 +7,7 @@ import {
   type OfflineCommandResult,
   type OfflineCommandTarget,
 } from './offline-command-executor';
+import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
@@ -23,7 +24,7 @@ import {
   type OfflineScope,
 } from './offline-repository';
 import { generatedCommandIdentity } from './offline-test-helpers';
-import { OfflinePayloadValidationError, OfflineSyncService } from './offline-sync.service';
+import { OfflineCommandInFlightError, OfflinePayloadValidationError, OfflineSyncService } from './offline-sync.service';
 
 const replicaSchema = defineOfflineReplicaSchema({
   version: 1,
@@ -72,6 +73,7 @@ describe('OfflineSyncService', () => {
   let service: OfflineSyncService;
   let commands: OfflineCommand[];
   let rows: OfflineReplicaRow[];
+  let reconciliationScopes: OfflineScope[];
   let connected: ReturnType<typeof signal<boolean>>;
   let session: { userId: number; scopes: OfflineScope[] } | null;
   let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
@@ -80,6 +82,7 @@ describe('OfflineSyncService', () => {
   let beforeGetReplicaRow: (() => Promise<void>) | null;
   let pull: ReturnType<typeof vi.fn<(scope: OfflineScope) => Promise<void>>>;
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
+  let onCommandRemoved: ReturnType<typeof vi.fn<(command: OfflineCommand) => Promise<void>>>;
   let options: OfflineKitOptions;
   const execute = vi.fn(
     async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({ response: null }),
@@ -88,6 +91,7 @@ describe('OfflineSyncService', () => {
   beforeEach(() => {
     commands = [];
     rows = [];
+    reconciliationScopes = [];
     connected = signal(false);
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     localSession = undefined;
@@ -96,6 +100,7 @@ describe('OfflineSyncService', () => {
     beforeGetReplicaRow = null;
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
+    onCommandRemoved = vi.fn(async () => undefined);
     options = { databaseName: 'test-offline', replicaSchema };
     execute.mockReset();
     execute.mockResolvedValue({ response: null });
@@ -185,6 +190,9 @@ describe('OfflineSyncService', () => {
         );
       }),
       getReplicaCursor: vi.fn(async () => null),
+      getReconciliationScopes: vi.fn(async (userId: number) =>
+        reconciliationScopes.filter((scope) => scope.userId === userId).map((scope) => ({ ...scope })),
+      ),
       transactReplica: vi.fn(async (transaction) => {
         for (const row of transaction.putRows ?? []) {
           rows = rows.filter(
@@ -210,6 +218,17 @@ describe('OfflineSyncService', () => {
           commands.push(structuredClone(command));
         }
         commands = commands.filter((command) => !(transaction.removeCommandIds ?? []).includes(command.commandId));
+        for (const scope of transaction.putReconciliationScopes ?? []) {
+          reconciliationScopes = reconciliationScopes.filter(
+            (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
+          );
+          reconciliationScopes.push({ ...scope });
+        }
+        for (const scope of transaction.removeReconciliationScopes ?? []) {
+          reconciliationScopes = reconciliationScopes.filter(
+            (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
+          );
+        }
         commands.sort((left, right) => left.createdAt - right.createdAt);
       }),
     } as unknown as OfflineRepository;
@@ -221,6 +240,10 @@ describe('OfflineSyncService', () => {
         { provide: OFFLINE_KIT_OPTIONS, useValue: options },
         { provide: OfflineReplicaPullService, useValue: { pull } },
         { provide: ErrorHandler, useValue: { handleError } },
+        {
+          provide: OFFLINE_COMMAND_HOOKS,
+          useValue: { entityType: (command: OfflineCommand) => command.aggregateType, onCommandRemoved },
+        },
         {
           provide: OFFLINE_SYNC_CONTEXT,
           useValue: {
@@ -644,6 +667,7 @@ describe('OfflineSyncService', () => {
     expect(execute.mock.calls.map(([command]) => (command as OfflineCommand<{ seq: number }>).payload.seq)).toEqual([1, 2]);
     expect(service.pendingCount()).toBe(0);
     expect(pull).toHaveBeenCalledTimes(2);
+    expect(onCommandRemoved).toHaveBeenCalledTimes(2);
   });
 
   it('送信成功後は同一scopeの複数aggregateを一度だけ再pullする', async () => {
@@ -759,6 +783,96 @@ describe('OfflineSyncService', () => {
     expect(service.pendingCount()).toBe(0);
   });
 
+  it('partial flushのACK後pull失敗scopeをOutbox削除後もreconnectで再pullする', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    let scope20Pulls = 0;
+    const postPullError = new Error('scope 20 post-send pull failed');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '20' && ++scope20Pulls === 2) throw postPullError;
+    });
+    await service.refreshSession(['10']);
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'partial-post-pull-failure' },
+        operation: 'documents.create',
+        payload: { title: 'one' },
+        optimisticValue: { id: 0, title: 'one' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(postPullError));
+    expect(commands).toEqual([]);
+    expect(execute).toHaveBeenCalledOnce();
+
+    connected.set(false);
+    connected.set(true);
+    await vi.waitFor(() => expect(scope20Pulls).toBe(3));
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('ACK後pull失敗scopeをreset後もdurable markerから復元しcommandを再送しない', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    let scope20Pulls = 0;
+    const postPullError = new Error('scope 20 post-send pull failed before restart');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '20' && ++scope20Pulls === 2) throw postPullError;
+    });
+    await service.refreshSession(['10']);
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'durable-post-pull-failure' },
+        operation: 'documents.create',
+        payload: { title: 'one' },
+        optimisticValue: { id: 0, title: 'one' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(postPullError));
+    expect(commands).toEqual([]);
+    expect(reconciliationScopes).toEqual([{ userId: 1, scopeId: '20' }]);
+
+    connected.set(false);
+    await service.resetSession();
+    await service.refreshSession(['10']);
+    connected.set(true);
+    await vi.waitFor(() => expect(scope20Pulls).toBe(3));
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(reconciliationScopes).toEqual([]);
+  });
+
+  it('所属から外れたdurable reconciliation scopeをsession discoveryで破棄する', async () => {
+    reconciliationScopes = [{ userId: 1, scopeId: '20' }];
+    session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
+
+    await service.refreshSession(['10']);
+    expect(reconciliationScopes).toEqual([]);
+
+    connected.set(true);
+    await service.flush();
+    expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+  });
+
   it('local_idを不変主キーにして送信直前に最新server_idへ解決する', async () => {
     execute.mockResolvedValueOnce({
       remoteId: 38142,
@@ -853,7 +967,7 @@ describe('OfflineSyncService', () => {
     await service.initialize();
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     await service.refreshSession();
-    expect(service.pendingCommands()[0]?.state).toBe('pending');
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'pending', serverCommitUnknown: true });
   });
 
   it('未同期createを破棄するとoutboxと未確定replica rowを同時に除く', async () => {
@@ -1116,7 +1230,7 @@ describe('OfflineSyncService', () => {
     expect(commands[0]).toMatchObject({ replicaMutation: 'delete', state });
   });
 
-  it('flush中の一括discard後に旧commandを送信・復活させない', async () => {
+  it('executor送信中のdiscardAllPendingを拒否してserver結果の確定を待つ', async () => {
     let resolveExecute!: (value: { response: null; serverRevision?: number }) => void;
     execute.mockImplementationOnce(() => new Promise((resolve) => (resolveExecute = resolve)));
     await service.enqueue(
@@ -1144,12 +1258,104 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     const flush = service.flush();
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
-    await service.discardAllPending();
+    await expect(service.discardAllPending()).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+    expect(commands[0]?.state).toBe('sending');
     resolveExecute({ response: null, serverRevision: 2 });
     await flush;
-    expect(execute).toHaveBeenCalledOnce();
+    expect(execute).toHaveBeenCalledTimes(2);
     expect(commands).toEqual([]);
     expect(service.pendingCount()).toBe(0);
+  });
+
+  it('executor送信中のsingle discardを拒否してoptimistic rowとcommandを保持する', async () => {
+    let resolveExecute!: (value: { response: null }) => void;
+    execute.mockImplementationOnce(() => new Promise((resolve) => (resolveExecute = resolve)));
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'discard-in-flight' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: { title: 'pending' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    const flush = service.flush();
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+    await expect(service.discard(commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+    expect(commands).toEqual([expect.objectContaining({ commandId, state: 'sending' })]);
+    expect(rows).toEqual([expect.objectContaining({ values: { title: 'pending' } })]);
+
+    resolveExecute({ response: null });
+    await flush;
+  });
+
+  it('response-lossでretry_waitのcommandはserver commit不明のためdiscardを拒否する', async () => {
+    execute.mockRejectedValueOnce({ status: 0 });
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'discard-response-loss' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: { title: 'pending' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(commands[0]?.state).toBe('retry_wait');
+
+    await expect(service.discard(commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+    await expect(service.discardAllPending()).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+    expect(commands).toEqual([expect.objectContaining({ commandId, state: 'retry_wait' })]);
+
+    connected.set(false);
+    await service.retryNow(commandId);
+    expect(commands).toEqual([expect.objectContaining({ commandId, state: 'pending', serverCommitUnknown: true })]);
+    await expect(service.discard(commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+    await expect(service.discardAllPending()).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+
+    execute.mockRejectedValueOnce({ status: 401 });
+    connected.set(true);
+    await vi.waitFor(() => expect(service.pendingCommands()[0]?.state).toBe('blocked_auth'));
+    expect(service.pendingCommands()[0]).toMatchObject({ serverCommitUnknown: true });
+    await expect(service.discard(commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+  });
+
+  it.each([409, 422])('response-loss後にHTTP %sへ分類されても同じkeyで再確認してACKへ収束する', async (status) => {
+    execute.mockRejectedValueOnce({ status: 0 }).mockRejectedValueOnce({ status }).mockResolvedValueOnce({ response: null });
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: `ambiguous-${status}` },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    await service.retryNow(commandId);
+
+    expect(service.pendingCommands()[0]).toMatchObject({
+      commandId,
+      state: status === 409 ? 'conflict' : 'rejected',
+      serverCommitUnknown: true,
+    });
+    await expect(service.discard(commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+
+    await service.retryNow(commandId);
+
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute.mock.calls.map(([command]) => command.commandId)).toEqual([commandId, commandId, commandId]);
+    expect(service.pendingCommands()).toEqual([]);
   });
 
   it('flush中のsession切替後に旧user commandを新sessionへ復活させない', async () => {
@@ -1270,7 +1476,7 @@ describe('OfflineSyncService', () => {
     expect(service.pendingCount()).toBe(0);
   });
 
-  it('local replica row lookup failureはrejectしbackground flushはErrorHandlerへ渡す', async () => {
+  it('local replica row lookup rejectionでもsendingに残さずretry_waitへ戻す', async () => {
     const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository;
     await service.enqueue(
       {
@@ -1283,18 +1489,167 @@ describe('OfflineSyncService', () => {
       },
       { flush: false },
     );
-    vi.mocked(repository.getReplicaRow).mockResolvedValue(null);
-    vi.mocked(repository.getReplicaRowIncludingPendingDelete!).mockResolvedValue(null);
+    const lookupError = new Error('replica lookup failed');
+    vi.mocked(repository.getReplicaRow).mockRejectedValue(lookupError);
+    vi.mocked(repository.getReplicaRowIncludingPendingDelete!).mockRejectedValue(lookupError);
     connected.set(true);
     await service.refreshSession();
-    await vi.waitFor(() =>
-      expect(handleError).toHaveBeenCalledWith(
-        expect.objectContaining({ message: 'Offline replica row not found: documents/generated:1' }),
-      ),
-    );
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(lookupError));
 
     await service.refreshSession();
-    await expect(service.flush()).rejects.toThrow('Offline replica row not found');
+    await expect(service.flush()).resolves.toBeUndefined();
+    expect(service.pendingCommands()[0]).toMatchObject({
+      state: 'retry_wait',
+      lastErrorCode: 'network',
+      serverCommitUnknown: false,
+    });
+    expect(execute).not.toHaveBeenCalled();
+
+    vi.mocked(repository.getReplicaRow).mockResolvedValue(rows[0] ?? null);
+    vi.mocked(repository.getReplicaRowIncludingPendingDelete!).mockResolvedValue(rows[0] ?? null);
+    await service.discard(service.pendingCommands()[0]!.commandId, { flush: false });
+    expect(service.pendingCount()).toBe(0);
+    expect(commands).toEqual([]);
+  });
+
+  it('pre-transport retry_waitはdiscardAllPendingで回復できる', async () => {
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'pretransport-discard-all' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    commands = commands.map((command) =>
+      command.commandId === commandId
+        ? { ...command, state: 'retry_wait', retryAt: Date.now() + 1_000, serverCommitUnknown: false }
+        : command,
+    );
+    await service.reloadPendingCommands();
+
+    await service.discardAllPending();
+    expect(commands).toEqual([]);
+    expect(rows).toEqual([]);
+    expect(service.pendingCount()).toBe(0);
+  });
+
+  it('single discardのpostcommit hook失敗は報告のみでrepositoryとsignalを空へ収束させる', async () => {
+    const hookError = new Error('media cleanup failed');
+    onCommandRemoved.mockRejectedValueOnce(hookError);
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'discard-hook-failure' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+
+    await expect(service.discard(commandId, { flush: false })).resolves.toBeUndefined();
+    expect(commands).toEqual([]);
+    expect(service.pendingCount()).toBe(0);
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(hookError));
+  });
+
+  it('discardAllPendingのpostcommit hook失敗も報告のみでrepositoryとsignalを空へ収束させる', async () => {
+    const hookError = new Error('bulk media cleanup failed');
+    onCommandRemoved.mockRejectedValueOnce(hookError);
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'discard-all-hook-failure' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+
+    await expect(service.discardAllPending()).resolves.toBeUndefined();
+    expect(commands).toEqual([]);
+    expect(service.pendingCount()).toBe(0);
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(hookError));
+  });
+
+  it('sending claimとcommand取消を同じmutation laneで直列化する', async () => {
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'claim-race' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    let sendingStarted!: () => void;
+    const started = new Promise<void>((resolve) => (sendingStarted = resolve));
+    let releaseSending!: () => void;
+    const sendingBarrier = new Promise<void>((resolve) => (releaseSending = resolve));
+    beforePutCommand = async (command) => {
+      if (command.state !== 'sending') return;
+      sendingStarted();
+      await sendingBarrier;
+    };
+
+    connected.set(true);
+    const flush = service.flush();
+    await started;
+    let cancellationEntered = false;
+    const cancellation = service.runSerializedReplicaMutation(async (repository) => {
+      cancellationEntered = true;
+      const current = (await repository.getCommands({ userId: 1, scopeId: '10' })).find(
+        (command) => command.commandId === commands[0]?.commandId,
+      );
+      expect(current?.state).toBe('sending');
+    });
+    await Promise.resolve();
+    expect(cancellationEntered).toBe(false);
+
+    releaseSending();
+    await cancellation;
+    await flush;
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('取消が先にmutation laneを確保した場合はtransport claimがcommandを復活させない', async () => {
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'cancel-before-claim' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    let cancellationStarted!: () => void;
+    const started = new Promise<void>((resolve) => (cancellationStarted = resolve));
+    let releaseCancellation!: () => void;
+    const cancellationBarrier = new Promise<void>((resolve) => (releaseCancellation = resolve));
+    const cancellation = service.runSerializedReplicaMutation(async (repository) => {
+      cancellationStarted();
+      await cancellationBarrier;
+      await repository.transactReplica({ removeCommandIds: [commands[0]!.commandId] });
+    });
+    await started;
+    connected.set(true);
+    const flush = service.flush();
+    releaseCancellation();
+    await cancellation;
+    await flush;
+
+    expect(commands).toEqual([]);
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -1323,10 +1678,11 @@ describe('OfflineSyncService', () => {
     await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(expect.objectContaining({ message: 'transaction failed' })));
 
     await service.refreshSession();
-    await expect(service.flush()).rejects.toThrow('transaction failed');
+    await expect(service.flush()).resolves.toBeUndefined();
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'retry_wait', lastErrorCode: 'network' });
   });
 
-  it('executor error without integer statusはclassifyせずrejectする', async () => {
+  it('executor error without integer statusもsendingに残さずretry_waitへ戻す', async () => {
     execute.mockRejectedValueOnce(new Error('programming failure'));
     await service.enqueue(
       {
@@ -1341,11 +1697,10 @@ describe('OfflineSyncService', () => {
     );
     connected.set(true);
     await expect(service.flush()).rejects.toThrow('programming failure');
-    expect(service.pendingCommands()[0]?.state).toBe('sending');
-    expect(handleError).not.toHaveBeenCalled();
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'retry_wait', lastErrorCode: 'network' });
   });
 
-  it('executor error with negative statusはclassifyせずrejectする', async () => {
+  it('executor error with negative statusもsendingに残さずretry_waitへ戻す', async () => {
     execute.mockRejectedValueOnce({ status: -1 });
     await service.enqueue(
       {
@@ -1360,7 +1715,7 @@ describe('OfflineSyncService', () => {
     );
     connected.set(true);
     await expect(service.flush()).rejects.toThrow();
-    expect(service.pendingCommands()[0]?.state).toBe('sending');
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'retry_wait', lastErrorCode: 'network' });
   });
 
   it('invalid remoteIdはhard failする', async () => {
@@ -2146,7 +2501,7 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     execute.mockResolvedValueOnce({ removeReplica: true, response: null });
-    execute.mockRejectedValueOnce({ status: 0 });
+    execute.mockRejectedValueOnce({ status: 422 });
     connected.set(true);
     await service.flush();
     expect(rows[0]).toMatchObject({ confirmedValues: null, visibility: 'present' });
@@ -2362,6 +2717,7 @@ describe('OfflineSyncService', () => {
       TestBed.resetTestingModule();
       commands = [];
       rows = [];
+      reconciliationScopes = [];
       connected = signal(false);
       session = multiScopeSession;
       beforePutCommand = null;
@@ -2421,6 +2777,9 @@ describe('OfflineSyncService', () => {
           return row ? projectReplicaRow(row, scope) : null;
         }),
         getReplicaCursor: vi.fn(async () => null),
+        getReconciliationScopes: vi.fn(async (userId: number) =>
+          reconciliationScopes.filter((scope) => scope.userId === userId).map((scope) => ({ ...scope })),
+        ),
         transactReplica: vi.fn(async (transaction) => {
           for (const row of transaction.putRows ?? []) {
             const existing = findReplicaRow(row, row.sourceKey, row.identity);
@@ -2447,6 +2806,17 @@ describe('OfflineSyncService', () => {
             commands.push(structuredClone(command));
           }
           commands = commands.filter((command) => !(transaction.removeCommandIds ?? []).includes(command.commandId));
+          for (const scope of transaction.putReconciliationScopes ?? []) {
+            reconciliationScopes = reconciliationScopes.filter(
+              (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
+            );
+            reconciliationScopes.push({ ...scope });
+          }
+          for (const scope of transaction.removeReconciliationScopes ?? []) {
+            reconciliationScopes = reconciliationScopes.filter(
+              (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
+            );
+          }
           commands.sort(compareCommands);
         }),
       } as unknown as OfflineRepository;

@@ -261,6 +261,18 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     });
   });
 
+  it('legacy SQLite outboxの送信中と複数回試行済みの最終失敗をcolumn追加時にcommit不明へbackfillする', async () => {
+    const repository = createRepository();
+
+    await repository.initialize();
+
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: expect.stringContaining("OR (attempts >= 2 AND state IN ('blocked_auth', 'conflict', 'rejected'))"),
+      }),
+    );
+  });
+
   it('暗号鍵の生成関数をcommunity driverへ渡す', async () => {
     const createEncryptionKey = vi.fn(async () => 'first-install-secret');
     const repository = createRepository(createEncryptionKey);
@@ -276,8 +288,11 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     const deletes = plugin.execute.mock.calls
       .map(([options]) => options as { statement: string; values?: unknown[] })
       .filter(({ statement }) => statement.startsWith('DELETE FROM'));
-    expect(deletes).toHaveLength(1);
-    expect(deletes[0]?.values).toEqual([canonicalOfflinePrincipalId(7), '8']);
+    expect(deletes).toHaveLength(2);
+    expect(deletes.map(({ values }) => values)).toEqual([
+      [canonicalOfflinePrincipalId(7), '8'],
+      [canonicalOfflinePrincipalId(7), '8'],
+    ]);
     expect(plugin.beginTransaction).toHaveBeenCalledOnce();
     expect(plugin.commitTransaction).toHaveBeenCalledOnce();
     expect(plugin.rollbackTransaction).not.toHaveBeenCalled();
