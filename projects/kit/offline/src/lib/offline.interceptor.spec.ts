@@ -1,7 +1,8 @@
 import { HttpContext, HttpErrorResponse, HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
+import { ErrorHandler } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { firstValueFrom, of, throwError } from 'rxjs';
+import { finalize, firstValueFrom, of, Subject, throwError, type Observable } from 'rxjs';
 import { OfflineNetworkService } from './offline-network.service';
 import { offlineInterceptor } from './offline.interceptor';
 import {
@@ -19,17 +20,20 @@ describe('offlineInterceptor', () => {
   let resolveMutation: ReturnType<typeof vi.fn<(request: HttpRequest<unknown>) => OfflineMutationRequestPlan | null>>;
   let markApiSuccess: ReturnType<typeof vi.fn>;
   let markApiFailure: ReturnType<typeof vi.fn>;
+  let handleError: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     resolve = vi.fn(() => null);
     resolveMutation = vi.fn(() => null);
     markApiSuccess = vi.fn();
     markApiFailure = vi.fn();
+    handleError = vi.fn();
     TestBed.configureTestingModule({
       providers: [
         { provide: OfflineRequestPolicyRegistry, useValue: { resolve } },
         { provide: OfflineMutationRequestPolicyRegistry, useValue: { resolve: resolveMutation } },
         { provide: OfflineNetworkService, useValue: { markApiSuccess, markApiFailure } },
+        { provide: ErrorHandler, useValue: { handleError } },
       ],
     });
   });
@@ -194,8 +198,262 @@ describe('offlineInterceptor', () => {
     expect(resolve).not.toHaveBeenCalled();
     expect(markApiFailure).toHaveBeenCalledOnce();
   });
+
+  describe('local-first read strategy', () => {
+    const localFirstPlan = (overrides: Partial<OfflineRequestPlan> = {}): OfflineRequestPlan => ({
+      kind: 'read',
+      readStrategy: 'local-first',
+      readLocal: vi.fn(async () => null),
+      ...overrides,
+    });
+
+    it('local hitのあとremoteを順にemitしreachabilityを更新する', async () => {
+      const rawLocal = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      const projectedLocal = new HttpResponse({ body: { value: 'local-projected' }, status: 200 });
+      const transportResponse = new HttpResponse({ body: { value: 'remote' }, status: 200 });
+      const projectedRemote = new HttpResponse({ body: { value: 'remote-projected' }, status: 200 });
+      const projectResponse = vi.fn(async (_response: HttpResponse<unknown>, source: OfflineReadResponseSource) =>
+        source === 'local' ? projectedLocal : projectedRemote,
+      );
+      resolve.mockReturnValue(
+        localFirstPlan({
+          readLocal: vi.fn(async () => rawLocal),
+          projectResponse,
+        }),
+      );
+
+      const emissions = await collect(run(new HttpRequest('GET', '/bootstrap'), () => of(transportResponse)));
+
+      expect(emissions).toHaveLength(2);
+      expect(emissions[0] instanceof HttpResponse && emissions[0].body).toEqual({ value: 'local-projected' });
+      expect(emissions[0] instanceof HttpResponse && emissions[0].headers.get(OFFLINE_RESPONSE_HEADER)).toBe('local');
+      expect(emissions[1] instanceof HttpResponse && emissions[1].body).toEqual({ value: 'remote-projected' });
+      expect(emissions[1] instanceof HttpResponse && emissions[1].headers.has(OFFLINE_RESPONSE_HEADER)).toBe(false);
+      expect(projectResponse.mock.calls.map(([, source]) => source)).toEqual(['local', 'remote']);
+      expect(markApiSuccess).toHaveBeenCalledOnce();
+      expect(markApiFailure).not.toHaveBeenCalled();
+    });
+
+    it('deferred localでもsubscribe直後にtransportを開始する', async () => {
+      let transportSubscribed = false;
+      let resolveLocal!: (value: HttpResponse<unknown>) => void;
+      const localReady = new Promise<HttpResponse<unknown>>((resolve) => {
+        resolveLocal = resolve;
+      });
+      const next = vi.fn(() => {
+        transportSubscribed = true;
+        return of(new HttpResponse({ body: { value: 'remote' }, status: 200 }));
+      });
+      resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(() => localReady) }));
+
+      const pending = collect(run(new HttpRequest('GET', '/bootstrap'), next));
+      await vi.waitFor(() => expect(transportSubscribed).toBe(true));
+      expect(next).toHaveBeenCalledOnce();
+      resolveLocal(new HttpResponse({ body: { value: 'cached' }, status: 200 }));
+      await pending;
+    });
+
+    it('remoteが先に完了してもemit順はlocal→remote', async () => {
+      const transportSubject = new Subject<HttpResponse<unknown>>();
+      let resolveLocal!: (value: HttpResponse<unknown>) => void;
+      const localReady = new Promise<HttpResponse<unknown>>((resolve) => {
+        resolveLocal = resolve;
+      });
+      const next = vi.fn(() => transportSubject.asObservable());
+      resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(() => localReady) }));
+
+      const pending = collect(run(new HttpRequest('GET', '/bootstrap'), next));
+      await vi.waitFor(() => expect(next).toHaveBeenCalledOnce());
+      transportSubject.next(new HttpResponse({ body: { value: 'remote' }, status: 200 }));
+      transportSubject.complete();
+      resolveLocal(new HttpResponse({ body: { value: 'cached' }, status: 200 }));
+
+      const emissions = await pending;
+      expect(emissions).toHaveLength(2);
+      expect(emissions[0] instanceof HttpResponse && emissions[0].body).toEqual({ value: 'cached' });
+      expect(emissions[0] instanceof HttpResponse && emissions[0].headers.get(OFFLINE_RESPONSE_HEADER)).toBe('local');
+      expect(emissions[1] instanceof HttpResponse && emissions[1].body).toEqual({ value: 'remote' });
+    });
+
+    it('local emit後のstatus=0はerrorにせずreachability failureだけ記録する', async () => {
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(async () => local) }));
+      const error = new HttpErrorResponse({ status: 0, error: new Error('offline') });
+
+      const emissions = await collect(run(new HttpRequest('GET', '/bootstrap'), () => throwError(() => error)));
+
+      expect(emissions).toHaveLength(1);
+      expect(emissions[0] instanceof HttpResponse && emissions[0].headers.get(OFFLINE_RESPONSE_HEADER)).toBe('local');
+      expect(markApiFailure).toHaveBeenCalledOnce();
+      expect(markApiSuccess).not.toHaveBeenCalled();
+    });
+
+    it('local emit後の401/403/500はerrorのまま', async () => {
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(async () => local) }));
+
+      for (const status of [401, 403, 500]) {
+        const error = new HttpErrorResponse({ status });
+        await expect(
+          collect(run(new HttpRequest('GET', '/bootstrap'), () => throwError(() => error))),
+        ).rejects.toBe(error);
+      }
+    });
+
+    it('local missはnetwork-firstと同じremote→fallback動作', async () => {
+      const remote = new HttpResponse({ body: { value: 'remote' }, status: 200 });
+      const readLocal = vi.fn(async () => null);
+      const next = vi.fn(() => of(remote));
+      resolve.mockReturnValue(localFirstPlan({ readLocal }));
+
+      await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), next))).resolves.toBe(remote);
+
+      expect(readLocal).toHaveBeenCalledOnce();
+      expect(next).toHaveBeenCalledOnce();
+      expect(markApiSuccess).toHaveBeenCalledOnce();
+    });
+
+    it('local read失敗はErrorHandlerへ報告しremoteを継続する', async () => {
+      const localError = new Error('sqlite locked');
+      const remote = new HttpResponse({ body: { value: 'remote' }, status: 200 });
+      const readLocal = vi.fn(async () => {
+        throw localError;
+      });
+      const next = vi.fn(() => of(remote));
+      resolve.mockReturnValue(localFirstPlan({ readLocal }));
+
+      await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), next))).resolves.toBe(remote);
+
+      expect(handleError).toHaveBeenCalledWith(localError);
+      expect(next).toHaveBeenCalledOnce();
+      expect(markApiSuccess).toHaveBeenCalledOnce();
+    });
+
+    it('remote projection失敗はlocal emit後もerrorのまま', async () => {
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      const projectionError = new HttpErrorResponse({ status: 500, error: new Error('projection failed') });
+      resolve.mockReturnValue(
+        localFirstPlan({
+          readLocal: vi.fn(async () => local),
+          projectResponse: vi.fn(async (_response, source) => {
+            if (source === 'remote') throw projectionError;
+            return local;
+          }),
+        }),
+      );
+
+      await expect(
+        collect(run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 })))),
+      ).rejects.toBe(projectionError);
+    });
+
+    it('remote projectResponseのstatus=0はtransport fallbackとして握りつぶさない', async () => {
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      const projectionError = new HttpErrorResponse({ status: 0, error: new Error('local persistence failed') });
+      resolve.mockReturnValue(
+        localFirstPlan({
+          readLocal: vi.fn(async () => local),
+          projectResponse: vi.fn(async (_response, source) => {
+            if (source === 'remote') throw projectionError;
+            return local;
+          }),
+        }),
+      );
+
+      await expect(
+        collect(run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 })))),
+      ).rejects.toBe(projectionError);
+    });
+
+    it('local projectResponse失敗はErrorHandlerへ報告しnetwork-firstへ継続する', async () => {
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      const projectionError = new Error('corrupt cache');
+      const remote = new HttpResponse({ body: { value: 'remote' }, status: 200 });
+      const next = vi.fn(() => of(remote));
+      resolve.mockReturnValue(
+        localFirstPlan({
+          readLocal: vi.fn(async () => local),
+          projectResponse: vi.fn(async (_response, source) => {
+            if (source === 'local') throw projectionError;
+            return remote;
+          }),
+        }),
+      );
+
+      const emissions = await collect(run(new HttpRequest('GET', '/bootstrap'), next));
+
+      expect(emissions).toEqual([remote]);
+      expect(handleError).toHaveBeenCalledWith(projectionError);
+      expect(next).toHaveBeenCalledOnce();
+      expect(markApiSuccess).toHaveBeenCalledOnce();
+    });
+
+    it('local pending中のunsubscribeはtransportをcancelしemit/reportしない', async () => {
+      let transportUnsubscribed = false;
+      let resolveLocal!: (value: HttpResponse<unknown>) => void;
+      const localReady = new Promise<HttpResponse<unknown>>((resolve) => {
+        resolveLocal = resolve;
+      });
+      const next = vi.fn(() =>
+        of(new HttpResponse({ status: 200 })).pipe(
+          finalize(() => {
+            transportUnsubscribed = true;
+          }),
+        ),
+      );
+      resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(() => localReady) }));
+
+      const subscription = run(new HttpRequest('GET', '/bootstrap'), next).subscribe();
+      await vi.waitFor(() => expect(next).toHaveBeenCalledOnce());
+      subscription.unsubscribe();
+      expect(transportUnsubscribed).toBe(true);
+
+      resolveLocal(new HttpResponse({ body: { value: 'cached' }, status: 200 }));
+      await Promise.resolve();
+      expect(handleError).not.toHaveBeenCalled();
+    });
+
+    it('remote完了前のunsubscribeはtransportをcancelする', async () => {
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(async () => local) }));
+      let transportUnsubscribed = false;
+      const transportSubject = new Subject<HttpResponse<unknown>>();
+      const transport$ = transportSubject.asObservable().pipe(finalize(() => {
+        transportUnsubscribed = true;
+      }));
+
+      const emissions: HttpResponse<unknown>[] = [];
+      const subscription = run(new HttpRequest('GET', '/bootstrap'), () => transport$).subscribe({
+        next: (event) => {
+          if (event instanceof HttpResponse) emissions.push(event);
+        },
+      });
+
+      await vi.waitFor(() => expect(emissions).toHaveLength(1));
+      subscription.unsubscribe();
+      expect(transportUnsubscribed).toBe(true);
+    });
+  });
+
+  it('readStrategy未指定はnetwork-firstのまま', async () => {
+    resolve.mockReturnValue({ kind: 'read', readLocal: vi.fn() });
+    const response = new HttpResponse({ body: { userId: 1 }, status: 200 });
+    await expect(firstValueFrom(run(new HttpRequest('GET', '/bootstrap'), () => of(response)))).resolves.toBe(response);
+    expect(markApiSuccess).toHaveBeenCalledOnce();
+  });
 });
 
 function run(request: HttpRequest<unknown>, next: Parameters<typeof offlineInterceptor>[1]) {
   return TestBed.runInInjectionContext(() => offlineInterceptor(request, next));
+}
+
+function collect<T>(source: Observable<T>): Promise<T[]> {
+  return new Promise((resolvePromise, reject) => {
+    const values: T[] = [];
+    source.subscribe({
+      next: (value) => values.push(value),
+      complete: () => resolvePromise(values),
+      error: reject,
+    });
+  });
 }
