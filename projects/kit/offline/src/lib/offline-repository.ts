@@ -794,10 +794,6 @@ export class IonicOfflineRepository implements OfflineRepository {
     return (await this.#storage.get<Record<string, T>>(key)) ?? {};
   }
 
-  async #filterRecord<T>(key: string, predicate: (value: T, recordKey: string) => boolean): Promise<void> {
-    await this.#enqueueWrite(() => this.#filterRecordNow(key, predicate));
-  }
-
   #filterRecordNow<T>(key: string, predicate: (value: T, recordKey: string) => boolean): Promise<void> {
     return this.#mutateRecordNow<T>(key, (record) =>
       Object.fromEntries(Object.entries(record).filter(([recordKey, value]) => predicate(value, recordKey))),
