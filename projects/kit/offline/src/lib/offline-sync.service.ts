@@ -261,9 +261,15 @@ export class OfflineSyncService {
     return this.#serializeReplicaMutation(async () => {
       await this.initialize();
       if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared replacement.');
-      const replaced = (await this.#readKnownCommands()).find((command) => command.commandId === commandId);
+      const knownCommands = await this.#readKnownCommands();
+      const replaced = knownCommands.find((command) => command.commandId === commandId);
       if (!replaced) throw new Error(`Offline command ${commandId} no longer exists.`);
       this.#assertDiscardable([replaced]);
+      if (
+        knownCommands.some((command) => command.commandId !== commandId && this.#aggregateKey(command) === this.#aggregateKey(replaced))
+      ) {
+        throw new Error('Offline replacement requires the command to be the only pending intent for its aggregate.');
+      }
       const prepared = await prepare(this.#repository);
       return this.#enqueue(prepared.request, options, generation, prepared.replicaTransaction, replaced);
     });
@@ -341,7 +347,7 @@ export class OfflineSyncService {
       state: 'pending',
       attempts: 0,
       retryAt: null,
-      createdAt: await this.#nextCommandCreatedAt(userId),
+      createdAt: replaced?.createdAt ?? (await this.#nextCommandCreatedAt(userId)),
       lastErrorCode: null,
     };
     if (
@@ -432,7 +438,8 @@ export class OfflineSyncService {
       syncState: 'pending',
       visibility: request.replicaMutation === 'delete' ? 'pending_delete' : 'present',
     };
-    const optimisticCompanions = await this.#prepareOptimisticCompanions(scope, optimisticRow, replicaTransaction);
+    const preparedCompanions = await this.#prepareOptimisticCompanions(scope, optimisticRow, replicaTransaction);
+    const optimisticCompanions = replaced ? this.#replacementCompanions(replaced, preparedCompanions) : preparedCompanions;
     if (replicaTransaction) this.#canonicalJson(replicaTransaction);
     if (optimisticCompanions.length > 0) command = { ...command, optimisticCompanions };
     await this.#assertOutboxCapacity(userId, command, replaced?.commandId);
@@ -440,8 +447,8 @@ export class OfflineSyncService {
       throw new Error('Offline session changed before the command could be persisted');
     }
     await this.#repository.transactReplica({
-      putRows: [optimisticRow, ...(replicaTransaction?.putRows ?? [])],
-      removeRows: replicaTransaction?.removeRows,
+      putRows: [optimisticRow, ...optimisticCompanions.flatMap((companion) => (companion.after ? [companion.after] : []))],
+      removeRows: optimisticCompanions.flatMap((companion) => (companion.after ? [] : [companion.key])),
       putCommands: [command],
       removeCommandIds: replaced ? [replaced.commandId] : undefined,
     });
@@ -481,13 +488,12 @@ export class OfflineSyncService {
       mutations.push({ key: this.#minimalReplicaRowKey(row), after: null });
     }
     return Promise.all(
-      mutations.map(async ({ key, after }) => ({
-        key,
-        before:
+      mutations.map(async ({ key, after }) => {
+        const before =
           (await this.#repository.getReplicaRowIncludingPendingDelete?.(scope, key.sourceKey, key.identity)) ??
-          (await this.#repository.getReplicaRow(scope, key.sourceKey, key.identity)),
-        after,
-      })),
+          (await this.#repository.getReplicaRow(scope, key.sourceKey, key.identity));
+        return { key, before, after: this.#optimisticCompanionAfter(after, before) };
+      }),
     );
   }
 
@@ -495,6 +501,43 @@ export class OfflineSyncService {
     if (key.userId !== scope.userId || key.scopeId !== scope.scopeId) {
       throw new Error('Prepared offline enqueue companion rows must use the command scope.');
     }
+  }
+
+  #replacementCompanions(
+    replaced: OfflineCommand,
+    optimisticCompanions: readonly OfflineOptimisticReplicaCompanion[],
+  ): OfflineOptimisticReplicaCompanion[] {
+    const previousByKey = new Map(
+      (replaced.optimisticCompanions ?? []).map((companion) => [this.#replicaRowKey(companion.key), companion]),
+    );
+    const previousKeys = new Set(previousByKey.keys());
+    const replacementKeys = new Set(optimisticCompanions.map((companion) => this.#replicaRowKey(companion.key)));
+    if (previousKeys.size !== replacementKeys.size || [...previousKeys].some((key) => !replacementKeys.has(key))) {
+      throw new Error('Offline replacement must preserve the optimistic companion footprint.');
+    }
+    return optimisticCompanions.map((companion) => {
+      const previousBefore = previousByKey.get(this.#replicaRowKey(companion.key))!.before;
+      const before = this.#replacementCompanionBefore(companion.before, previousBefore);
+      return { ...companion, before, after: this.#optimisticCompanionAfter(companion.after, before) };
+    });
+  }
+
+  #replacementCompanionBefore(current: OfflineReplicaRow | null, historical: OfflineReplicaRow | null): OfflineReplicaRow | null {
+    const confirmedValues = current ? current.confirmedValues : (historical?.confirmedValues ?? null);
+    if (confirmedValues === null) return null;
+    const source = current ?? historical!;
+    return {
+      ...source,
+      values: confirmedValues,
+      confirmedValues,
+      syncState: 'confirmed',
+      visibility: 'present',
+    };
+  }
+
+  #optimisticCompanionAfter(after: OfflineReplicaRow | null, before: OfflineReplicaRow | null): OfflineReplicaRow | null {
+    if (!after) return null;
+    return { ...after, confirmedValues: before?.confirmedValues ?? null };
   }
 
   #minimalReplicaRowKey(key: OfflineReplicaRowKey): OfflineReplicaRowKey {
