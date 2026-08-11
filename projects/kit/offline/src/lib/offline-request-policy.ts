@@ -13,9 +13,24 @@ export type OfflineResponseSource = 'local' | 'optimistic';
 /** Source passed to a read policy's shared response projector. */
 export type OfflineReadResponseSource = 'remote' | 'local';
 
+/** Controls GET emission order between local replica and remote transport. */
+export type OfflineReadStrategy = 'network-first' | 'local-first';
+
 /** Product read policy backed by a local replica fallback for transport failures. */
 export interface OfflineReadRequestPlan {
   kind: 'read';
+  /**
+   * Controls whether the interceptor hits the network first or emits a local
+   * replica immediately and revalidates in the background. Defaults to
+   * `network-first` when omitted so existing policies stay compatible.
+   *
+   * @remarks
+   * `local-first` starts transport and `readLocal()` concurrently, emits
+   * projected local first on hit, then drains the buffered remote response.
+   * Callers must keep the HTTP observable subscribed through revalidation;
+   * `firstValueFrom` and `take(1)` cancel in-flight transport.
+   */
+  readStrategy?: OfflineReadStrategy;
   /**
    * Persists and projects a remote response, or projects a local fallback.
    *
