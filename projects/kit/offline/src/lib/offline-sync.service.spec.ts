@@ -1087,6 +1087,7 @@ describe('OfflineSyncService', () => {
       { flush: false },
     );
     commands[0] = { ...commands[0]!, state: 'conflict' };
+    const originalCreatedAt = commands[0]!.createdAt;
 
     const newCommandId = await service.replacePrepared(
       oldCommandId,
@@ -1106,8 +1107,370 @@ describe('OfflineSyncService', () => {
 
     expect(newCommandId).not.toBe(oldCommandId);
     expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({ commandId: newCommandId, state: 'pending' });
+    expect(commands[0]).toMatchObject({ commandId: newCommandId, state: 'pending', createdAt: originalCreatedAt });
     expect(rows[0]).toMatchObject({ values: { id: 13, title: 'new local' }, syncState: 'pending' });
+  });
+
+  it('同じaggregateに後続commandがあるreplacementを元状態のまま拒否する', async () => {
+    const oldCommandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-ordered' },
+        operation: 'documents.update',
+        payload: { title: 'first' },
+        optimisticValue: { id: 14, title: 'first' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-ordered' },
+        operation: 'documents.update',
+        payload: { title: 'second' },
+        optimisticValue: { id: 14, title: 'second' },
+      },
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+    const prepare = vi.fn(async () => ({
+      request: {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated' as const, localId: 'replace-ordered' },
+        operation: 'documents.update',
+        payload: { title: 'replacement' },
+        optimisticValue: { id: 14, title: 'replacement' },
+      },
+    }));
+
+    await expect(service.replacePrepared(oldCommandId, prepare, { flush: false })).rejects.toThrow('only pending intent for its aggregate');
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(commands.map((command) => command.commandId)).toHaveLength(2);
+    expect(rows.find((row) => row.identity.kind === 'generated' && row.identity.localId === 'replace-ordered')?.values).toEqual({
+      id: 14,
+      title: 'second',
+    });
+  });
+
+  it('companionの対象集合を変えるreplacementを元commandと楽観値を残して拒否する', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'replace-companion-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    const oldCommandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-companion' },
+          operation: 'documents.update',
+          payload: { title: 'old local' },
+          optimisticValue: { id: 15, title: 'old local' },
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'old optimistic' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+
+    await expect(
+      service.replacePrepared(
+        oldCommandId,
+        async () => ({
+          request: {
+            scopeId: '10',
+            aggregateType: 'documents',
+            identity: { kind: 'generated', localId: 'replace-companion' },
+            operation: 'documents.update',
+            payload: { title: 'new local' },
+            optimisticValue: { id: 15, title: 'new local' },
+          },
+        }),
+        { flush: false },
+      ),
+    ).rejects.toThrow('preserve the optimistic companion footprint');
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.commandId).toBe(oldCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')?.values).toEqual({ title: 'old optimistic' });
+  });
+
+  it('replacement companionは元commandのbefore-imageを継承して破棄時に確定値へ戻す', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'replace-remove-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    const oldCommandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-remove' },
+          operation: 'documents.update',
+          payload: { title: 'old local' },
+          optimisticValue: { id: 16, title: 'old local' },
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'old optimistic' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+
+    const newCommandId = await service.replacePrepared(
+      oldCommandId,
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-remove' },
+          operation: 'documents.update',
+          payload: { title: 'remove companion' },
+          optimisticValue: { id: 16, title: 'remove companion' },
+        },
+        replicaTransaction: { removeRows: [companion] },
+      }),
+      { flush: false },
+    );
+
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
+    await service.discard(newCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      syncState: 'confirmed',
+    });
+  });
+
+  it('productが渡した楽観confirmedValuesを採用せずput replacement破棄時に確定値へ戻す', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'replace-put-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    const oldCommandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-put' },
+          operation: 'documents.update',
+          payload: { title: 'old local' },
+          optimisticValue: { id: 17, title: 'old local' },
+        },
+        replicaTransaction: {
+          putRows: [
+            {
+              ...companion,
+              values: { title: 'old optimistic' },
+              confirmedValues: { title: 'old optimistic' },
+              syncState: 'pending',
+            },
+          ],
+        },
+      }),
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+
+    const newCommandId = await service.replacePrepared(
+      oldCommandId,
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-put' },
+          operation: 'documents.update',
+          payload: { title: 'new local' },
+          optimisticValue: { id: 17, title: 'new local' },
+        },
+        replicaTransaction: {
+          putRows: [
+            {
+              ...companion,
+              values: { title: 'new optimistic' },
+              confirmedValues: { title: 'new optimistic' },
+              syncState: 'pending',
+            },
+          ],
+        },
+      }),
+      { flush: false },
+    );
+
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'new optimistic' },
+      confirmedValues: { title: 'baseline' },
+    });
+    await service.discard(newCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      syncState: 'confirmed',
+    });
+  });
+
+  it('conflict pull後の最新confirmedValuesをreplacementと破棄で維持する', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'replace-pulled-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    const oldCommandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-pulled' },
+          operation: 'documents.update',
+          payload: { title: 'old local' },
+          optimisticValue: { id: 18, title: 'old local' },
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'old optimistic' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+    const companionIndex = rows.findIndex((row) => row.sourceKey === 'document_views');
+    rows[companionIndex] = {
+      ...rows[companionIndex]!,
+      values: { title: 'old optimistic' },
+      confirmedValues: { title: 'latest server' },
+      serverRevision: 2,
+      syncState: 'conflict',
+    };
+
+    const newCommandId = await service.replacePrepared(
+      oldCommandId,
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-pulled' },
+          operation: 'documents.update',
+          payload: { title: 'new local' },
+          optimisticValue: { id: 18, title: 'new local' },
+        },
+        replicaTransaction: {
+          putRows: [
+            {
+              ...companion,
+              values: { title: 'new optimistic' },
+              confirmedValues: { title: 'new optimistic' },
+              serverRevision: 2,
+              syncState: 'pending',
+            },
+          ],
+        },
+      }),
+      { flush: false },
+    );
+
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'new optimistic' },
+      confirmedValues: { title: 'latest server' },
+      serverRevision: 2,
+    });
+    await service.discard(newCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'latest server' },
+      confirmedValues: { title: 'latest server' },
+      serverRevision: 2,
+      syncState: 'confirmed',
+    });
+  });
+
+  it('baselineのないcompanionを連続更新しても全command破棄後にrowを残さない', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'new-companion-view' },
+      values: { title: 'unused input' },
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'pending',
+    };
+    const firstCommandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'new-companion' },
+          operation: 'documents.update',
+          payload: { title: 'first' },
+          optimisticValue: { id: 19, title: 'first' },
+        },
+        replicaTransaction: { putRows: [{ ...companion, values: { title: 'first optimistic' } }] },
+      }),
+      { flush: false },
+    );
+    const secondCommandId = await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'new-companion' },
+          operation: 'documents.update',
+          payload: { title: 'second' },
+          optimisticValue: { id: 19, title: 'second' },
+        },
+        replicaTransaction: { putRows: [{ ...companion, values: { title: 'second optimistic' } }] },
+      }),
+      { flush: false },
+    );
+
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'second optimistic' },
+      confirmedValues: null,
+    });
+    await service.discard(secondCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'first optimistic' },
+      confirmedValues: null,
+    });
+    await service.discard(firstCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
   });
 
   it('同一ミリ秒のDate.nowでもcreatedAtは単調増加で保存する', async () => {
