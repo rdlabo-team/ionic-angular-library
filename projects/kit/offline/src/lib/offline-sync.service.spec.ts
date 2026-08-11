@@ -87,6 +87,7 @@ describe('OfflineSyncService', () => {
   const execute = vi.fn(
     async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({ response: null }),
   );
+  const provesCommandNotCommitted = vi.fn((_error: unknown, _command: OfflineCommand) => false);
 
   beforeEach(() => {
     commands = [];
@@ -104,6 +105,8 @@ describe('OfflineSyncService', () => {
     options = { databaseName: 'test-offline', replicaSchema };
     execute.mockReset();
     execute.mockResolvedValue({ response: null });
+    provesCommandNotCommitted.mockReset();
+    provesCommandNotCommitted.mockReturnValue(false);
     const repository = {
       initialize: vi.fn(async () => undefined),
       getCommands: vi.fn(async (scope: OfflineScope) => {
@@ -255,6 +258,7 @@ describe('OfflineSyncService', () => {
           provide: OFFLINE_COMMAND_EXECUTOR,
           useValue: {
             execute,
+            provesCommandNotCommitted,
             withServerRevision: (command: OfflineCommand) => command,
             withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
           },
@@ -1021,6 +1025,91 @@ describe('OfflineSyncService', () => {
     });
   });
 
+  it('resolved conflictはreplacement準備成功まで元commandとoptimistic rowを保持する', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'replace-failure', remoteId: 12 },
+      values: { id: 12, title: 'local conflict' },
+      confirmedValues: { id: 12, title: 'server' },
+      serverRevision: 3,
+      fetchedAt: 1,
+      syncState: 'conflict',
+    });
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-failure' },
+        operation: 'documents.update',
+        payload: { title: 'local conflict' },
+        optimisticValue: { id: 12, title: 'local conflict' },
+        baseRevision: 3,
+      },
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+
+    await expect(
+      service.replacePrepared(commandId, async () => {
+        throw new Error('replacement preparation failed');
+      }),
+    ).rejects.toThrow('replacement preparation failed');
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.commandId).toBe(commandId);
+    expect(rows[0]?.values).toEqual({ id: 12, title: 'local conflict' });
+  });
+
+  it('resolved conflictをreplacement commandとoptimistic rowへ一transactionで置換する', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'replace-success', remoteId: 13 },
+      values: { id: 13, title: 'old local' },
+      confirmedValues: { id: 13, title: 'server' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'conflict',
+    });
+    const oldCommandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-success' },
+        operation: 'documents.update',
+        payload: { title: 'old local' },
+        optimisticValue: { id: 13, title: 'old local' },
+        baseRevision: 4,
+      },
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+
+    const newCommandId = await service.replacePrepared(
+      oldCommandId,
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'replace-success' },
+          operation: 'documents.update',
+          payload: { title: 'new local' },
+          optimisticValue: { id: 13, title: 'new local' },
+          baseRevision: 4,
+        },
+      }),
+      { flush: false },
+    );
+
+    expect(newCommandId).not.toBe(oldCommandId);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({ commandId: newCommandId, state: 'pending' });
+    expect(rows[0]).toMatchObject({ values: { id: 13, title: 'new local' }, syncState: 'pending' });
+  });
+
   it('同一ミリ秒のDate.nowでもcreatedAtは単調増加で保存する', async () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     await service.enqueue(
@@ -1356,6 +1445,32 @@ describe('OfflineSyncService', () => {
     expect(execute).toHaveBeenCalledTimes(3);
     expect(execute.mock.calls.map(([command]) => command.commandId)).toEqual([commandId, commandId, commandId]);
     expect(service.pendingCommands()).toEqual([]);
+  });
+
+  it('executorが同じkeyの未commitを証明した競合はambiguityを解除して通常解決へ渡す', async () => {
+    execute.mockRejectedValueOnce({ status: 0 }).mockRejectedValueOnce({ status: 412 });
+    provesCommandNotCommitted.mockImplementation((error) => (error as { status?: number }).status === 412);
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'authoritative-no-commit' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    await service.retryNow(commandId);
+
+    expect(service.pendingCommands()[0]).toMatchObject({
+      commandId,
+      state: 'conflict',
+      serverCommitUnknown: false,
+    });
+    await expect(service.discard(commandId, { flush: false })).resolves.toBeUndefined();
   });
 
   it('flush中のsession切替後に旧user commandを新sessionへ復活させない', async () => {

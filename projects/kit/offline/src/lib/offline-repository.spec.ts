@@ -1711,6 +1711,131 @@ describe('IonicOfflineRepository', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]?.identity).toEqual(generatedReplicaIdentity('019d-aaaa', null));
     });
+
+    it('legacy単一recordを一度だけ走査して全scope/source indexを構築する', async () => {
+      const userRow: OfflineReplicaRow = {
+        ...baseRow,
+        userId: 1,
+        scopeId: '10',
+        identity: generatedReplicaIdentity('019d-user-index', 41),
+        values: { id: 41, title: 'Indexed user row' },
+      };
+      const groupRow: OfflineReplicaRow = {
+        userId: 1,
+        scopeId: '20',
+        sourceKey: 'test_group_items',
+        identity: generatedReplicaIdentity('019d-group-index', 42),
+        values: { id: 42, name: 'Indexed group row' },
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'pending',
+      };
+      repository = await createSeededRepository(replicaSchemaV1, async () => {
+        await seedReplicaMetadata(replicaSchemaV1, {
+          '1:user:test_items:generated:019d-user-index': userRow,
+          '1:20:test_group_items:generated:019d-group-index': groupRow,
+        });
+      });
+      const get = vi.spyOn(storage, 'get');
+
+      await expect(repository.getReplicaRows({ userId: 1, scopeId: '10' }, 'test_items')).resolves.toHaveLength(1);
+      await expect(repository.getReplicaRows({ userId: 1, scopeId: '20' }, 'test_group_items')).resolves.toHaveLength(1);
+
+      expect(get.mock.calls.filter(([key]) => key === 'offline:replica:rows')).toHaveLength(1);
+    });
+
+    it('replica transactionと同じcommit境界で既存partition indexを更新する', async () => {
+      const scope = { userId: 1, scopeId: '10' };
+      const initial: OfflineReplicaRow = {
+        ...baseRow,
+        ...scope,
+        identity: generatedReplicaIdentity('019d-index-update', 44),
+        values: { id: 44, title: 'Before' },
+      };
+      await repository.transactReplica({ putRows: [initial] });
+      await repository.getReplicaRows(scope, 'test_items');
+
+      await repository.transactReplica({ putRows: [{ ...initial, values: { id: 44, title: 'After' } }] });
+
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toMatchObject([{ values: { title: 'After' } }]);
+    });
+
+    it('初回partition構築と並行するtransactionを同じwrite laneで直列化する', async () => {
+      const scope = { userId: 1, scopeId: '10' };
+      const initial: OfflineReplicaRow = {
+        ...baseRow,
+        ...scope,
+        identity: generatedReplicaIdentity('019d-index-race', 45),
+        values: { id: 45, title: 'Before' },
+      };
+      await repository.transactReplica({ putRows: [initial] });
+      for (const key of [...storage.values.keys()]) {
+        if (key.startsWith('offline:replica:rows:index:v1:')) storage.values.delete(key);
+      }
+      let releaseRowsRead!: () => void;
+      const rowsRead = new Promise<void>((resolve) => {
+        releaseRowsRead = resolve;
+      });
+      const originalGet = storage.get.bind(storage);
+      vi.spyOn(storage, 'get').mockImplementation(async <T>(key: string): Promise<T | null> => {
+        if (key === 'offline:replica:rows') await rowsRead;
+        return originalGet<T>(key);
+      });
+
+      const build = repository.getReplicaRows(scope, 'test_items');
+      const update = repository.transactReplica({
+        putRows: [{ ...initial, values: { id: 45, title: 'After' } }],
+      });
+      releaseRowsRead();
+
+      await Promise.all([build, update]);
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toMatchObject([{ values: { title: 'After' } }]);
+    });
+
+    it('進行中transactionの後にclearScopeを同じwrite laneで確定する', async () => {
+      const scope = { userId: 1, scopeId: '10' };
+      const initial: OfflineReplicaRow = {
+        userId: 1,
+        scopeId: '10',
+        sourceKey: 'test_group_items',
+        identity: generatedReplicaIdentity('019d-clear-race', 46),
+        values: { id: 46, name: 'Before clear' },
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'pending',
+      };
+      await repository.transactReplica({ putRows: [initial] });
+      let releaseRowsWrite!: () => void;
+      let announceRowsWrite!: () => void;
+      const rowsWriteStarted = new Promise<void>((resolve) => {
+        announceRowsWrite = resolve;
+      });
+      const rowsWrite = new Promise<void>((resolve) => {
+        releaseRowsWrite = resolve;
+      });
+      const originalSet = storage.set.bind(storage);
+      let deferNextRowsWrite = true;
+      vi.spyOn(storage, 'set').mockImplementation(async <T>(key: string, value: T): Promise<T> => {
+        if (key === 'offline:replica:rows' && deferNextRowsWrite) {
+          deferNextRowsWrite = false;
+          announceRowsWrite();
+          await rowsWrite;
+        }
+        return originalSet(key, value);
+      });
+
+      const update = repository.transactReplica({
+        putRows: [{ ...initial, values: { id: 46, name: 'Concurrent update' } }],
+      });
+      await rowsWriteStarted;
+      const clear = repository.clearScope(scope);
+      releaseRowsWrite();
+
+      await Promise.all([update, clear]);
+      await expect(repository.getReplicaRows(scope, 'test_group_items')).resolves.toEqual([]);
+    });
   });
 });
 

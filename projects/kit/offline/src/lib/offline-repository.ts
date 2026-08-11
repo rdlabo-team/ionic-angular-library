@@ -221,6 +221,8 @@ interface OfflineReplicaSchemaMigrationJournal {
 const METADATA_KEY = 'offline:metadata';
 const SESSION_MANIFESTS_KEY = 'offline:session:manifests';
 const ROWS_KEY = 'offline:replica:rows';
+const ROW_PARTITION_PREFIX = 'offline:replica:rows:index:v1:';
+const ROW_PARTITION_READY_KEY = 'offline:replica:rows:index:v1:ready';
 const CURSORS_KEY = 'offline:replica:cursors';
 const OUTBOX_KEY = 'offline:outbox:commands';
 const REPLICA_TRANSACTION_KEY = 'offline:replica:transaction';
@@ -238,6 +240,7 @@ export class IonicOfflineRepository implements OfflineRepository {
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   #initialization: Promise<void> | null = null;
   #writes: Promise<void> = Promise.resolve();
+  #rowIndexBuild: Promise<void> | null = null;
 
   initialize(): Promise<void> {
     if (!this.#initialization) {
@@ -282,7 +285,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.initialize();
     await this.#writes;
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
     const row = this.#findRowByAddress(rows, scope, sourceKey, schema, identity);
     if (!row || (row.visibility ?? 'present') === 'pending_delete') return null;
     return this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>;
@@ -296,7 +299,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.initialize();
     await this.#writes;
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
     const row = this.#findRowByAddress(rows, scope, sourceKey, schema, identity);
     return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
@@ -305,7 +308,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.initialize();
     await this.#writes;
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
     return Object.values(rows)
       .filter((row) => {
         if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
@@ -334,7 +337,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.#writes;
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const canonical = canonicalOfflineRemoteIdentity(schema, identity);
-    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
     const row = Object.values(rows).find((candidate) => {
       if (candidate.sourceKey !== sourceKey || candidate.userId !== scope.userId) return false;
       if (schema.scope === 'partition' && candidate.scopeId !== scope.scopeId) return false;
@@ -410,44 +413,51 @@ export class IonicOfflineRepository implements OfflineRepository {
 
   async clearUser(userId: OfflinePrincipalId): Promise<void> {
     await this.initialize();
-    await Promise.all([
-      this.#mutateRecord(SESSION_MANIFESTS_KEY, (manifests) => {
-        delete manifests[canonicalOfflinePrincipalId(userId)];
-        return manifests;
-      }),
-      this.#filterRecord<OfflineReplicaRow>(ROWS_KEY, (value) => value.userId !== userId),
-      this.#filterRecord<OfflineCommand>(OUTBOX_KEY, (value) => value.userId !== userId),
-      this.#filterRecord<string>(CURSORS_KEY, (_value, key) => !key.startsWith(`${canonicalOfflinePrincipalId(userId)}:`)),
-      this.#filterRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => value.userId !== userId),
-    ]);
-    const metadata = await this.#metadata();
-    if (metadata.lastUserId === userId) {
-      await this.#storage.set<OfflineMetadata>(METADATA_KEY, { ...metadata, lastUserId: null });
-    }
+    await this.#enqueueWrite(async () => {
+      await this.#removeRowPartitions((key) => key.startsWith(`${ROW_PARTITION_PREFIX}${canonicalOfflinePrincipalId(userId)}:`));
+      await Promise.all([
+        this.#mutateRecordNow(SESSION_MANIFESTS_KEY, (manifests) => {
+          delete manifests[canonicalOfflinePrincipalId(userId)];
+          return manifests;
+        }),
+        this.#filterRecordNow<OfflineReplicaRow>(ROWS_KEY, (value) => value.userId !== userId),
+        this.#filterRecordNow<OfflineCommand>(OUTBOX_KEY, (value) => value.userId !== userId),
+        this.#filterRecordNow<string>(CURSORS_KEY, (_value, key) => !key.startsWith(`${canonicalOfflinePrincipalId(userId)}:`)),
+        this.#filterRecordNow<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => value.userId !== userId),
+      ]);
+      const metadata = await this.#metadata();
+      if (metadata.lastUserId === userId) {
+        await this.#storage.set<OfflineMetadata>(METADATA_KEY, { ...metadata, lastUserId: null });
+      }
+    });
   }
 
   async clearScope(scope: OfflineScope): Promise<void> {
     await this.initialize();
     const belongsToGroup = (value: OfflineScope) => value.userId === scope.userId && value.scopeId === scope.scopeId;
-    await Promise.all([
-      this.#filterRecord<OfflineReplicaRow>(ROWS_KEY, (value) => {
-        const schema = this.#resolveReplicaEntitySchema(value.sourceKey);
-        return schema.scope === 'user' || !belongsToGroup(value);
-      }),
-      this.#filterRecord<OfflineCommand>(OUTBOX_KEY, (value) => {
-        const schema = this.#resolveReplicaEntitySchema(value.sourceKey);
-        return schema.scope === 'user' || !belongsToGroup(value);
-      }),
-      this.#filterRecord<string>(CURSORS_KEY, (_value, key) => key !== this.#cursorKey(scope)),
-      this.#filterRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => !belongsToGroup(value)),
-    ]);
+    await this.#enqueueWrite(async () => {
+      await this.#removeRowPartitions((key) => {
+        if (!key.startsWith(`${ROW_PARTITION_PREFIX}${canonicalOfflinePrincipalId(scope.userId)}:`)) return false;
+        return key.includes(`:partition:${encodeURIComponent(scope.scopeId)}:`);
+      });
+      await Promise.all([
+        this.#filterRecordNow<OfflineReplicaRow>(ROWS_KEY, (value) => {
+          const schema = this.#resolveReplicaEntitySchema(value.sourceKey);
+          return schema.scope === 'user' || !belongsToGroup(value);
+        }),
+        this.#filterRecordNow<OfflineCommand>(OUTBOX_KEY, (value) => {
+          const schema = this.#resolveReplicaEntitySchema(value.sourceKey);
+          return schema.scope === 'user' || !belongsToGroup(value);
+        }),
+        this.#filterRecordNow<string>(CURSORS_KEY, (_value, key) => key !== this.#cursorKey(scope)),
+        this.#filterRecordNow<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => !belongsToGroup(value)),
+      ]);
+    });
   }
 
   async transactReplica(transaction: OfflineReplicaTransaction): Promise<void> {
     await this.initialize();
-    const write = this.#writes.then(() => this.#applyReplicaTransaction(transaction, true));
-    this.#writes = write.catch((): void => undefined);
-    return write;
+    return this.#enqueueWrite(() => this.#applyReplicaTransaction(transaction, true));
   }
 
   async #migrate(): Promise<void> {
@@ -510,6 +520,7 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   async #recoverReplicaSchemaMigration(journal: OfflineReplicaSchemaMigrationJournal): Promise<void> {
+    await this.#removeRowPartitions(() => true);
     await this.#storage.set(ROWS_KEY, journal.originalRows);
     const metadata = await this.#metadata();
     await this.#storage.set<OfflineMetadata>(METADATA_KEY, {
@@ -528,7 +539,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       }
     }
 
-    const write = this.#writes.then(async (): Promise<void> => {
+    return this.#enqueueWrite(async (): Promise<void> => {
       const rows = await this.#readRecord<OfflineReplicaRow>(ROWS_KEY);
       const originalRows = structuredClone(rows);
       await this.#storage.set<OfflineReplicaSchemaMigrationJournal>(REPLICA_SCHEMA_MIGRATION_KEY, {
@@ -577,6 +588,7 @@ export class IonicOfflineRepository implements OfflineRepository {
 
         const metadata = await this.#metadata();
         await this.#storage.set(ROWS_KEY, transformedRows);
+        await this.#removeRowPartitions(() => true);
         await this.#storage.set<OfflineMetadata>(METADATA_KEY, {
           ...metadata,
           replicaSchemaVersion: targetVersion,
@@ -594,8 +606,6 @@ export class IonicOfflineRepository implements OfflineRepository {
         throw error;
       }
     });
-    this.#writes = write.catch((): void => undefined);
-    return write;
   }
 
   #toWebMigrationRow(row: OfflineReplicaRow): OfflineReplicaWebMigrationRow {
@@ -694,7 +704,80 @@ export class IonicOfflineRepository implements OfflineRepository {
       this.#storage.set(CURSORS_KEY, cursors),
       this.#storage.set(RECONCILIATION_SCOPES_KEY, reconciliationScopes),
     ]);
+    await this.#writeAffectedRowPartitions(rows, transaction);
     await this.#storage.remove(REPLICA_TRANSACTION_KEY);
+  }
+
+  async #readRowPartition<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+  ): Promise<Record<string, OfflineReplicaRow<TValues>>> {
+    const key = this.#rowPartitionKey(scope, sourceKey, schema);
+    const cached = await this.#storage.get<Record<string, OfflineReplicaRow<TValues>>>(key);
+    if (cached !== null) return cached;
+    if (await this.#storage.get<boolean>(ROW_PARTITION_READY_KEY)) return {};
+    await this.#buildRowPartitions();
+    const built = await this.#storage.get<Record<string, OfflineReplicaRow<TValues>>>(key);
+    return built ?? {};
+  }
+
+  #buildRowPartitions(): Promise<void> {
+    if (!this.#rowIndexBuild) {
+      const build = this.#enqueueWrite(async () => {
+        if (await this.#storage.get<boolean>(ROW_PARTITION_READY_KEY)) return;
+        const rows = await this.#readRecord<OfflineReplicaRow>(ROWS_KEY);
+        const partitions = new Map<string, Record<string, OfflineReplicaRow>>();
+        for (const [rowKey, row] of Object.entries(rows)) {
+          const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
+          const key = this.#rowPartitionKey(row, row.sourceKey, schema);
+          const partition = partitions.get(key) ?? {};
+          partition[rowKey] = row;
+          partitions.set(key, partition);
+        }
+        await Promise.all([...partitions].map(([key, partition]) => this.#storage.set(key, partition)));
+        await this.#storage.set(ROW_PARTITION_READY_KEY, true);
+      });
+      this.#rowIndexBuild = build.finally(() => {
+        this.#rowIndexBuild = null;
+      });
+    }
+    return this.#rowIndexBuild;
+  }
+
+  async #writeAffectedRowPartitions(rows: Record<string, OfflineReplicaRow>, transaction: OfflineReplicaTransaction): Promise<void> {
+    const affected = new Map<
+      string,
+      { scope: OfflineScope; sourceKey: string; schema: OfflineReplicaEntitySchema<Record<string, unknown>> }
+    >();
+    for (const row of [...(transaction.putRows ?? []), ...(transaction.removeRows ?? [])]) {
+      const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
+      const key = this.#rowPartitionKey(row, row.sourceKey, schema);
+      affected.set(key, { scope: row, sourceKey: row.sourceKey, schema });
+    }
+    await Promise.all(
+      [...affected].map(([key, { scope, sourceKey, schema }]) =>
+        this.#storage.set(
+          key,
+          Object.fromEntries(
+            Object.entries(rows).filter(([, row]) => {
+              if (row.userId !== scope.userId || row.sourceKey !== sourceKey) return false;
+              return schema.scope === 'user' || row.scopeId === scope.scopeId;
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  #rowPartitionKey(scope: OfflineScope, sourceKey: string, schema: OfflineReplicaEntitySchema<Record<string, unknown>>): string {
+    const partition = schema.scope === 'user' ? 'user' : `partition:${encodeURIComponent(scope.scopeId)}`;
+    return `${ROW_PARTITION_PREFIX}${canonicalOfflinePrincipalId(scope.userId)}:${partition}:${encodeURIComponent(sourceKey)}`;
+  }
+
+  async #removeRowPartitions(matches: (key: string) => boolean): Promise<void> {
+    const keys = (await this.#storage.keys()).filter((key) => key.startsWith(ROW_PARTITION_PREFIX) && matches(key));
+    await Promise.all(keys.map((key) => this.#storage.remove(key)));
   }
 
   async #metadata(): Promise<OfflineMetadata> {
@@ -712,17 +795,30 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   async #filterRecord<T>(key: string, predicate: (value: T, recordKey: string) => boolean): Promise<void> {
-    await this.#mutateRecord<T>(key, (record) =>
+    await this.#enqueueWrite(() => this.#filterRecordNow(key, predicate));
+  }
+
+  #filterRecordNow<T>(key: string, predicate: (value: T, recordKey: string) => boolean): Promise<void> {
+    return this.#mutateRecordNow<T>(key, (record) =>
       Object.fromEntries(Object.entries(record).filter(([recordKey, value]) => predicate(value, recordKey))),
     );
   }
 
   #mutateRecord<T>(key: string, mutate: (record: Record<string, T>) => Record<string, T>): Promise<void> {
-    const write = this.#writes.then(async (): Promise<void> => {
-      const record = await this.#readRecord<T>(key);
-      await this.#storage.set(key, mutate(record));
-    });
-    this.#writes = write.catch((): void => undefined);
+    return this.#enqueueWrite(() => this.#mutateRecordNow(key, mutate));
+  }
+
+  async #mutateRecordNow<T>(key: string, mutate: (record: Record<string, T>) => Record<string, T>): Promise<void> {
+    const record = await this.#readRecord<T>(key);
+    await this.#storage.set(key, mutate(record));
+  }
+
+  #enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const write = this.#writes.then(operation);
+    this.#writes = write.then(
+      () => undefined,
+      () => undefined,
+    );
     return write;
   }
 

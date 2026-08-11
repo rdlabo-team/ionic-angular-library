@@ -246,6 +246,30 @@ export class OfflineSyncService {
   }
 
   /**
+   * Atomically replaces a resolved durable command with a newly prepared command.
+   *
+   * Use this after an authoritative conflict read. The old intent remains durable
+   * until validation, capacity checks, optimistic projection and replacement
+   * command preparation have all succeeded.
+   */
+  replacePrepared<T>(
+    commandId: string,
+    prepare: (repository: OfflineRepository) => Promise<PreparedOfflineCommand<T>>,
+    options: { flush?: boolean } = {},
+  ): Promise<string> {
+    const generation = this.#generation;
+    return this.#serializeReplicaMutation(async () => {
+      await this.initialize();
+      if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared replacement.');
+      const replaced = (await this.#readKnownCommands()).find((command) => command.commandId === commandId);
+      if (!replaced) throw new Error(`Offline command ${commandId} no longer exists.`);
+      this.#assertDiscardable([replaced]);
+      const prepared = await prepare(this.#repository);
+      return this.#enqueue(prepared.request, options, generation, prepared.replicaTransaction, replaced);
+    });
+  }
+
+  /**
    * Serializes a product-owned replica projection with enqueue and command ACK
    * reconciliation. For read/derive/write cache updates, prefer
    * `runSerializedReplicaMutation` so the read is serialized as well.
@@ -281,6 +305,7 @@ export class OfflineSyncService {
     options: { flush?: boolean },
     generation: number,
     replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
+    replaced?: OfflineCommand,
   ): Promise<string> {
     await this.initialize();
     if (this.#options.mode === 'readCacheOnly') {
@@ -319,6 +344,16 @@ export class OfflineSyncService {
       createdAt: await this.#nextCommandCreatedAt(userId),
       lastErrorCode: null,
     };
+    if (
+      replaced &&
+      (replaced.userId !== command.userId ||
+        replaced.scopeId !== command.scopeId ||
+        replaced.aggregateType !== command.aggregateType ||
+        replaced.sourceKey !== command.sourceKey ||
+        canonicalOfflineCommandIdentity(replaced.identity) !== canonicalOfflineCommandIdentity(command.identity))
+    ) {
+      throw new Error('Offline replacement command must address the same aggregate and replica identity.');
+    }
     const entityType = command.sourceKey;
     const schema = this.#entitySchema(entityType);
     if (schema.identity.kind === 'localOnly') {
@@ -400,7 +435,7 @@ export class OfflineSyncService {
     const optimisticCompanions = await this.#prepareOptimisticCompanions(scope, optimisticRow, replicaTransaction);
     if (replicaTransaction) this.#canonicalJson(replicaTransaction);
     if (optimisticCompanions.length > 0) command = { ...command, optimisticCompanions };
-    await this.#assertOutboxCapacity(userId, command);
+    await this.#assertOutboxCapacity(userId, command, replaced?.commandId);
     if (generation !== this.#generation) {
       throw new Error('Offline session changed before the command could be persisted');
     }
@@ -408,6 +443,7 @@ export class OfflineSyncService {
       putRows: [optimisticRow, ...(replicaTransaction?.putRows ?? [])],
       removeRows: replicaTransaction?.removeRows,
       putCommands: [command],
+      removeCommandIds: replaced ? [replaced.commandId] : undefined,
     });
     await this.#refreshState();
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
@@ -474,14 +510,17 @@ export class OfflineSyncService {
     return `${canonicalOfflinePrincipalId(key.userId)}:${key.scopeId}:${key.sourceKey}:${canonicalOfflineReplicaIdentity(key.identity)}`;
   }
 
-  async #assertOutboxCapacity(userId: OfflinePrincipalId, command: OfflineCommand): Promise<void> {
-    const commands = this.#repository.getCommandsForUser
+  async #assertOutboxCapacity(userId: OfflinePrincipalId, command: OfflineCommand, excludingCommandId?: string): Promise<void> {
+    const currentCommands = this.#repository.getCommandsForUser
       ? await this.#repository.getCommandsForUser(userId)
       : (
           await Promise.all(
             [...this.#knownScopes.values()].filter((scope) => scope.userId === userId).map((scope) => this.#repository.getCommands(scope)),
           )
         ).flat();
+    const commands = excludingCommandId
+      ? currentCommands.filter((candidate) => candidate.commandId !== excludingCommandId)
+      : currentCommands;
     const maxCommands = this.#options.outboxLimits?.maxCommandsPerUser ?? DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER;
     const maxBytes = this.#options.outboxLimits?.maxBytesPerUser ?? DEFAULT_MAX_OUTBOX_BYTES_PER_USER;
     const currentBytes = this.#serializedOutboxBytes(commands);
@@ -740,7 +779,10 @@ export class OfflineSyncService {
         result = await this.#executor.execute(sending, offlineCommandTargetFromReplicaRow(row));
       } catch (error) {
         if (!this.#isCurrent(generation)) return;
-        await this.#persistFailedCommand(sending, error, generation, row, priorCommitUnknown || this.#serverCommitCouldBeUnknown(error));
+        const commitUnknown = this.#executor.provesCommandNotCommitted?.(error, sending)
+          ? false
+          : priorCommitUnknown || this.#serverCommitCouldBeUnknown(error);
+        await this.#persistFailedCommand(sending, error, generation, row, commitUnknown);
         if (!this.#isClassifiableTransportError(error)) throw error;
         break;
       }
