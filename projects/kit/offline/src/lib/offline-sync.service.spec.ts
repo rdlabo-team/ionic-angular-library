@@ -24,7 +24,12 @@ import {
   type OfflineScope,
 } from './offline-repository';
 import { generatedCommandIdentity } from './offline-test-helpers';
-import { OfflineCommandInFlightError, OfflinePayloadValidationError, OfflineSyncService } from './offline-sync.service';
+import {
+  OfflineCommandInFlightError,
+  OfflinePayloadValidationError,
+  OfflineSyncService,
+  type PreparedOfflineCommand,
+} from './offline-sync.service';
 
 const replicaSchema = defineOfflineReplicaSchema({
   version: 1,
@@ -530,6 +535,194 @@ describe('OfflineSyncService', () => {
     ).rejects.toMatchObject({ name: 'OfflineOutboxCapacityError', reason: 'serialized_bytes' });
     expect(commands).toEqual([]);
     expect(rows).toEqual([]);
+  });
+
+  describe('enqueuePreparedBatch', () => {
+    const prepared = (localId: string, title: string, companion?: OfflineReplicaRow): PreparedOfflineCommand => ({
+      request: {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId },
+        operation: 'documents.create',
+        payload: { title },
+        optimisticValue: { id: 0, title },
+      },
+      replicaTransaction: companion ? { putRows: [companion] } : undefined,
+    });
+
+    it('2件の成功は1回のtransactReplicaでFIFO createdAtを永続化する', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+
+      const commandIds = await service.enqueuePreparedBatch(async () => [prepared('batch-a', 'A'), prepared('batch-b', 'B')], {
+        flush: false,
+      });
+
+      expect(commandIds).toHaveLength(2);
+      expect(transactReplica).toHaveBeenCalledTimes(1);
+      expect(commands).toHaveLength(2);
+      expect(commands.map((command) => (command.identity.kind === 'generated' ? command.identity.localId : ''))).toEqual([
+        'batch-a',
+        'batch-b',
+      ]);
+      expect(commands[0]!.createdAt).toBeLessThan(commands[1]!.createdAt);
+      expect(commands.map((command) => command.commandId)).toEqual([...commandIds]);
+      expect(rows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            identity: expect.objectContaining({ localId: 'batch-a' }),
+            values: { id: 0, title: 'A' },
+          }),
+          expect.objectContaining({
+            identity: expect.objectContaining({ localId: 'batch-b' }),
+            values: { id: 0, title: 'B' },
+          }),
+        ]),
+      );
+    });
+
+    it('同一principalの複数scopeを1回のtransactionで受け付ける', async () => {
+      localSession = {
+        userId: 1,
+        scopes: [
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+        ],
+      };
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+
+      await service.enqueuePreparedBatch(
+        async () => [
+          prepared('scope-10', 'A'),
+          { ...prepared('scope-20', 'B'), request: { ...prepared('scope-20', 'B').request, scopeId: '20' } },
+        ],
+        { flush: false },
+      );
+
+      expect(transactReplica).toHaveBeenCalledTimes(1);
+      expect(commands.map(({ scopeId }) => scopeId)).toEqual(['10', '20']);
+    });
+
+    it('k番目のprepare/validation失敗では一切書き込まない', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+
+      await expect(
+        service.enqueuePreparedBatch(async () => {
+          throw new Error('prepare failed at second derive');
+        }),
+      ).rejects.toThrow('prepare failed at second derive');
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
+
+      await expect(
+        service.enqueuePreparedBatch(async () => [
+          prepared('batch-ok', 'ok'),
+          {
+            request: {
+              scopeId: '10',
+              aggregateType: 'documents',
+              identity: { kind: 'natural', naturalKey: { favFrom: 1, favTo: 'x' } },
+              operation: 'documents.create',
+              payload: {},
+              optimisticValue: { id: 0, title: 'bad' },
+            },
+          },
+        ]),
+      ).rejects.toThrow('requires generated identity');
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
+    });
+
+    it('aggregateまたはreplica footprintの重複を拒否して書き込まない', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+      const companion = (localId: string): OfflineReplicaRow => ({
+        userId: 1,
+        scopeId: '10',
+        sourceKey: 'document_views',
+        identity: { kind: 'local', localId },
+        values: { title: localId },
+        confirmedValues: null,
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'confirmed',
+      });
+
+      await expect(
+        service.enqueuePreparedBatch(async () => [prepared('same-aggregate', 'one'), prepared('same-aggregate', 'two')], {
+          flush: false,
+        }),
+      ).rejects.toThrow('overlapping aggregate intents');
+      expect(transactReplica).not.toHaveBeenCalled();
+
+      await expect(
+        service.enqueuePreparedBatch(
+          async () => [prepared('doc-a', 'A', companion('shared-view')), prepared('doc-b', 'B', companion('shared-view'))],
+          { flush: false },
+        ),
+      ).rejects.toThrow('overlapping replica footprints');
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
+    });
+
+    it('空batchを拒否し、件数とシリアライズbyteを合算してcapacity判定する', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+
+      await expect(service.enqueuePreparedBatch(async () => [], { flush: false })).rejects.toThrow(
+        'Prepared offline batch must contain at least one command.',
+      );
+      expect(transactReplica).not.toHaveBeenCalled();
+
+      options.outboxLimits = { maxCommandsPerUser: 1 };
+      await expect(
+        service.enqueuePreparedBatch(async () => [prepared('cap-a', 'A'), prepared('cap-b', 'B')], { flush: false }),
+      ).rejects.toMatchObject({ name: 'OfflineOutboxCapacityError', reason: 'command_count' });
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
+
+      options.outboxLimits = { maxBytesPerUser: 1 };
+      await expect(
+        service.enqueuePreparedBatch(async () => [prepared('byte-a', 'A'), prepared('byte-b', 'B')], { flush: false }),
+      ).rejects.toMatchObject({ name: 'OfflineOutboxCapacityError', reason: 'serialized_bytes' });
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
+    });
+
+    it('generation/session失効では永続化前に失敗し状態を残さない', async () => {
+      let releasePrepare: (() => void) | undefined;
+      let prepareStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        prepareStarted = resolve;
+      });
+      const gate = new Promise<void>((resolve) => {
+        releasePrepare = resolve;
+      });
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+
+      const enqueue = service.enqueuePreparedBatch(async () => {
+        prepareStarted?.();
+        await gate;
+        return [prepared('revoked-batch', 'stale')];
+      });
+      await started;
+
+      service.revokeSession();
+      releasePrepare?.();
+
+      await expect(enqueue).rejects.toThrow('Offline session changed');
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
+    });
   });
 
   it('local sessionはoutboxへenqueueできるがremote session確立までは送信しない', async () => {
