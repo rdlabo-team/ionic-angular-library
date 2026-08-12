@@ -19,6 +19,7 @@ import {
   defineReplicaEntity,
   integer,
   generatedId,
+  localOnly,
   sha256OfflineReplicaSchema,
   text,
 } from './offline-replica-schema';
@@ -44,9 +45,17 @@ const testItemEntity = defineReplicaEntity<TestItemSelect>()({
   },
 });
 
+const testViewEntity = defineReplicaEntity<{ title: string }>()({
+  table: 'test_views',
+  sourceKey: 'test_views',
+  scope: 'user',
+  identity: localOnly(),
+  fields: { title: text() },
+});
+
 const replicaSchema = defineOfflineReplicaSchema({
   version: 1,
-  entities: [testItemEntity],
+  entities: [testItemEntity, testViewEntity],
   migrations: [],
 });
 
@@ -149,6 +158,7 @@ describe('OfflineReplicaPullService', () => {
           provide: OFFLINE_COMMAND_EXECUTOR,
           useValue: {
             execute: vi.fn(),
+            rebasePendingCommands: vi.fn(() => null),
             withServerRevision: (command: OfflineCommand, revision: string | number) => ({
               ...command,
               baseRevision: revision,
@@ -638,6 +648,84 @@ describe('OfflineReplicaPullService', () => {
         retryAt: null,
       }),
     ]);
+  });
+
+  it('rebase policyは他端末revisionへintentを移しconflictにしない', async () => {
+    const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
+    const rebase = vi.spyOn(executor, 'rebasePendingCommands').mockImplementation((commands, confirmed, revision) => ({
+      commands: commands.map((command) => ({
+        ...command,
+        baseRevision: revision,
+        optimisticValue: { ...(confirmed as Record<string, unknown>), title: 'Rebased delta' },
+      })),
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_views',
+          identity: { kind: 'local', localId: 'view-42' },
+          values: { title: 'Rebased view' },
+          confirmedValues: { title: 'Remote view' },
+          serverRevision: null,
+          fetchedAt: 9,
+          syncState: 'pending',
+        },
+      ],
+    }));
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-rebase', remoteId: 42 },
+          values: { id: 42, title: 'Local delta' },
+          confirmedValues: { id: 42, title: 'Old confirmed' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'pending',
+        },
+      ],
+      putCommands: [
+        {
+          ...scope,
+          commandId: 'cmd-rebase',
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-rebase' },
+          operation: 'test_items.delta',
+          payload: { delta: 1 },
+          optimisticValue: { id: 42, title: 'Local delta' },
+          payloadHash: 'hash',
+          baseRevision: 1,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 1,
+          lastErrorCode: null,
+        },
+      ],
+    });
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Remote truth', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
+
+    await service.pull(scope);
+
+    expect(rebase).toHaveBeenCalledWith(
+      [expect.objectContaining({ commandId: 'cmd-rebase' })],
+      expect.objectContaining({ title: 'Remote truth' }),
+      9,
+      [],
+    );
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-rebase'))).resolves.toMatchObject({
+      values: { title: 'Rebased delta' },
+      confirmedValues: { title: 'Remote truth' },
+      serverRevision: 9,
+      syncState: 'pending',
+    });
+    await expect(repository.getCommands(scope)).resolves.toEqual([
+      expect.objectContaining({ commandId: 'cmd-rebase', baseRevision: 9, state: 'pending', lastErrorCode: null }),
+    ]);
+    await expect(
+      repository.getReplicaRow(scope, 'test_views', { kind: 'local', localId: 'view-42' }),
+    ).resolves.toMatchObject({ values: { title: 'Rebased view' }, confirmedValues: { title: 'Remote view' } });
   });
 
   it('remote tombstone conflictはpending commandをremote_deleted conflictへ遷移する', async () => {

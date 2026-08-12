@@ -1,5 +1,5 @@
 import { InjectionToken } from '@angular/core';
-import type { OfflineCommand, OfflineScope } from './offline-repository';
+import type { OfflineCommand, OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
 import type { OfflineCommandIdentity, OfflinePrincipalId, OfflineReplicaIdentity } from './offline-identity';
 import type { OfflineGeneratedRemoteId, OfflineNaturalKey } from './offline-replica-schema';
 
@@ -32,6 +32,18 @@ export interface OfflineCommandExecutor {
   execute(command: OfflineCommand, target: OfflineCommandTarget): Promise<OfflineCommandResult>;
   withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
   /**
+   * Reapplies a complete aggregate's pending intents to a newer confirmed
+   * value. Return null when any intent is revision-sensitive. The returned
+   * commands must preserve identity and order while updating baseRevision and
+   * optimisticValue. Without this hook, revision changes conflict by default.
+   */
+  rebasePendingCommands?(
+    commands: readonly OfflineCommand[],
+    confirmedValues: unknown,
+    revision: string | number,
+    companionRows: readonly OfflineReplicaRow[],
+  ): OfflinePendingRebase | null | Promise<OfflinePendingRebase | null>;
+  /**
    * Whether this transport error authoritatively proves that this idempotency
    * key did not commit. Returning true may clear an ambiguity retained from an
    * earlier response-loss attempt and expose normal conflict resolution.
@@ -42,6 +54,14 @@ export interface OfflineCommandExecutor {
    * Required only when `clearRemoteId` completes while later commands remain.
    */
   withoutServerRevision?(command: OfflineCommand): OfflineCommand;
+}
+
+export interface OfflinePendingRebase {
+  /** Commands rebased in their original durable FIFO order. */
+  commands: readonly OfflineCommand[];
+  /** Product-owned companion rows rematerialized from the new confirmed value. */
+  putRows?: readonly OfflineReplicaRow[];
+  removeRows?: readonly OfflineReplicaRowKey[];
 }
 
 /** DI token for the product-specific command transport adapter. */

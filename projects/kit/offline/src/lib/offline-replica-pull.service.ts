@@ -170,10 +170,23 @@ export class OfflineReplicaPullService {
             continue;
           }
 
-          const conflicted = related.some((command) => command.baseRevision !== change.serverRevision);
+          const revisionChanged = related.some((command) => command.baseRevision !== change.serverRevision);
+          const rebase = revisionChanged
+            ? ((await this.#executor.rebasePendingCommands?.(
+                related,
+                confirmedValues,
+                change.serverRevision,
+                await this.#currentCompanionRows(scope, related),
+              )) ?? null)
+            : null;
+          this.#assertRebasedCommands(related, rebase?.commands ?? null);
+          const conflicted = revisionChanged && rebase === null;
+          for (const command of rebase?.commands ?? []) putCommands.set(command.commandId, command);
+          putRows.push(...(rebase?.putRows ?? []));
+          removeRows.push(...(rebase?.removeRows ?? []));
           putRows.push({
             ...existing,
-            values: hasPending ? existing.values : confirmedValues,
+            values: rebase?.commands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
             confirmedValues,
             serverRevision: change.serverRevision,
             fetchedAt: Date.now(),
@@ -222,6 +235,37 @@ export class OfflineReplicaPullService {
     for (const [index, change] of page.changes.entries()) {
       this.#assertPullChange(change, index);
     }
+  }
+
+  #assertRebasedCommands(
+    original: readonly OfflineCommand[],
+    rebased: readonly OfflineCommand[] | null,
+  ): void {
+    if (rebased === null) return;
+    if (
+      rebased.length !== original.length ||
+      rebased.some((command, index) => command.commandId !== original[index]?.commandId)
+    ) {
+      throw new Error('Rebased offline commands must preserve aggregate command identity and order.');
+    }
+  }
+
+  async #currentCompanionRows(
+    scope: OfflineScope,
+    commands: readonly OfflineCommand[],
+  ): Promise<OfflineReplicaRow[]> {
+    const keys = new Map(
+      commands.flatMap((command) =>
+        (command.optimisticCompanions ?? []).map((companion) => [
+          `${companion.key.sourceKey}:${JSON.stringify(companion.key.identity)}`,
+          companion.key,
+        ] as const),
+      ),
+    );
+    const rows = await Promise.all(
+      [...keys.values()].map((key) => this.#repository.getReplicaRow(scope, key.sourceKey, key.identity)),
+    );
+    return rows.filter((row): row is OfflineReplicaRow => row !== null);
   }
 
   #assertPullChange(change: unknown, index: number): void {
