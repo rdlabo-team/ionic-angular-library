@@ -292,7 +292,7 @@ export class OfflineReplicaPullService {
     const keys = new Map(
       commands.flatMap((command) =>
         (command.optimisticCompanions ?? []).map((companion) => [
-          `${companion.key.sourceKey}:${JSON.stringify(companion.key.identity)}`,
+          this.#rowKey(companion.key),
           companion.key,
         ] as const),
       ),
