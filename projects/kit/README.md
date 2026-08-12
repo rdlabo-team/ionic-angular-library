@@ -398,7 +398,7 @@ declare dummy adapters.
 Mutations may still call `OfflineSyncService.enqueue` explicitly. A product that must keep ordinary HTTP services
 offline-unaware can instead register `mutationPolicies`; a matched `POST` / `PUT` / `PATCH` / `DELETE` is prepared
 locally before transport and returns an optimistic response while the Outbox owns remote replay.
-Web storage uses Ionic Storage; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
+Web storage uses Ionic Storage and supports `readCacheOnly` only. `synchronized` fails fast on Web because the current repository has no cross-tab lock; iOS and Android use encrypted `@capacitor-community/sqlite`. Importing either the
 primary entry point or `/offline` does not pull the optional native SQLite plugin into web-only applications.
 
 For cold-start offline route access, `OfflineCoordinatorService.activateOfflineSession()` restores only a manifest
