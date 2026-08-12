@@ -653,10 +653,9 @@ describe('OfflineReplicaPullService', () => {
   it('rebase policyは他端末revisionへintentを移しconflictにしない', async () => {
     const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
     const rebase = vi.spyOn(executor, 'rebasePendingCommands').mockImplementation((commands, confirmed, revision) => ({
-      commands: commands.map((command) => ({
-        ...command,
-        baseRevision: revision,
-        optimisticValue: { ...(confirmed as Record<string, unknown>), title: 'Rebased delta' },
+      optimisticValues: commands.map(() => ({
+        ...(confirmed as Record<string, unknown>),
+        title: 'Rebased delta',
       })),
       putRows: [
         {
@@ -721,7 +720,14 @@ describe('OfflineReplicaPullService', () => {
       syncState: 'pending',
     });
     await expect(repository.getCommands(scope)).resolves.toEqual([
-      expect.objectContaining({ commandId: 'cmd-rebase', baseRevision: 9, state: 'pending', lastErrorCode: null }),
+      expect.objectContaining({
+        commandId: 'cmd-rebase',
+        payload: { delta: 1 },
+        payloadHash: 'hash',
+        baseRevision: 9,
+        state: 'pending',
+        lastErrorCode: null,
+      }),
     ]);
     await expect(
       repository.getReplicaRow(scope, 'test_views', { kind: 'local', localId: 'view-42' }),

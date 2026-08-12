@@ -179,14 +179,21 @@ export class OfflineReplicaPullService {
                 await this.#currentCompanionRows(scope, related),
               )) ?? null)
             : null;
-          this.#assertRebasedCommands(related, rebase?.commands ?? null);
+          this.#assertRebasedValues(related, rebase?.optimisticValues ?? null);
           const conflicted = revisionChanged && rebase === null;
-          for (const command of rebase?.commands ?? []) putCommands.set(command.commandId, command);
+          const rebasedCommands = rebase
+            ? related.map((command, index) => ({
+                ...command,
+                baseRevision: change.serverRevision,
+                optimisticValue: rebase.optimisticValues[index],
+              }))
+            : [];
+          for (const command of rebasedCommands) putCommands.set(command.commandId, command);
           putRows.push(...(rebase?.putRows ?? []));
           removeRows.push(...(rebase?.removeRows ?? []));
           putRows.push({
             ...existing,
-            values: rebase?.commands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
+            values: rebasedCommands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
             confirmedValues,
             serverRevision: change.serverRevision,
             fetchedAt: Date.now(),
@@ -237,16 +244,13 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #assertRebasedCommands(
+  #assertRebasedValues(
     original: readonly OfflineCommand[],
-    rebased: readonly OfflineCommand[] | null,
+    optimisticValues: readonly unknown[] | null,
   ): void {
-    if (rebased === null) return;
-    if (
-      rebased.length !== original.length ||
-      rebased.some((command, index) => command.commandId !== original[index]?.commandId)
-    ) {
-      throw new Error('Rebased offline commands must preserve aggregate command identity and order.');
+    if (optimisticValues === null) return;
+    if (optimisticValues.length !== original.length) {
+      throw new Error('Rebased offline values must match the aggregate command count.');
     }
   }
 

@@ -34,8 +34,9 @@ export interface OfflineCommandExecutor {
   /**
    * Reapplies a complete aggregate's pending intents to a newer confirmed
    * value. Return null when any intent is revision-sensitive. The returned
-   * commands must preserve identity and order while updating baseRevision and
-   * optimisticValue. Without this hook, revision changes conflict by default.
+   * values correspond to the original FIFO command order. Kit alone updates
+   * command metadata; payload and idempotency identity remain immutable.
+   * Without this hook, revision changes conflict by default.
    */
   rebasePendingCommands?(
     commands: readonly OfflineCommand[],
@@ -57,8 +58,8 @@ export interface OfflineCommandExecutor {
 }
 
 export interface OfflinePendingRebase {
-  /** Commands rebased in their original durable FIFO order. */
-  commands: readonly OfflineCommand[];
+  /** Recomputed optimistic values in the original durable FIFO order. */
+  optimisticValues: readonly unknown[];
   /** Product-owned companion rows rematerialized from the new confirmed value. */
   putRows?: readonly OfflineReplicaRow[];
   removeRows?: readonly OfflineReplicaRowKey[];
