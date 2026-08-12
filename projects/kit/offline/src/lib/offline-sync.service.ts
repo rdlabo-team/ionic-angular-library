@@ -309,6 +309,67 @@ export class OfflineSyncService {
   }
 
   /**
+   * Atomically rematerializes every unresolved intent for one aggregate.
+   *
+   * This is the conflict-recovery boundary for ordered intent chains: the old
+   * chain remains durable until every replacement has been prepared and the
+   * complete chain can be committed in one replica transaction.
+   */
+  replacePreparedAggregate<T>(
+    commandId: string,
+    prepare: (
+      repository: OfflineRepository,
+      commands: readonly OfflineCommand[],
+    ) => Promise<readonly PreparedOfflineCommand<T>[]>,
+    options: PreparedOfflineBatchOptions = {},
+  ): Promise<readonly string[]> {
+    const generation = this.#generation;
+    return this.#serializeReplicaMutation(async () => {
+      await this.initialize();
+      if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared aggregate replacement.');
+      const knownCommands = await this.#readKnownCommands();
+      const selected = knownCommands.find((command) => command.commandId === commandId);
+      if (!selected) throw new Error(`Offline command ${commandId} no longer exists.`);
+      const aggregateKey = this.#aggregateKey(selected);
+      const replaced = knownCommands.filter((command) => this.#aggregateKey(command) === aggregateKey);
+      this.#assertDiscardable(replaced);
+      const prepared = await prepare(this.#repository, replaced);
+      if (prepared.length !== replaced.length) {
+        throw new Error('Offline aggregate replacement must preserve the ordered intent count.');
+      }
+      const session = await this.#beginEnqueueSession(generation);
+      const materializations: MaterializedOfflineEnqueue[] = [];
+      for (const [index, entry] of prepared.entries()) {
+        this.#assertEnqueueScope(session, entry.request.scopeId);
+        materializations.push(
+          await this.#materializeEnqueue(
+            session.userId,
+            entry.request,
+            entry.replicaTransaction,
+            replaced[index],
+          ),
+        );
+      }
+      const retained = knownCommands.filter((command) => !replaced.some((item) => item.commandId === command.commandId));
+      this.#assertDistinctBatchFootprints(materializations, retained, true);
+      await this.#assertOutboxCapacity(
+        session.userId,
+        materializations.map((item) => item.command),
+        replaced.map((command) => command.commandId),
+        knownCommands,
+      );
+      options.assertCurrent?.();
+      await this.#commitMaterializedEnqueues(
+        materializations,
+        generation,
+        options,
+        replaced.map((command) => command.commandId),
+      );
+      return materializations.map((item) => item.command.commandId);
+    });
+  }
+
+  /**
    * Serializes a product-owned replica projection with enqueue and command ACK
    * reconciliation. For read/derive/write cache updates, prefer
    * `runSerializedReplicaMutation` so the read is serialized as well.
@@ -352,7 +413,7 @@ export class OfflineSyncService {
     const currentCommands = await this.#commandsForUser(session.userId);
     const retainedCommands = replaced ? currentCommands.filter((command) => command.commandId !== replaced.commandId) : currentCommands;
     this.#assertDistinctBatchFootprints([materialization], retainedCommands);
-    await this.#assertOutboxCapacity(session.userId, [materialization.command], replaced?.commandId, currentCommands);
+    await this.#assertOutboxCapacity(session.userId, [materialization.command], replaced ? [replaced.commandId] : undefined, currentCommands);
     await this.#commitMaterializedEnqueues([materialization], generation, options, replaced ? [replaced.commandId] : undefined);
     return materialization.command.commandId;
   }
@@ -538,7 +599,11 @@ export class OfflineSyncService {
     return { command, optimisticRow, optimisticCompanions };
   }
 
-  #assertDistinctBatchFootprints(entries: readonly MaterializedOfflineEnqueue[], existingCommands: readonly OfflineCommand[]): void {
+  #assertDistinctBatchFootprints(
+    entries: readonly MaterializedOfflineEnqueue[],
+    existingCommands: readonly OfflineCommand[],
+    allowOneAggregate = false,
+  ): void {
     const aggregates = new Set<string>();
     const replicaKeys = new Set<string>();
     const existingFootprints = new Map<string, string>();
@@ -548,7 +613,7 @@ export class OfflineSyncService {
     }
     for (const entry of entries) {
       const aggregate = this.#aggregateKey(entry.command);
-      if (aggregates.has(aggregate)) {
+      if (aggregates.has(aggregate) && !allowOneAggregate) {
         throw new Error('Prepared offline batch contains overlapping aggregate intents.');
       }
       aggregates.add(aggregate);
@@ -556,7 +621,7 @@ export class OfflineSyncService {
         this.#replicaRowKey(entry.optimisticRow),
         ...entry.optimisticCompanions.map((companion) => this.#replicaRowKey(companion.key)),
       ]) {
-        if (replicaKeys.has(key)) {
+        if (replicaKeys.has(key) && !allowOneAggregate) {
           throw new Error('Prepared offline batch contains overlapping replica footprints.');
         }
         const existingAggregate = existingFootprints.get(key);
@@ -700,12 +765,12 @@ export class OfflineSyncService {
   async #assertOutboxCapacity(
     userId: OfflinePrincipalId,
     newCommands: readonly OfflineCommand[],
-    excludingCommandId?: string,
+    excludingCommandIds?: readonly string[],
     knownCommands?: readonly OfflineCommand[],
   ): Promise<void> {
     const currentCommands = knownCommands ?? (await this.#commandsForUser(userId));
-    const commands = excludingCommandId
-      ? currentCommands.filter((candidate) => candidate.commandId !== excludingCommandId)
+    const commands = excludingCommandIds
+      ? currentCommands.filter((candidate) => !excludingCommandIds.includes(candidate.commandId))
       : currentCommands;
     const maxCommands = this.#options.outboxLimits?.maxCommandsPerUser ?? DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER;
     const maxBytes = this.#options.outboxLimits?.maxBytesPerUser ?? DEFAULT_MAX_OUTBOX_BYTES_PER_USER;
