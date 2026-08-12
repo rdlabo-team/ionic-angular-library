@@ -73,6 +73,13 @@ export interface PreparedOfflineCommand<T = unknown> {
   replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>;
 }
 
+/** Validated optimistic projection ready for a single Outbox commit. */
+interface MaterializedOfflineEnqueue {
+  command: OfflineCommand;
+  optimisticRow: OfflineReplicaRow;
+  optimisticCompanions: readonly OfflineOptimisticReplicaCompanion[];
+}
+
 /** Raised before persistence when an outbox payload is not losslessly JSON serializable. */
 export class OfflinePayloadValidationError extends Error {
   constructor(message = 'Offline command payload must contain only JSON values') {
@@ -246,6 +253,27 @@ export class OfflineSyncService {
   }
 
   /**
+   * Prepares and commits multiple Outbox commands as one serialized replica
+   * transaction under a single captured session generation.
+   *
+   * All entries are prepared and validated before any write. Empty batches,
+   * overlapping aggregate intents, and overlapping replica footprints are
+   * rejected with no durable state change.
+   */
+  enqueuePreparedBatch<T>(
+    prepare: (repository: OfflineRepository) => Promise<readonly PreparedOfflineCommand<T>[]>,
+    options: { flush?: boolean } = {},
+  ): Promise<readonly string[]> {
+    const generation = this.#generation;
+    return this.#serializeReplicaMutation(async () => {
+      await this.initialize();
+      if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared batch enqueue.');
+      const prepared = await prepare(this.#repository);
+      return this.#enqueuePreparedBatch(prepared, options, generation);
+    });
+  }
+
+  /**
    * Atomically replaces a resolved durable command with a newly prepared command.
    *
    * Use this after an authoritative conflict read. The old intent remains durable
@@ -313,6 +341,38 @@ export class OfflineSyncService {
     replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
     replaced?: OfflineCommand,
   ): Promise<string> {
+    const session = await this.#beginEnqueueSession(generation);
+    this.#assertEnqueueScope(session, request.scopeId);
+    const materialization = await this.#materializeEnqueue(session.userId, request, replicaTransaction, replaced);
+    await this.#assertOutboxCapacity(session.userId, [materialization.command], replaced?.commandId);
+    await this.#commitMaterializedEnqueues([materialization], generation, options, replaced ? [replaced.commandId] : undefined);
+    return materialization.command.commandId;
+  }
+
+  async #enqueuePreparedBatch<T>(
+    prepared: readonly PreparedOfflineCommand<T>[],
+    options: { flush?: boolean },
+    generation: number,
+  ): Promise<readonly string[]> {
+    if (prepared.length === 0) {
+      throw new Error('Prepared offline batch must contain at least one command.');
+    }
+    const session = await this.#beginEnqueueSession(generation);
+    const materializations: MaterializedOfflineEnqueue[] = [];
+    for (const entry of prepared) {
+      this.#assertEnqueueScope(session, entry.request.scopeId);
+      materializations.push(await this.#materializeEnqueue(session.userId, entry.request, entry.replicaTransaction));
+    }
+    this.#assertDistinctBatchFootprints(materializations);
+    await this.#assertOutboxCapacity(
+      session.userId,
+      materializations.map((item) => item.command),
+    );
+    await this.#commitMaterializedEnqueues(materializations, generation, options);
+    return materializations.map((item) => item.command.commandId);
+  }
+
+  async #beginEnqueueSession(generation: number): Promise<OfflineSyncSession> {
     await this.initialize();
     if (this.#options.mode === 'readCacheOnly') {
       throw new Error('This offline provider is configured as a read-only cache and cannot enqueue commands.');
@@ -320,12 +380,27 @@ export class OfflineSyncService {
     const session = await this.#getLocalSession();
     if (!session) throw new Error('Cannot enqueue an offline command without an authenticated user');
     this.#assertSessionPrincipalBoundary(session);
-    const userId = session.userId;
-    this.#setActiveUser(userId);
-    const scope = { userId, scopeId: request.scopeId };
-    if (!session.scopes.some((candidate) => candidate.userId === userId && candidate.scopeId === request.scopeId)) {
-      throw new Error(`Offline sync session does not include scope "${request.scopeId}".`);
+    this.#setActiveUser(session.userId);
+    if (!this.#isCurrent(generation)) {
+      throw new Error('Offline session changed before the command could be persisted');
     }
+    return session;
+  }
+
+  #assertEnqueueScope(session: OfflineSyncSession, scopeId: string): void {
+    if (!session.scopes.some((candidate) => candidate.userId === session.userId && candidate.scopeId === scopeId)) {
+      throw new Error(`Offline sync session does not include scope "${scopeId}".`);
+    }
+    this.noteScope({ userId: session.userId, scopeId });
+  }
+
+  async #materializeEnqueue<T>(
+    userId: OfflinePrincipalId,
+    request: EnqueueOfflineCommand<T>,
+    replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
+    replaced?: OfflineCommand,
+  ): Promise<MaterializedOfflineEnqueue> {
+    const scope = { userId, scopeId: request.scopeId };
     this.noteScope(scope);
     const commandIdentity = offlineCommandLookupIdentity(request.identity);
     const normalized = await this.#normalizeEnqueueRequest(scope, request, commandIdentity);
@@ -442,19 +517,50 @@ export class OfflineSyncService {
     const optimisticCompanions = replaced ? this.#replacementCompanions(replaced, preparedCompanions) : preparedCompanions;
     if (replicaTransaction) this.#canonicalJson(replicaTransaction);
     if (optimisticCompanions.length > 0) command = { ...command, optimisticCompanions };
-    await this.#assertOutboxCapacity(userId, command, replaced?.commandId);
+    return { command, optimisticRow, optimisticCompanions };
+  }
+
+  #assertDistinctBatchFootprints(entries: readonly MaterializedOfflineEnqueue[]): void {
+    const aggregates = new Set<string>();
+    const replicaKeys = new Set<string>();
+    for (const entry of entries) {
+      const aggregate = this.#aggregateKey(entry.command);
+      if (aggregates.has(aggregate)) {
+        throw new Error('Prepared offline batch contains overlapping aggregate intents.');
+      }
+      aggregates.add(aggregate);
+      for (const key of [
+        this.#replicaRowKey(entry.optimisticRow),
+        ...entry.optimisticCompanions.map((companion) => this.#replicaRowKey(companion.key)),
+      ]) {
+        if (replicaKeys.has(key)) {
+          throw new Error('Prepared offline batch contains overlapping replica footprints.');
+        }
+        replicaKeys.add(key);
+      }
+    }
+  }
+
+  async #commitMaterializedEnqueues(
+    entries: readonly MaterializedOfflineEnqueue[],
+    generation: number,
+    options: { flush?: boolean },
+    removeCommandIds?: readonly string[],
+  ): Promise<void> {
     if (generation !== this.#generation) {
       throw new Error('Offline session changed before the command could be persisted');
     }
     await this.#repository.transactReplica({
-      putRows: [optimisticRow, ...optimisticCompanions.flatMap((companion) => (companion.after ? [companion.after] : []))],
-      removeRows: optimisticCompanions.flatMap((companion) => (companion.after ? [] : [companion.key])),
-      putCommands: [command],
-      removeCommandIds: replaced ? [replaced.commandId] : undefined,
+      putRows: entries.flatMap((entry) => [
+        entry.optimisticRow,
+        ...entry.optimisticCompanions.flatMap((companion) => (companion.after ? [companion.after] : [])),
+      ]),
+      removeRows: entries.flatMap((entry) => entry.optimisticCompanions.flatMap((companion) => (companion.after ? [] : [companion.key]))),
+      putCommands: entries.map((entry) => entry.command),
+      removeCommandIds,
     });
-    await this.#refreshState();
+    await this.#refreshState().catch((error) => this.#reportError(error));
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
-    return commandId;
   }
 
   async #prepareOptimisticCompanions(
@@ -553,7 +659,11 @@ export class OfflineSyncService {
     return `${canonicalOfflinePrincipalId(key.userId)}:${key.scopeId}:${key.sourceKey}:${canonicalOfflineReplicaIdentity(key.identity)}`;
   }
 
-  async #assertOutboxCapacity(userId: OfflinePrincipalId, command: OfflineCommand, excludingCommandId?: string): Promise<void> {
+  async #assertOutboxCapacity(
+    userId: OfflinePrincipalId,
+    newCommands: readonly OfflineCommand[],
+    excludingCommandId?: string,
+  ): Promise<void> {
     const currentCommands = this.#repository.getCommandsForUser
       ? await this.#repository.getCommandsForUser(userId)
       : (
@@ -567,10 +677,10 @@ export class OfflineSyncService {
     const maxCommands = this.#options.outboxLimits?.maxCommandsPerUser ?? DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER;
     const maxBytes = this.#options.outboxLimits?.maxBytesPerUser ?? DEFAULT_MAX_OUTBOX_BYTES_PER_USER;
     const currentBytes = this.#serializedOutboxBytes(commands);
-    if (commands.length >= maxCommands) {
+    if (commands.length + newCommands.length > maxCommands) {
       throw new OfflineOutboxCapacityError('command_count', commands.length, currentBytes);
     }
-    const nextBytes = currentBytes + this.#serializedOutboxBytes([command]);
+    const nextBytes = this.#serializedOutboxBytes([...commands, ...newCommands]);
     if (nextBytes > maxBytes) {
       throw new OfflineOutboxCapacityError('serialized_bytes', commands.length, currentBytes);
     }
