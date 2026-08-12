@@ -73,6 +73,12 @@ export interface PreparedOfflineCommand<T = unknown> {
   replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>;
 }
 
+export interface PreparedOfflineBatchOptions {
+  flush?: boolean;
+  /** Product identity/scope lease asserted after all async preparation and immediately before the durable commit. */
+  assertCurrent?: () => void;
+}
+
 /** Validated optimistic projection ready for a single Outbox commit. */
 interface MaterializedOfflineEnqueue {
   command: OfflineCommand;
@@ -262,7 +268,7 @@ export class OfflineSyncService {
    */
   enqueuePreparedBatch<T>(
     prepare: (repository: OfflineRepository) => Promise<readonly PreparedOfflineCommand<T>[]>,
-    options: { flush?: boolean } = {},
+    options: PreparedOfflineBatchOptions = {},
   ): Promise<readonly string[]> {
     const generation = this.#generation;
     return this.#serializeReplicaMutation(async () => {
@@ -351,23 +357,38 @@ export class OfflineSyncService {
 
   async #enqueuePreparedBatch<T>(
     prepared: readonly PreparedOfflineCommand<T>[],
-    options: { flush?: boolean },
+    options: PreparedOfflineBatchOptions,
     generation: number,
   ): Promise<readonly string[]> {
     if (prepared.length === 0) {
       throw new Error('Prepared offline batch must contain at least one command.');
     }
     const session = await this.#beginEnqueueSession(generation);
+    const currentCommands = await this.#commandsForUser(session.userId);
+    this.#rememberCreatedAt(currentCommands);
+    const firstCreatedAt = Math.max(Date.now(), this.#lastCommandCreatedAt + 1);
+    this.#lastCommandCreatedAt = firstCreatedAt + prepared.length - 1;
     const materializations: MaterializedOfflineEnqueue[] = [];
-    for (const entry of prepared) {
+    for (const [index, entry] of prepared.entries()) {
       this.#assertEnqueueScope(session, entry.request.scopeId);
-      materializations.push(await this.#materializeEnqueue(session.userId, entry.request, entry.replicaTransaction));
+      materializations.push(
+        await this.#materializeEnqueue(
+          session.userId,
+          entry.request,
+          entry.replicaTransaction,
+          undefined,
+          firstCreatedAt + index,
+        ),
+      );
     }
     this.#assertDistinctBatchFootprints(materializations);
     await this.#assertOutboxCapacity(
       session.userId,
       materializations.map((item) => item.command),
+      undefined,
+      currentCommands,
     );
+    options.assertCurrent?.();
     await this.#commitMaterializedEnqueues(materializations, generation, options);
     return materializations.map((item) => item.command.commandId);
   }
@@ -399,6 +420,7 @@ export class OfflineSyncService {
     request: EnqueueOfflineCommand<T>,
     replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
     replaced?: OfflineCommand,
+    createdAt?: number,
   ): Promise<MaterializedOfflineEnqueue> {
     const scope = { userId, scopeId: request.scopeId };
     this.noteScope(scope);
@@ -422,7 +444,7 @@ export class OfflineSyncService {
       state: 'pending',
       attempts: 0,
       retryAt: null,
-      createdAt: replaced?.createdAt ?? (await this.#nextCommandCreatedAt(userId)),
+      createdAt: replaced?.createdAt ?? createdAt ?? (await this.#nextCommandCreatedAt(userId)),
       lastErrorCode: null,
     };
     if (
@@ -663,14 +685,9 @@ export class OfflineSyncService {
     userId: OfflinePrincipalId,
     newCommands: readonly OfflineCommand[],
     excludingCommandId?: string,
+    knownCommands?: readonly OfflineCommand[],
   ): Promise<void> {
-    const currentCommands = this.#repository.getCommandsForUser
-      ? await this.#repository.getCommandsForUser(userId)
-      : (
-          await Promise.all(
-            [...this.#knownScopes.values()].filter((scope) => scope.userId === userId).map((scope) => this.#repository.getCommands(scope)),
-          )
-        ).flat();
+    const currentCommands = knownCommands ?? (await this.#commandsForUser(userId));
     const commands = excludingCommandId
       ? currentCommands.filter((candidate) => candidate.commandId !== excludingCommandId)
       : currentCommands;
@@ -684,6 +701,16 @@ export class OfflineSyncService {
     if (nextBytes > maxBytes) {
       throw new OfflineOutboxCapacityError('serialized_bytes', commands.length, currentBytes);
     }
+  }
+
+  async #commandsForUser(userId: OfflinePrincipalId): Promise<OfflineCommand[]> {
+    return this.#repository.getCommandsForUser
+      ? this.#repository.getCommandsForUser(userId)
+      : (
+          await Promise.all(
+            [...this.#knownScopes.values()].filter((scope) => scope.userId === userId).map((scope) => this.#repository.getCommands(scope)),
+          )
+        ).flat();
   }
 
   #serializedOutboxBytes(commands: readonly OfflineCommand[]): number {
@@ -1420,9 +1447,7 @@ export class OfflineSyncService {
   }
 
   async #nextCommandCreatedAt(userId: OfflinePrincipalId): Promise<number> {
-    const commands = this.#repository.getCommandsForUser
-      ? await this.#repository.getCommandsForUser(userId)
-      : await this.#readKnownCommands();
+    const commands = await this.#commandsForUser(userId);
     this.#rememberCreatedAt(commands);
     const createdAt = Math.max(Date.now(), this.#lastCommandCreatedAt + 1);
     this.#lastCommandCreatedAt = createdAt;

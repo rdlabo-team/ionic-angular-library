@@ -553,6 +553,8 @@ describe('OfflineSyncService', () => {
     it('2件の成功は1回のtransactReplicaでFIFO createdAtを永続化する', async () => {
       const repository = TestBed.inject(OFFLINE_REPOSITORY);
       const transactReplica = vi.mocked(repository.transactReplica);
+      const getCommandsForUser = vi.mocked(repository.getCommandsForUser!);
+      getCommandsForUser.mockClear();
 
       const commandIds = await service.enqueuePreparedBatch(async () => [prepared('batch-a', 'A'), prepared('batch-b', 'B')], {
         flush: false,
@@ -560,6 +562,7 @@ describe('OfflineSyncService', () => {
 
       expect(commandIds).toHaveLength(2);
       expect(transactReplica).toHaveBeenCalledTimes(1);
+      expect(getCommandsForUser).toHaveBeenCalledTimes(1);
       expect(commands).toHaveLength(2);
       expect(commands.map((command) => (command.identity.kind === 'generated' ? command.identity.localId : ''))).toEqual([
         'batch-a',
@@ -579,6 +582,26 @@ describe('OfflineSyncService', () => {
           }),
         ]),
       );
+    });
+
+    it('product lease失効時は全prepare後もcommit直前にbatch全体を拒否する', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+      const assertCurrent = vi.fn(() => {
+        throw new Error('product principal changed');
+      });
+
+      await expect(
+        service.enqueuePreparedBatch(async () => [prepared('lease-a', 'A'), prepared('lease-b', 'B')], {
+          flush: false,
+          assertCurrent,
+        }),
+      ).rejects.toThrow('product principal changed');
+
+      expect(assertCurrent).toHaveBeenCalledOnce();
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toEqual([]);
     });
 
     it('同一principalの複数scopeを1回のtransactionで受け付ける', async () => {
