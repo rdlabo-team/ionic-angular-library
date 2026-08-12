@@ -5341,6 +5341,35 @@ describe('OfflineSyncService', () => {
       expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
     });
 
+    it('pulls every durable attention scope during partial recovery and clears recovered attentions', async () => {
+      pullAttentions = [
+        { userId: 1, scopeId: '10', reason: 'authorization_required', status: 401 },
+        { userId: 1, scopeId: '20', reason: 'authorization_required', status: 401 },
+      ];
+
+      await service.refreshSession(['10']);
+
+      await vi.waitFor(() => expect(pull.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+      await vi.waitFor(() => expect(service.pullAttentions()).toEqual([]));
+    });
+
+    it('prunes durable attentions for scopes removed from the active session', async () => {
+      pullAttentions = [
+        { userId: 1, scopeId: '10', reason: 'authorization_required', status: 403 },
+        { userId: 1, scopeId: '99', reason: 'authorization_required', status: 403 },
+      ];
+
+      await service.refreshSession(['10']);
+
+      await vi.waitFor(() =>
+        expect(service.pullAttentions()).toEqual([{ userId: 1, scopeId: '10', reason: 'authorization_required', status: 403 }]),
+      );
+      expect(pullAttentions.some((attention) => attention.scopeId === '99')).toBe(false);
+    });
+
     it('reconnect automatic flush respects foreground policy', async () => {
       await service.refreshSession(['10']);
       await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));

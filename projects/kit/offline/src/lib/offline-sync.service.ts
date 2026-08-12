@@ -1101,10 +1101,12 @@ export class OfflineSyncService {
   #scopesForPartialPull(foregroundScopeIds: readonly string[], commands: readonly OfflineCommand[]): OfflineScope[] {
     const foregroundScopeSet = new Set(foregroundScopeIds);
     const outboxScopeKeys = new Set(commands.map((command) => this.#scopeKey({ userId: command.userId, scopeId: command.scopeId })));
+    const attentionScopeKeys = new Set(this.#pullAttentions().map((attention) => this.#scopeKey(attention)));
     return [...this.#knownScopes.values()].filter(
       (scope) =>
         foregroundScopeSet.has(scope.scopeId) ||
         outboxScopeKeys.has(this.#scopeKey(scope)) ||
+        attentionScopeKeys.has(this.#scopeKey(scope)) ||
         this.#pendingPullScopes.has(this.#scopeKey(scope)),
     );
   }
@@ -1605,6 +1607,7 @@ export class OfflineSyncService {
     this.#knownScopes.clear();
     for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
     await this.#restorePendingPullScopes(session.userId, generation);
+    await this.#prunePullAttentions(session.userId, generation);
     return true;
   }
 
@@ -1622,6 +1625,7 @@ export class OfflineSyncService {
     this.#knownScopes.clear();
     for (const scope of session.scopes) this.#knownScopes.set(this.#scopeKey(scope), scope);
     await this.#restorePendingPullScopes(session.userId, generation);
+    await this.#prunePullAttentions(session.userId, generation);
     return true;
   }
 
@@ -1770,6 +1774,17 @@ export class OfflineSyncService {
     }
     if (revoked.length > 0) {
       await this.#repository.transactReplica({ removeReconciliationScopes: revoked });
+    }
+  }
+
+  async #prunePullAttentions(userId: OfflinePrincipalId, generation: number): Promise<void> {
+    if (!this.#repository.getPullAttentions) return;
+    const attentions = await this.#repository.getPullAttentions(userId);
+    if (!this.#isCurrent(generation) || this.#activeUserId !== userId) return;
+    const currentKeys = new Set(this.#knownScopes.keys());
+    const revoked = attentions.filter((attention) => !currentKeys.has(this.#scopeKey(attention)));
+    if (revoked.length > 0) {
+      await this.#repository.transactReplica({ removePullAttentions: revoked });
     }
   }
 
