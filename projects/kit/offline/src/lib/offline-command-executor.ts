@@ -1,5 +1,5 @@
 import { InjectionToken } from '@angular/core';
-import type { OfflineCommand, OfflineScope } from './offline-repository';
+import type { OfflineCommand, OfflineOptimisticReplicaCompanion, OfflineReplicaRow, OfflineScope } from './offline-repository';
 import type { OfflineCommandIdentity, OfflinePrincipalId, OfflineReplicaIdentity } from './offline-identity';
 import type { OfflineGeneratedRemoteId, OfflineNaturalKey } from './offline-replica-schema';
 
@@ -32,6 +32,19 @@ export interface OfflineCommandExecutor {
   execute(command: OfflineCommand, target: OfflineCommandTarget): Promise<OfflineCommandResult>;
   withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
   /**
+   * Reapplies a complete aggregate's pending intents to a newer confirmed
+   * value. Return null when any intent is revision-sensitive. The returned
+   * values correspond to the original FIFO command order. Kit alone updates
+   * command metadata; payload and idempotency identity remain immutable.
+   * Without this hook, revision changes conflict by default.
+   */
+  rebasePendingCommands?(
+    commands: readonly OfflineCommand[],
+    confirmedValues: unknown,
+    revision: string | number,
+    companionRows: readonly OfflineReplicaRow[],
+  ): OfflinePendingRebase | null | Promise<OfflinePendingRebase | null>;
+  /**
    * Whether this transport error authoritatively proves that this idempotency
    * key did not commit. Returning true may clear an ambiguity retained from an
    * earlier response-loss attempt and expose normal conflict resolution.
@@ -42,6 +55,20 @@ export interface OfflineCommandExecutor {
    * Required only when `clearRemoteId` completes while later commands remain.
    */
   withoutServerRevision?(command: OfflineCommand): OfflineCommand;
+}
+
+/** Product projection result after safely replaying pending intents onto a newer confirmed revision. */
+export interface OfflinePendingRebase {
+  /** Recomputed projections in the original durable FIFO order. */
+  steps: readonly OfflinePendingRebaseStep[];
+}
+
+/** Projection state produced for one immutable durable command in FIFO order. */
+export interface OfflinePendingRebaseStep {
+  /** Recomputed full aggregate value after this command's intent is applied. */
+  optimisticValue: unknown;
+  /** Same footprint as the original command, rematerialized from the new confirmed value. */
+  optimisticCompanions?: readonly OfflineOptimisticReplicaCompanion[];
 }
 
 /** DI token for the product-specific command transport adapter. */
