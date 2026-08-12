@@ -88,6 +88,13 @@ export class OfflineReplicaPullService {
         const scopeCommands = await this.#repository.getCommands(scope);
         const userCommands = this.#repository.getCommandsForUser ? await this.#repository.getCommandsForUser(scope.userId) : scopeCommands;
         const changes = this.#collapseChanges(page.changes);
+        const projection = await this.#projector?.project({
+          scope,
+          changes,
+          commands: scopeCommands,
+          repository: this.#repository,
+        });
+        this.#assertProjection(scope, projection);
         const putRows: OfflineReplicaRow[] = [];
         const removeRows: OfflineReplicaRowKey[] = [];
         const rebasedPutRows: OfflineReplicaRow[] = [];
@@ -202,7 +209,7 @@ export class OfflineReplicaPullService {
                   related,
                   confirmedValues,
                   change.serverRevision,
-                  await this.#currentCompanionRows(related),
+                  await this.#projectedCompanionRows(related, projection),
                 )) ?? null)
               : null;
           this.#assertRebasedSteps(related, rebase?.steps ?? null);
@@ -239,13 +246,6 @@ export class OfflineReplicaPullService {
           }
         }
 
-        const projection = await this.#projector?.project({
-          scope,
-          changes,
-          commands: scopeCommands,
-          repository: this.#repository,
-        });
-        this.#assertProjection(scope, projection);
         const finalRows = this.#mergeRowMutations([
           { putRows, removeRows },
           { putRows: projection?.putRows ?? [], removeRows: projection?.removeRows ?? [] },
@@ -386,6 +386,25 @@ export class OfflineReplicaPullService {
       }),
     );
     return rows.filter((row): row is OfflineReplicaRow => row !== null);
+  }
+
+  async #projectedCompanionRows(
+    commands: readonly OfflineCommand[],
+    projection: { putRows?: readonly OfflineReplicaRow[]; removeRows?: readonly OfflineReplicaRowKey[] } | undefined,
+  ): Promise<OfflineReplicaRow[]> {
+    const footprint = new Set(
+      commands.flatMap((command) => (command.optimisticCompanions ?? []).map((companion) => this.#rowKey(companion.key))),
+    );
+    const rows = new Map((await this.#currentCompanionRows(commands)).map((row) => [this.#rowKey(row), row]));
+    for (const row of projection?.removeRows ?? []) {
+      const key = this.#rowKey(row);
+      if (footprint.has(key)) rows.delete(key);
+    }
+    for (const row of projection?.putRows ?? []) {
+      const key = this.#rowKey(row);
+      if (footprint.has(key)) rows.set(key, row);
+    }
+    return [...rows.values()];
   }
 
   #assertPullChange(change: unknown, index: number): void {

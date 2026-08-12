@@ -997,7 +997,14 @@ describe('OfflineReplicaPullService', () => {
       });
       projector.project.mockResolvedValue(
         projectionMutation === 'stale put'
-          ? { putRows: [oldView] }
+          ? {
+              putRows: [
+                {
+                  ...oldView,
+                  confirmedValues: { title: 'Remote view' },
+                },
+              ],
+            }
           : { removeRows: [{ ...scope, sourceKey: 'test_views', identity: { kind: 'local', localId: 'view-42' } }] },
       );
       pull.mockResolvedValueOnce(page([itemChange(42, 'Remote truth', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
@@ -1008,7 +1015,14 @@ describe('OfflineReplicaPullService', () => {
         [expect.objectContaining({ commandId: 'cmd-rebase' })],
         expect.objectContaining({ title: 'Remote truth' }),
         9,
-        [expect.objectContaining({ values: { title: 'Old optimistic view' } })],
+        projectionMutation === 'stale put'
+          ? [
+              expect.objectContaining({
+                values: { title: 'Old optimistic view' },
+                confirmedValues: { title: 'Remote view' },
+              }),
+            ]
+          : [],
       );
       await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-rebase'))).resolves.toMatchObject({
         values: { title: 'Rebased delta' },
@@ -1033,6 +1047,91 @@ describe('OfflineReplicaPullService', () => {
       await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v1' });
     },
   );
+
+  it('passes only each aggregate canonical companion footprint to its rebase reducer', async () => {
+    const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
+    const view = (remoteId: number, title: string): OfflineReplicaRow => ({
+      ...scope,
+      sourceKey: 'test_views',
+      identity: { kind: 'local', localId: `view-${remoteId}` },
+      values: { title: `Optimistic ${title}` },
+      confirmedValues: { title: `Old ${title}` },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'pending',
+    });
+    const views = [view(42, 'A'), view(43, 'B')];
+    const command = (remoteId: number, companion: OfflineReplicaRow): OfflineCommand => ({
+      ...scope,
+      commandId: `cmd-${remoteId}`,
+      aggregateType: 'test_items',
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: `local-${remoteId}` },
+      operation: 'test_items.delta',
+      payload: { delta: 1 },
+      optimisticValue: { id: remoteId, title: `Local ${remoteId}` },
+      optimisticCompanions: [{ key: companion, before: null, after: companion }],
+      payloadHash: `hash-${remoteId}`,
+      baseRevision: 1,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: remoteId,
+      lastErrorCode: null,
+    });
+    const commands = [command(42, views[0]!), command(43, views[1]!)];
+    const rebase = vi.spyOn(executor, 'rebasePendingCommands').mockImplementation((related, confirmed, revision, companions) => ({
+      steps: related.map((current) => ({
+        optimisticValue: confirmed,
+        optimisticCompanions: [
+          {
+            key: current.optimisticCompanions![0]!.key,
+            before: current.optimisticCompanions![0]!.before,
+            after: { ...companions[0]!, serverRevision: revision },
+          },
+        ],
+      })),
+    }));
+    await repository.transactReplica({
+      putRows: [
+        ...views,
+        ...[42, 43].map((remoteId) => ({
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated' as const, localId: `local-${remoteId}`, remoteId },
+          values: { id: remoteId, title: `Local ${remoteId}` },
+          confirmedValues: { id: remoteId, title: `Old ${remoteId}` },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'pending' as const,
+        })),
+      ],
+      putCommands: commands,
+    });
+    projector.project.mockResolvedValue({
+      putRows: views.map((row, index) => ({
+        ...row,
+        confirmedValues: { title: `Remote ${index === 0 ? 'A' : 'B'}` },
+      })),
+    });
+    pull.mockResolvedValueOnce(
+      page(
+        [
+          itemChange(42, 'Remote 42', { serverRevision: 9 }),
+          itemChange(43, 'Remote 43', { serverRevision: 10 }),
+        ],
+        { nextCursor: 'cursor-v2' },
+      ),
+    );
+
+    await service.pull(scope);
+
+    expect(rebase).toHaveBeenCalledTimes(2);
+    expect(rebase.mock.calls.map((call) => call[3].map((row) => row.identity))).toEqual([
+      [{ kind: 'local', localId: 'view-42' }],
+      [{ kind: 'local', localId: 'view-43' }],
+    ]);
+  });
 
   it.each(['conflict', 'rejected', 'blocked_auth'] as const)('%s commandは自動rebaseせずattention stateを維持する', async (state) => {
     const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
