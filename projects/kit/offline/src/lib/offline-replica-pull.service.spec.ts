@@ -230,9 +230,7 @@ describe('OfflineReplicaPullService', () => {
       ],
     });
     const transact = vi.spyOn(repository, 'transactReplica');
-    pull.mockResolvedValueOnce(
-      page([itemChange(42, 'Fresh')], { nextCursor: 'snapshot-1', rebaselineRequired: true }),
-    );
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Fresh')], { nextCursor: 'snapshot-1', rebaselineRequired: true }));
 
     await service.pull(scope);
 
@@ -326,7 +324,7 @@ describe('OfflineReplicaPullService', () => {
           optimisticCompanions: [
             {
               key: {
-                ...scope,
+                ...otherScope,
                 sourceKey: 'test_items',
                 identity: { kind: 'generated', localId: 'shared', remoteId: null },
               },
@@ -444,9 +442,7 @@ describe('OfflineReplicaPullService', () => {
     });
     pull.mockResolvedValueOnce(page([itemChange(42, 'Fresh')], { nextCursor: 'cursor-v1' }));
 
-    await expect(service.pull(scope)).rejects.toThrow(
-      'Offline replica projector may only mutate localOnly source "test_items".',
-    );
+    await expect(service.pull(scope)).rejects.toThrow('Offline replica projector may only mutate localOnly source "test_items".');
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
   });
 
@@ -918,151 +914,174 @@ describe('OfflineReplicaPullService', () => {
     ]);
   });
 
-  it('rebase policyは他端末revisionへintentを移しconflictにしない', async () => {
-    const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
-    const rebase = vi.spyOn(executor, 'rebasePendingCommands').mockImplementation((commands, confirmed, revision) => ({
-      steps: commands.map(() => ({
-        optimisticValue: { ...(confirmed as Record<string, unknown>), title: 'Rebased delta' },
-        optimisticCompanions: [{
-          key: {
-            ...scope,
-            sourceKey: 'test_views',
-            identity: { kind: 'local', localId: 'view-42' },
-          },
-          before: null,
-          after: {
-          ...scope,
-          sourceKey: 'test_views',
-          identity: { kind: 'local', localId: 'view-42' },
-          values: { title: 'Rebased view' },
-          confirmedValues: { title: 'Remote view' },
-          serverRevision: null,
-          fetchedAt: 9,
-          syncState: 'pending',
-          },
-        }],
-      })),
-    }));
-    await repository.transactReplica({
-      putRows: [
-        {
-          ...scope,
-          sourceKey: 'test_items',
-          identity: { kind: 'generated', localId: '019d-rebase', remoteId: 42 },
-          values: { id: 42, title: 'Local delta' },
-          confirmedValues: { id: 42, title: 'Old confirmed' },
-          serverRevision: 1,
-          fetchedAt: 1,
-          syncState: 'pending',
-        },
-      ],
-      putCommands: [
-        {
-          ...scope,
-          commandId: 'cmd-rebase',
-          aggregateType: 'test_items',
-          sourceKey: 'test_items',
-          identity: { kind: 'generated', localId: '019d-rebase' },
-          operation: 'test_items.delta',
-          payload: { delta: 1 },
-          optimisticValue: { id: 42, title: 'Local delta' },
-          optimisticCompanions: [{
-            key: { ...scope, sourceKey: 'test_views', identity: { kind: 'local', localId: 'view-42' } },
-            before: null,
-            after: null,
-          }],
-          payloadHash: 'hash',
-          baseRevision: 1,
-          state: 'pending',
-          attempts: 0,
-          retryAt: null,
-          createdAt: 1,
-          lastErrorCode: null,
-        },
-      ],
-    });
-    pull.mockResolvedValueOnce(page([itemChange(42, 'Remote truth', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
-
-    await service.pull(scope);
-
-    expect(rebase).toHaveBeenCalledWith(
-      [expect.objectContaining({ commandId: 'cmd-rebase' })],
-      expect.objectContaining({ title: 'Remote truth' }),
-      9,
-      [],
-    );
-    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-rebase'))).resolves.toMatchObject({
-      values: { title: 'Rebased delta' },
-      confirmedValues: { title: 'Remote truth' },
-      serverRevision: 9,
-      syncState: 'pending',
-    });
-    await expect(repository.getCommands(scope)).resolves.toEqual([
-      expect.objectContaining({
-        commandId: 'cmd-rebase',
-        payload: { delta: 1 },
-        payloadHash: 'hash',
-        baseRevision: 9,
-        state: 'pending',
-        lastErrorCode: null,
-      }),
-    ]);
-    await expect(
-      repository.getReplicaRow(scope, 'test_views', { kind: 'local', localId: 'view-42' }),
-    ).resolves.toMatchObject({ values: { title: 'Rebased view' }, confirmedValues: { title: 'Remote view' } });
-  });
-
-  it.each(['conflict', 'rejected', 'blocked_auth'] as const)(
-    '%s commandは自動rebaseせずattention stateを維持する',
-    async (state) => {
+  it.each(['stale put', 'remove'] as const)(
+    'rebase overlay wins over projector %s for the same canonical row',
+    async (projectionMutation) => {
       const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
-      const rebase = vi.spyOn(executor, 'rebasePendingCommands');
+      const otherScope = { userId: scope.userId, scopeId: '20' };
+      const oldView: OfflineReplicaRow = {
+        ...scope,
+        sourceKey: 'test_views',
+        identity: { kind: 'local', localId: 'view-42' },
+        values: { title: 'Old optimistic view' },
+        confirmedValues: { title: 'Old confirmed view' },
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'pending',
+      };
+      const rebase = vi.spyOn(executor, 'rebasePendingCommands').mockImplementation((commands, confirmed, revision) => ({
+        steps: commands.map(() => ({
+          optimisticValue: { ...(confirmed as Record<string, unknown>), title: 'Rebased delta' },
+          optimisticCompanions: [
+            {
+              key: {
+                ...otherScope,
+                sourceKey: 'test_views',
+                identity: { kind: 'local', localId: 'view-42' },
+              },
+              before: null,
+              after: {
+                ...otherScope,
+                sourceKey: 'test_views',
+                identity: { kind: 'local', localId: 'view-42' },
+                values: { title: 'Rebased view' },
+                confirmedValues: { title: 'Remote view' },
+                serverRevision: null,
+                fetchedAt: 9,
+                syncState: 'pending',
+              },
+            },
+          ],
+        })),
+      }));
       await repository.transactReplica({
         putRows: [
           {
             ...scope,
             sourceKey: 'test_items',
-            identity: { kind: 'generated', localId: `019d-${state}`, remoteId: 42 },
-            values: { id: 42, title: 'Local' },
-            confirmedValues: { id: 42, title: 'Old' },
+            identity: { kind: 'generated', localId: '019d-rebase', remoteId: 42 },
+            values: { id: 42, title: 'Local delta' },
+            confirmedValues: { id: 42, title: 'Old confirmed' },
             serverRevision: 1,
             fetchedAt: 1,
-            syncState: state,
+            syncState: 'pending',
           },
+          oldView,
         ],
         putCommands: [
           {
             ...scope,
-            commandId: `cmd-${state}`,
+            commandId: 'cmd-rebase',
             aggregateType: 'test_items',
             sourceKey: 'test_items',
-            identity: { kind: 'generated', localId: `019d-${state}` },
+            identity: { kind: 'generated', localId: '019d-rebase' },
             operation: 'test_items.delta',
             payload: { delta: 1 },
-            optimisticValue: { id: 42, title: 'Local' },
+            optimisticValue: { id: 42, title: 'Local delta' },
+            optimisticCompanions: [
+              {
+                key: { ...otherScope, sourceKey: 'test_views', identity: { kind: 'local', localId: 'view-42' } },
+                before: null,
+                after: oldView,
+              },
+            ],
             payloadHash: 'hash',
             baseRevision: 1,
-            state,
-            attempts: 1,
+            state: 'pending',
+            attempts: 0,
             retryAt: null,
             createdAt: 1,
-            lastErrorCode: state,
+            lastErrorCode: null,
           },
         ],
       });
-      pull.mockResolvedValueOnce(page([itemChange(42, 'Remote', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
+      projector.project.mockResolvedValue(
+        projectionMutation === 'stale put'
+          ? { putRows: [oldView] }
+          : { removeRows: [{ ...scope, sourceKey: 'test_views', identity: { kind: 'local', localId: 'view-42' } }] },
+      );
+      pull.mockResolvedValueOnce(page([itemChange(42, 'Remote truth', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
 
       await service.pull(scope);
 
-      expect(rebase).not.toHaveBeenCalled();
-      await expect(repository.getCommands(scope)).resolves.toEqual([
-        expect.objectContaining({ commandId: `cmd-${state}`, state: 'conflict', lastErrorCode: 'remote_revision' }),
-      ]);
-      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity(`019d-${state}`))).resolves.toMatchObject({
-        syncState: 'conflict',
+      expect(rebase).toHaveBeenCalledWith(
+        [expect.objectContaining({ commandId: 'cmd-rebase' })],
+        expect.objectContaining({ title: 'Remote truth' }),
+        9,
+        [expect.objectContaining({ values: { title: 'Old optimistic view' } })],
+      );
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-rebase'))).resolves.toMatchObject({
+        values: { title: 'Rebased delta' },
+        confirmedValues: { title: 'Remote truth' },
+        serverRevision: 9,
+        syncState: 'pending',
       });
+      await expect(repository.getCommands(scope)).resolves.toEqual([
+        expect.objectContaining({
+          commandId: 'cmd-rebase',
+          payload: { delta: 1 },
+          payloadHash: 'hash',
+          baseRevision: 9,
+          state: 'pending',
+          lastErrorCode: null,
+        }),
+      ]);
+      await expect(repository.getReplicaRow(scope, 'test_views', { kind: 'local', localId: 'view-42' })).resolves.toMatchObject({
+        values: { title: 'Rebased view' },
+        confirmedValues: { title: 'Remote view' },
+      });
+      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v1' });
     },
   );
+
+  it.each(['conflict', 'rejected', 'blocked_auth'] as const)('%s commandは自動rebaseせずattention stateを維持する', async (state) => {
+    const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
+    const rebase = vi.spyOn(executor, 'rebasePendingCommands');
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: `019d-${state}`, remoteId: 42 },
+          values: { id: 42, title: 'Local' },
+          confirmedValues: { id: 42, title: 'Old' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: state,
+        },
+      ],
+      putCommands: [
+        {
+          ...scope,
+          commandId: `cmd-${state}`,
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: `019d-${state}` },
+          operation: 'test_items.delta',
+          payload: { delta: 1 },
+          optimisticValue: { id: 42, title: 'Local' },
+          payloadHash: 'hash',
+          baseRevision: 1,
+          state,
+          attempts: 1,
+          retryAt: null,
+          createdAt: 1,
+          lastErrorCode: state,
+        },
+      ],
+    });
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Remote', { serverRevision: 9 })], { nextCursor: 'cursor-v1' }));
+
+    await service.pull(scope);
+
+    expect(rebase).not.toHaveBeenCalled();
+    await expect(repository.getCommands(scope)).resolves.toEqual([
+      expect.objectContaining({ commandId: `cmd-${state}`, state: 'conflict', lastErrorCode: 'remote_revision' }),
+    ]);
+    await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity(`019d-${state}`))).resolves.toMatchObject({
+      syncState: 'conflict',
+    });
+  });
 
   it('rebase reducer receives a pending-delete companion from its own scope', async () => {
     const otherScope = { userId: scope.userId, scopeId: '20' };
@@ -1118,12 +1137,9 @@ describe('OfflineReplicaPullService', () => {
 
     await service.pull(scope);
 
-    expect(rebase).toHaveBeenCalledWith(
-      expect.any(Array),
-      expect.anything(),
-      9,
-      [expect.objectContaining({ scopeId: '20', visibility: 'pending_delete' })],
-    );
+    expect(rebase).toHaveBeenCalledWith(expect.any(Array), expect.anything(), 9, [
+      expect.objectContaining({ scopeId: '20', visibility: 'pending_delete' }),
+    ]);
   });
 
   it('remote tombstone conflictはpending commandをremote_deleted conflictへ遷移する', async () => {

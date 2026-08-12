@@ -9,9 +9,7 @@ import {
   type OfflineReplicaPullPage,
 } from './offline-replica-puller';
 import {
-  canonicalOfflinePrincipalId,
   canonicalOfflineCommandIdentity,
-  canonicalOfflineReplicaIdentity,
   commandIdentityFromReplicaIdentity,
   commandIdentityMatchesReplicaRow,
   offlineGeneratedReplicaIdentity,
@@ -28,6 +26,7 @@ import {
 } from './offline-replica-schema';
 import {
   OFFLINE_REPOSITORY,
+  canonicalOfflineReplicaRowKey,
   type OfflineCommand,
   type OfflineReplicaRow,
   type OfflineReplicaRowKey,
@@ -91,6 +90,8 @@ export class OfflineReplicaPullService {
         const changes = this.#collapseChanges(page.changes);
         const putRows: OfflineReplicaRow[] = [];
         const removeRows: OfflineReplicaRowKey[] = [];
+        const rebasedPutRows: OfflineReplicaRow[] = [];
+        const rebasedRemoveRows: OfflineReplicaRowKey[] = [];
         const putCommands = new Map<string, OfflineCommand>();
         const removeCommandIds = new Set<string>();
         if (rebaselinePending || page.rebaselineRequired) {
@@ -193,17 +194,17 @@ export class OfflineReplicaPullService {
 
           const revisionChanged = related.some((command) => command.baseRevision !== change.serverRevision);
           const rebaseEligible = related.every(
-            (command) =>
-              (command.state === 'pending' || command.state === 'retry_wait') && command.serverCommitUnknown !== true,
+            (command) => (command.state === 'pending' || command.state === 'retry_wait') && command.serverCommitUnknown !== true,
           );
-          const rebase = revisionChanged && rebaseEligible
-            ? ((await this.#executor.rebasePendingCommands?.(
-                related,
-                confirmedValues,
-                change.serverRevision,
-                await this.#currentCompanionRows(related),
-              )) ?? null)
-            : null;
+          const rebase =
+            revisionChanged && rebaseEligible
+              ? ((await this.#executor.rebasePendingCommands?.(
+                  related,
+                  confirmedValues,
+                  change.serverRevision,
+                  await this.#currentCompanionRows(related),
+                )) ?? null)
+              : null;
           this.#assertRebasedSteps(related, rebase?.steps ?? null);
           const conflicted = revisionChanged && rebase === null;
           const rebasedCommands = rebase
@@ -217,7 +218,7 @@ export class OfflineReplicaPullService {
               }))
             : [];
           for (const command of rebasedCommands) putCommands.set(command.commandId, command);
-          this.#appendRebasedCompanionRows(rebasedCommands, putRows, removeRows);
+          this.#appendRebasedCompanionRows(rebasedCommands, rebasedPutRows, rebasedRemoveRows);
           putRows.push({
             ...existing,
             values: rebasedCommands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
@@ -245,13 +246,14 @@ export class OfflineReplicaPullService {
           repository: this.#repository,
         });
         this.#assertProjection(scope, projection);
-        const finalPutRows = [...putRows, ...(projection?.putRows ?? [])];
-        const finalPutKeys = new Set(finalPutRows.map((row) => this.#rowKey(row)));
+        const finalRows = this.#mergeRowMutations([
+          { putRows, removeRows },
+          { putRows: projection?.putRows ?? [], removeRows: projection?.removeRows ?? [] },
+          { putRows: rebasedPutRows, removeRows: rebasedRemoveRows },
+        ]);
         await this.#repository.transactReplica({
-          putRows: finalPutRows,
-          removeRows: [...removeRows, ...(projection?.removeRows ?? [])].filter(
-            (row) => !finalPutKeys.has(this.#rowKey(row)),
-          ),
+          putRows: finalRows.putRows,
+          removeRows: finalRows.removeRows,
           putCommands: [...putCommands.values()],
           removeCommandIds: [...removeCommandIds],
           putCursors: [{ ...scope, cursor: page.nextCursor }],
@@ -271,25 +273,38 @@ export class OfflineReplicaPullService {
     }
   }
 
-  async #confirmedRowsForRebaseline(
-    scope: OfflineScope,
-    commands: readonly OfflineCommand[],
-  ): Promise<OfflineReplicaRowKey[]> {
+  async #confirmedRowsForRebaseline(scope: OfflineScope, commands: readonly OfflineCommand[]): Promise<OfflineReplicaRowKey[]> {
     const preserved = new Set(
-      commands.flatMap((command) =>
-        (command.optimisticCompanions ?? []).map((companion) => this.#rowKey(companion.key)),
-      ),
+      commands.flatMap((command) => (command.optimisticCompanions ?? []).map((companion) => this.#rowKey(companion.key))),
     );
     const rows = (
-      await Promise.all(
-        this.#options.replicaSchema.entities.map((entity) => this.#repository.getReplicaRows(scope, entity.sourceKey)),
-      )
+      await Promise.all(this.#options.replicaSchema.entities.map((entity) => this.#repository.getReplicaRows(scope, entity.sourceKey)))
     ).flat();
     return rows.filter((row) => row.syncState === 'confirmed' && !preserved.has(this.#rowKey(row)));
   }
 
   #rowKey(row: OfflineReplicaRowKey): string {
-    return `${canonicalOfflinePrincipalId(row.userId)}:${row.scopeId}:${row.sourceKey}:${canonicalOfflineReplicaIdentity(row.identity)}`;
+    return canonicalOfflineReplicaRowKey(this.#entitySchema(row.sourceKey), row);
+  }
+
+  #mergeRowMutations(
+    layers: readonly {
+      putRows: readonly OfflineReplicaRow[];
+      removeRows: readonly OfflineReplicaRowKey[];
+    }[],
+  ): { putRows: OfflineReplicaRow[]; removeRows: OfflineReplicaRowKey[] } {
+    const mutations = new Map<string, { kind: 'put'; row: OfflineReplicaRow } | { kind: 'remove'; row: OfflineReplicaRowKey }>();
+    for (const layer of layers) {
+      for (const row of layer.removeRows) mutations.set(this.#rowKey(row), { kind: 'remove', row });
+      for (const row of layer.putRows) mutations.set(this.#rowKey(row), { kind: 'put', row });
+    }
+    const putRows: OfflineReplicaRow[] = [];
+    const removeRows: OfflineReplicaRowKey[] = [];
+    for (const mutation of mutations.values()) {
+      if (mutation.kind === 'put') putRows.push(mutation.row);
+      else removeRows.push(mutation.row);
+    }
+    return { putRows, removeRows };
   }
 
   #assertProjection(
@@ -342,11 +357,7 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #appendRebasedCompanionRows(
-    commands: readonly OfflineCommand[],
-    putRows: OfflineReplicaRow[],
-    removeRows: OfflineReplicaRowKey[],
-  ): void {
+  #appendRebasedCompanionRows(commands: readonly OfflineCommand[], putRows: OfflineReplicaRow[], removeRows: OfflineReplicaRowKey[]): void {
     const latest = new Map<string, { key: OfflineReplicaRowKey; after: OfflineReplicaRow | null }>();
     for (const command of commands) {
       for (const companion of command.optimisticCompanions ?? []) {
@@ -362,10 +373,7 @@ export class OfflineReplicaPullService {
   async #currentCompanionRows(commands: readonly OfflineCommand[]): Promise<OfflineReplicaRow[]> {
     const keys = new Map(
       commands.flatMap((command) =>
-        (command.optimisticCompanions ?? []).map((companion) => [
-          this.#rowKey(companion.key),
-          companion.key,
-        ] as const),
+        (command.optimisticCompanions ?? []).map((companion) => [this.#rowKey(companion.key), companion.key] as const),
       ),
     );
     const rows = await Promise.all(
