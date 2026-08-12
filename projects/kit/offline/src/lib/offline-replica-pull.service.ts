@@ -2,7 +2,12 @@ import { inject, Injectable } from '@angular/core';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
-import { OFFLINE_REPLICA_PULLER, type OfflineReplicaChange, type OfflineReplicaPullPage } from './offline-replica-puller';
+import {
+  OFFLINE_REPLICA_PROJECTOR,
+  OFFLINE_REPLICA_PULLER,
+  type OfflineReplicaChange,
+  type OfflineReplicaPullPage,
+} from './offline-replica-puller';
 import {
   canonicalOfflineCommandIdentity,
   commandIdentityFromReplicaIdentity,
@@ -40,6 +45,7 @@ export class OfflineReplicaPullService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   readonly #puller = inject(OFFLINE_REPLICA_PULLER);
+  readonly #projector = inject(OFFLINE_REPLICA_PROJECTOR, { optional: true });
   readonly #executor = inject(OFFLINE_COMMAND_EXECUTOR);
   readonly #replicaMutations = inject(OfflineReplicaMutationCoordinator);
   #schemaHash: Promise<string> | null = null;
@@ -75,6 +81,9 @@ export class OfflineReplicaPullService {
         const removeRows: OfflineReplicaRowKey[] = [];
         const putCommands = new Map<string, OfflineCommand>();
         const removeCommandIds = new Set<string>();
+        if (page.rebaselineRequired) {
+          removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, scopeCommands)));
+        }
 
         for (const change of changes) {
           const schema = this.#entitySchema(change.sourceKey);
@@ -191,9 +200,16 @@ export class OfflineReplicaPullService {
           }
         }
 
+        const projection = await this.#projector?.project({
+          scope,
+          changes,
+          commands: scopeCommands,
+          repository: this.#repository,
+        });
+        this.#assertProjection(scope, projection);
         await this.#repository.transactReplica({
-          putRows,
-          removeRows,
+          putRows: [...putRows, ...(projection?.putRows ?? [])],
+          removeRows: [...removeRows, ...(projection?.removeRows ?? [])],
           putCommands: [...putCommands.values()],
           removeCommandIds: [...removeCommandIds],
           putCursors: [{ ...scope, cursor: page.nextCursor }],
@@ -209,6 +225,42 @@ export class OfflineReplicaPullService {
     }
   }
 
+  async #confirmedRowsForRebaseline(
+    scope: OfflineScope,
+    commands: readonly OfflineCommand[],
+  ): Promise<OfflineReplicaRowKey[]> {
+    const preserved = new Set(
+      commands.flatMap((command) =>
+        (command.optimisticCompanions ?? []).map((companion) => this.#rowKey(companion.key)),
+      ),
+    );
+    const rows = (
+      await Promise.all(
+        this.#options.replicaSchema.entities.map((entity) => this.#repository.getReplicaRows(scope, entity.sourceKey)),
+      )
+    ).flat();
+    return rows.filter((row) => row.syncState === 'confirmed' && !preserved.has(this.#rowKey(row)));
+  }
+
+  #rowKey(row: OfflineReplicaRowKey): string {
+    return `${row.userId}:${row.scopeId}:${row.sourceKey}:${JSON.stringify(row.identity)}`;
+  }
+
+  #assertProjection(
+    scope: OfflineScope,
+    projection: { putRows?: readonly OfflineReplicaRow[]; removeRows?: readonly OfflineReplicaRowKey[] } | undefined,
+  ): void {
+    for (const row of [...(projection?.putRows ?? []), ...(projection?.removeRows ?? [])]) {
+      const schema = this.#entitySchema(row.sourceKey);
+      if (schema.identity.kind !== 'localOnly') {
+        throw new Error(`Offline replica projector may only mutate localOnly source "${row.sourceKey}".`);
+      }
+      if (row.userId !== scope.userId || row.scopeId !== scope.scopeId || row.identity.kind !== 'local') {
+        throw new Error('Offline replica projector rows must use the current scope and local identity.');
+      }
+    }
+  }
+
   #assertPullPage(page: OfflineReplicaPullPage): void {
     if (typeof page.nextCursor !== 'string') {
       throw new Error('Offline replica pull page nextCursor must be a string.');
@@ -218,6 +270,9 @@ export class OfflineReplicaPullService {
     }
     if (!Array.isArray(page.changes)) {
       throw new Error('Offline replica pull page changes must be an array.');
+    }
+    if (page.rebaselineRequired !== undefined && typeof page.rebaselineRequired !== 'boolean') {
+      throw new Error('Offline replica pull page rebaselineRequired must be a boolean when present.');
     }
     for (const [index, change] of page.changes.entries()) {
       this.#assertPullChange(change, index);

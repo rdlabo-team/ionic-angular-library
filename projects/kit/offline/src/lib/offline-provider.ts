@@ -11,8 +11,8 @@ import { OfflineCoordinatorService } from './offline-coordinator.service';
 import { IonicOfflineRepository, OFFLINE_REPOSITORY, selectOfflineRepository } from './offline-repository';
 import type { OfflineMutationRequestPolicy, OfflineRequestPolicy } from './offline-request-policy';
 import { provideOfflineMutationRequestPolicy, provideOfflineRequestPolicy } from './offline-request-policy';
-import type { OfflineReplicaPuller } from './offline-replica-puller';
-import { OFFLINE_REPLICA_PULLER } from './offline-replica-puller';
+import type { OfflineReplicaProjector, OfflineReplicaPuller } from './offline-replica-puller';
+import { OFFLINE_REPLICA_PROJECTOR, OFFLINE_REPLICA_PULLER } from './offline-replica-puller';
 import { OfflineSessionService } from './offline-session.service';
 import {
   COMMUNITY_SQLITE,
@@ -29,6 +29,8 @@ interface ProvideOfflineOptionsBase extends OfflineKitOptions {
   commandHooks?: Type<OfflineCommandHooks>;
   /** Optional additional providers required by product adapters. */
   providers?: readonly Provider[];
+  /** Optional pure adapter for product-owned local-only projections applied inside the Kit pull transaction. */
+  replicaProjector?: Type<OfflineReplicaProjector>;
   /** Application-installed `@capacitor-community/sqlite` connection. Required only on iOS and Android. */
   sqliteConnection?: CommunitySqliteConnection;
 }
@@ -109,6 +111,9 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
       ? { provide: OFFLINE_REPLICA_PULLER, useExisting: options.replicaPuller }
       : { provide: OFFLINE_REPLICA_PULLER, useValue: READ_CACHE_ONLY_REPLICA_PULLER },
     ...(options.commandHooks ? [options.commandHooks, { provide: OFFLINE_COMMAND_HOOKS, useExisting: options.commandHooks }] : []),
+    ...(options.replicaProjector
+      ? [options.replicaProjector, { provide: OFFLINE_REPLICA_PROJECTOR, useExisting: options.replicaProjector }]
+      : []),
     ...options.requestPolicies.flatMap((policy) => provideOfflineRequestPolicy(policy)),
     ...(options.mutationPolicies ?? []).flatMap((policy) => provideOfflineMutationRequestPolicy(policy)),
     ...(options.providers ?? []),

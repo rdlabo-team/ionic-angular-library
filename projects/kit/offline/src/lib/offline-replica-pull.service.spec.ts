@@ -6,6 +6,7 @@ import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
+  OFFLINE_REPLICA_PROJECTOR,
   OFFLINE_REPLICA_PULLER,
   type OfflineReplicaChange,
   type OfflineReplicaPullPage,
@@ -19,6 +20,7 @@ import {
   defineReplicaEntity,
   integer,
   generatedId,
+  localOnly,
   sha256OfflineReplicaSchema,
   text,
 } from './offline-replica-schema';
@@ -44,9 +46,17 @@ const testItemEntity = defineReplicaEntity<TestItemSelect>()({
   },
 });
 
+const testViewEntity = defineReplicaEntity<{ title: string }>()({
+  table: 'test_views',
+  sourceKey: 'test_views',
+  scope: 'user',
+  identity: localOnly(),
+  fields: { title: text() },
+});
+
 const replicaSchema = defineOfflineReplicaSchema({
   version: 1,
-  entities: [testItemEntity],
+  entities: [testItemEntity, testViewEntity],
   migrations: [],
 });
 
@@ -91,6 +101,7 @@ describe('OfflineReplicaPullService', () => {
   let storage: MemoryStorage;
   let schemaHash: string;
   let pull: ReturnType<typeof vi.fn<(request: OfflineReplicaPullRequest) => Promise<OfflineReplicaPullPage>>>;
+  let projector: { project: ReturnType<typeof vi.fn> };
 
   function page(
     changes: readonly OfflineReplicaChange[],
@@ -99,6 +110,7 @@ describe('OfflineReplicaPullService', () => {
       hasMore?: boolean;
       schemaVersion?: number;
       schemaHash?: string;
+      rebaselineRequired?: boolean;
     } = {},
   ): OfflineReplicaPullPage {
     return {
@@ -107,6 +119,7 @@ describe('OfflineReplicaPullService', () => {
       changes,
       nextCursor: options.nextCursor ?? 'cursor-v1',
       hasMore: options.hasMore ?? false,
+      ...(options.rebaselineRequired ? { rebaselineRequired: true } : {}),
     };
   }
 
@@ -141,6 +154,7 @@ describe('OfflineReplicaPullService', () => {
         { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
         { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
         { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
+        { provide: OFFLINE_REPLICA_PROJECTOR, useValue: projector },
         {
           provide: OFFLINE_COMMAND_HOOKS,
           useValue: { entityType: (command: Pick<OfflineCommand, 'operation' | 'aggregateType'>) => command.aggregateType },
@@ -164,6 +178,7 @@ describe('OfflineReplicaPullService', () => {
   beforeEach(async () => {
     storage = new MemoryStorage();
     pull = vi.fn(async () => page([]));
+    projector = { project: vi.fn(async () => ({})) };
     await seedReplicaMetadata();
     configureTestBed();
     await repository.initialize();
@@ -181,6 +196,78 @@ describe('OfflineReplicaPullService', () => {
       schemaVersion: replicaSchema.version,
       schemaHash,
     });
+  });
+
+  it('applies rebaseline reset, derived projection, base rows, and cursor in one transaction', async () => {
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: 'stale', remoteId: 10 },
+          values: { id: 10, title: 'Stale' },
+          confirmedValues: { id: 10, title: 'Stale' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+      putCursors: [{ ...scope, cursor: 'expired' }],
+    });
+    projector.project.mockResolvedValue({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_views',
+          identity: { kind: 'local', localId: 'view-42' },
+          values: { title: 'Derived' },
+          confirmedValues: { title: 'Derived' },
+          serverRevision: null,
+          fetchedAt: 2,
+          syncState: 'confirmed',
+        },
+      ],
+    });
+    const transact = vi.spyOn(repository, 'transactReplica');
+    pull.mockResolvedValueOnce(
+      page([itemChange(42, 'Fresh')], { nextCursor: 'snapshot-1', rebaselineRequired: true }),
+    );
+
+    await service.pull(scope);
+
+    expect(transact).toHaveBeenCalledTimes(1);
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 10)).resolves.toBeNull();
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).resolves.toMatchObject({
+      values: { title: 'Fresh' },
+    });
+    await expect(repository.getReplicaRow(scope, 'test_views', { kind: 'local', localId: 'view-42' })).resolves.toMatchObject({
+      values: { title: 'Derived' },
+    });
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'snapshot-1' });
+  });
+
+  it('rejects projector attempts to mutate synchronized base rows without advancing the cursor', async () => {
+    await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
+    projector.project.mockResolvedValue({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: 'illegal', remoteId: 42 },
+          values: { id: 42, title: 'Illegal' },
+          confirmedValues: { id: 42, title: 'Illegal' },
+          serverRevision: 2,
+          fetchedAt: 2,
+          syncState: 'confirmed',
+        },
+      ],
+    });
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Fresh')], { nextCursor: 'cursor-v1' }));
+
+    await expect(service.pull(scope)).rejects.toThrow(
+      'Offline replica projector may only mutate localOnly source "test_items".',
+    );
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
   });
 
   it('does not hold the mutation lane during transport and preserves an enqueue completed before stale page apply', async () => {
@@ -384,6 +471,17 @@ describe('OfflineReplicaPullService', () => {
             nextCursor: 1 as unknown as string,
           }),
         'Offline replica pull page nextCursor must be a string.',
+      );
+    });
+
+    it('rejects a malformed rebaseline marker without advancing the cursor', async () => {
+      await expectPullRejectsPreservingCursor(
+        () =>
+          pull.mockResolvedValueOnce({
+            ...page([], { nextCursor: 'snapshot-1' }),
+            rebaselineRequired: 'yes',
+          } as unknown as OfflineReplicaPullPage),
+        'Offline replica pull page rebaselineRequired must be a boolean when present.',
       );
     });
 
