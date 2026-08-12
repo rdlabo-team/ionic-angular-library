@@ -1,5 +1,5 @@
 import { InjectionToken } from '@angular/core';
-import type { OfflineCommand, OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
+import type { OfflineCommand, OfflineOptimisticReplicaCompanion, OfflineReplicaRow, OfflineScope } from './offline-repository';
 import type { OfflineCommandIdentity, OfflinePrincipalId, OfflineReplicaIdentity } from './offline-identity';
 import type { OfflineGeneratedRemoteId, OfflineNaturalKey } from './offline-replica-schema';
 
@@ -58,11 +58,14 @@ export interface OfflineCommandExecutor {
 }
 
 export interface OfflinePendingRebase {
-  /** Recomputed optimistic values in the original durable FIFO order. */
-  optimisticValues: readonly unknown[];
-  /** Product-owned companion rows rematerialized from the new confirmed value. */
-  putRows?: readonly OfflineReplicaRow[];
-  removeRows?: readonly OfflineReplicaRowKey[];
+  /** Recomputed projections in the original durable FIFO order. */
+  steps: readonly OfflinePendingRebaseStep[];
+}
+
+export interface OfflinePendingRebaseStep {
+  optimisticValue: unknown;
+  /** Same footprint as the original command, rematerialized from the new confirmed value. */
+  optimisticCompanions?: readonly OfflineOptimisticReplicaCompanion[];
 }
 
 /** DI token for the product-specific command transport adapter. */

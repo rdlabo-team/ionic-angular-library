@@ -179,18 +179,20 @@ export class OfflineReplicaPullService {
                 await this.#currentCompanionRows(scope, related),
               )) ?? null)
             : null;
-          this.#assertRebasedValues(related, rebase?.optimisticValues ?? null);
+          this.#assertRebasedSteps(related, rebase?.steps ?? null);
           const conflicted = revisionChanged && rebase === null;
           const rebasedCommands = rebase
             ? related.map((command, index) => ({
                 ...command,
                 baseRevision: change.serverRevision,
-                optimisticValue: rebase.optimisticValues[index],
+                optimisticValue: rebase.steps[index]!.optimisticValue,
+                ...(rebase.steps[index]!.optimisticCompanions === undefined
+                  ? {}
+                  : { optimisticCompanions: rebase.steps[index]!.optimisticCompanions }),
               }))
             : [];
           for (const command of rebasedCommands) putCommands.set(command.commandId, command);
-          putRows.push(...(rebase?.putRows ?? []));
-          removeRows.push(...(rebase?.removeRows ?? []));
+          this.#appendRebasedCompanionRows(rebasedCommands, putRows, removeRows);
           putRows.push({
             ...existing,
             values: rebasedCommands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
@@ -244,14 +246,42 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #assertRebasedValues(
+  #assertRebasedSteps(
     original: readonly OfflineCommand[],
-    optimisticValues: readonly unknown[] | null,
+    steps: readonly { optimisticCompanions?: readonly { key: OfflineReplicaRowKey }[] }[] | null,
   ): void {
-    if (optimisticValues === null) return;
-    if (optimisticValues.length !== original.length) {
+    if (steps === null) return;
+    if (steps.length !== original.length) {
       throw new Error('Rebased offline values must match the aggregate command count.');
     }
+    for (const [index, step] of steps.entries()) {
+      const originalKeys = (original[index]?.optimisticCompanions ?? []).map((item) => this.#rowKey(item.key)).sort();
+      const rebasedKeys = (step.optimisticCompanions ?? []).map((item) => this.#rowKey(item.key)).sort();
+      if (JSON.stringify(originalKeys) !== JSON.stringify(rebasedKeys)) {
+        throw new Error('Rebased offline companions must preserve each command footprint.');
+      }
+    }
+  }
+
+  #appendRebasedCompanionRows(
+    commands: readonly OfflineCommand[],
+    putRows: OfflineReplicaRow[],
+    removeRows: OfflineReplicaRowKey[],
+  ): void {
+    const latest = new Map<string, { key: OfflineReplicaRowKey; after: OfflineReplicaRow | null }>();
+    for (const command of commands) {
+      for (const companion of command.optimisticCompanions ?? []) {
+        latest.set(this.#rowKey(companion.key), { key: companion.key, after: companion.after });
+      }
+    }
+    for (const { key, after } of latest.values()) {
+      if (after) putRows.push(after);
+      else removeRows.push(key);
+    }
+  }
+
+  #rowKey(key: OfflineReplicaRowKey): string {
+    return `${key.userId}:${key.scopeId}:${key.sourceKey}:${JSON.stringify(key.identity)}`;
   }
 
   async #currentCompanionRows(

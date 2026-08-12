@@ -653,12 +653,16 @@ describe('OfflineReplicaPullService', () => {
   it('rebase policyは他端末revisionへintentを移しconflictにしない', async () => {
     const executor = TestBed.inject(OFFLINE_COMMAND_EXECUTOR);
     const rebase = vi.spyOn(executor, 'rebasePendingCommands').mockImplementation((commands, confirmed, revision) => ({
-      optimisticValues: commands.map(() => ({
-        ...(confirmed as Record<string, unknown>),
-        title: 'Rebased delta',
-      })),
-      putRows: [
-        {
+      steps: commands.map(() => ({
+        optimisticValue: { ...(confirmed as Record<string, unknown>), title: 'Rebased delta' },
+        optimisticCompanions: [{
+          key: {
+            ...scope,
+            sourceKey: 'test_views',
+            identity: { kind: 'local', localId: 'view-42' },
+          },
+          before: null,
+          after: {
           ...scope,
           sourceKey: 'test_views',
           identity: { kind: 'local', localId: 'view-42' },
@@ -667,8 +671,9 @@ describe('OfflineReplicaPullService', () => {
           serverRevision: null,
           fetchedAt: 9,
           syncState: 'pending',
-        },
-      ],
+          },
+        }],
+      })),
     }));
     await repository.transactReplica({
       putRows: [
@@ -693,6 +698,11 @@ describe('OfflineReplicaPullService', () => {
           operation: 'test_items.delta',
           payload: { delta: 1 },
           optimisticValue: { id: 42, title: 'Local delta' },
+          optimisticCompanions: [{
+            key: { ...scope, sourceKey: 'test_views', identity: { kind: 'local', localId: 'view-42' } },
+            before: null,
+            after: null,
+          }],
           payloadHash: 'hash',
           baseRevision: 1,
           state: 'pending',
