@@ -723,6 +723,33 @@ describe('OfflineSyncService', () => {
       expect(commands).toEqual([]);
       expect(rows).toEqual([]);
     });
+
+    it('durable commit後のstate refreshが失敗してもIDを返し後続refreshで収束する', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const getCommands = vi.mocked(repository.getCommands);
+      await service.initialize({ flush: false });
+      let failRefresh = true;
+      getCommands.mockImplementation(async (scope) => {
+        if (failRefresh) {
+          failRefresh = false;
+          throw new Error('postcommit read failed');
+        }
+        return commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId);
+      });
+
+      const commandIds = await service.enqueuePreparedBatch(async () => [prepared('committed-a', 'A'), prepared('committed-b', 'B')], {
+        flush: false,
+      });
+
+      expect(commandIds).toHaveLength(2);
+      expect(commands.map(({ commandId }) => commandId)).toEqual([...commandIds]);
+      expect(rows).toHaveLength(2);
+      expect(handleError).toHaveBeenCalledWith(expect.objectContaining({ message: 'postcommit read failed' }));
+      expect(service.pendingCount()).toBe(0);
+
+      await service.reloadPendingCommands();
+      expect(service.pendingCount()).toBe(2);
+    });
   });
 
   it('local sessionはoutboxへenqueueできるがremote session確立までは送信しない', async () => {

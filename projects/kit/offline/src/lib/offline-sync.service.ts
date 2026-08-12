@@ -559,7 +559,7 @@ export class OfflineSyncService {
       putCommands: entries.map((entry) => entry.command),
       removeCommandIds,
     });
-    await this.#refreshState();
+    await this.#refreshState().catch((error) => this.#reportError(error));
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
