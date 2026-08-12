@@ -202,13 +202,18 @@ export interface OfflineRepository {
 /** DI token for the selected platform repository. */
 export const OFFLINE_REPOSITORY = new InjectionToken<OfflineRepository>('OFFLINE_REPOSITORY');
 
-/** Selects encrypted SQLite on native platforms and Ionic Storage on web. */
+/** Returns whether the platform uses the cross-process-safe native repository. */
+export function supportsSynchronizedOfflineRepository(platform: string): boolean {
+  return platform === 'ios' || platform === 'android';
+}
+
+/** Selects encrypted SQLite on native platforms and Ionic Storage elsewhere. */
 export function selectOfflineRepository(
   platform: string,
   webRepository: OfflineRepository,
   nativeRepository: OfflineRepository,
 ): OfflineRepository {
-  return platform === 'ios' || platform === 'android' ? nativeRepository : webRepository;
+  return supportsSynchronizedOfflineRepository(platform) ? nativeRepository : webRepository;
 }
 
 interface OfflineMetadata {

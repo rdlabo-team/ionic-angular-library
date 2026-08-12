@@ -8,7 +8,12 @@ import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import type { OfflineKitOptions } from './offline-kit-options';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
-import { IonicOfflineRepository, OFFLINE_REPOSITORY, selectOfflineRepository } from './offline-repository';
+import {
+  IonicOfflineRepository,
+  OFFLINE_REPOSITORY,
+  selectOfflineRepository,
+  supportsSynchronizedOfflineRepository,
+} from './offline-repository';
 import type { OfflineMutationRequestPolicy, OfflineRequestPolicy } from './offline-request-policy';
 import { provideOfflineMutationRequestPolicy, provideOfflineRequestPolicy } from './offline-request-policy';
 import type { OfflineReplicaProjector, OfflineReplicaPuller } from './offline-replica-puller';
@@ -121,6 +126,21 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
     ...options.requestPolicies.flatMap((policy) => provideOfflineRequestPolicy(policy)),
     ...(options.mutationPolicies ?? []).flatMap((policy) => provideOfflineMutationRequestPolicy(policy)),
     ...(options.providers ?? []),
-    provideAppInitializer(() => inject(OfflineCoordinatorService).initialize()),
+    provideAppInitializer(() => {
+      assertSupportedOfflineMode(Capacitor.getPlatform(), options.mode ?? 'synchronized');
+      return inject(OfflineCoordinatorService).initialize();
+    }),
   ]);
+}
+
+/** Prevents unsupported multi-tab Web writes from silently losing Outbox state. */
+export function assertSupportedOfflineMode(
+  platform: string,
+  mode: 'synchronized' | 'readCacheOnly',
+): void {
+  if (!supportsSynchronizedOfflineRepository(platform) && mode === 'synchronized') {
+    throw new Error(
+      'Offline synchronized mode is supported only by native repositories. Use readCacheOnly until the selected repository provides cross-context locking.',
+    );
+  }
 }

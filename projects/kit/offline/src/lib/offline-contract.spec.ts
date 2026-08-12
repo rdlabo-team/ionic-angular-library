@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { requirePositiveOfflineInteger } from './offline-identity';
-import { provideOffline } from './offline-provider';
+import { assertSupportedOfflineMode, provideOffline } from './offline-provider';
 import { normalizeOfflineReplicaPullPage } from './offline-replica-puller';
 import { defineOfflineReplicaSchema } from './offline-replica-schema';
 import { offlineSessionManifestAllows } from './offline-session.service';
@@ -73,6 +73,18 @@ describe('shared offline boundary contracts', () => {
       });
     };
     void compileOnly;
+  });
+
+  it('fails closed before enabling synchronized Outbox writes on Web', () => {
+    expect(() => assertSupportedOfflineMode('web', 'synchronized')).toThrow(
+      'Offline synchronized mode is supported only by native repositories.',
+    );
+    expect(() => assertSupportedOfflineMode('web', 'readCacheOnly')).not.toThrow();
+    expect(() => assertSupportedOfflineMode('electron', 'synchronized')).toThrow(
+      'Offline synchronized mode is supported only by native repositories.',
+    );
+    expect(() => assertSupportedOfflineMode('ios', 'synchronized')).not.toThrow();
+    expect(() => assertSupportedOfflineMode('android', 'synchronized')).not.toThrow();
   });
 
   it('requires an encryption key factory for synchronized providers at compile time', () => {
