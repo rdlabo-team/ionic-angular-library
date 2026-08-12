@@ -120,6 +120,15 @@ export interface OfflineReplicaRowKey extends OfflineScope {
   identity: OfflineReplicaIdentity;
 }
 
+/** Canonical physical key shared by every repository and replica transaction coordinator. */
+export function canonicalOfflineReplicaRowKey(
+  schema: Pick<OfflineReplicaEntitySchema<Record<string, unknown>>, 'scope'>,
+  row: OfflineReplicaRowKey,
+): string {
+  const partition = schema.scope === 'user' ? 'user' : String(row.scopeId);
+  return `${canonicalOfflinePrincipalId(row.userId)}:${partition}:${row.sourceKey}:${canonicalOfflineReplicaIdentity(row.identity)}`;
+}
+
 /** Explicit one-way release of a generated remote id during a replica delete acknowledgement. */
 export interface OfflineReplicaRemoteIdRelease extends OfflineReplicaRowKey {
   /** The current remote id being released; the matching put row must set `remoteId` to null. */
@@ -820,8 +829,7 @@ export class IonicOfflineRepository implements OfflineRepository {
 
   #rowKey(row: OfflineScope & { sourceKey: string; identity: OfflineReplicaIdentity }): string {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
-    const partition = schema.scope === 'user' ? 'user' : String(row.scopeId);
-    return `${canonicalOfflinePrincipalId(row.userId)}:${partition}:${row.sourceKey}:${canonicalOfflineReplicaIdentity(row.identity)}`;
+    return canonicalOfflineReplicaRowKey(schema, row);
   }
 
   #findRowByAddress<TValues>(

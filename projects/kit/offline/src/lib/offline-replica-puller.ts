@@ -1,5 +1,5 @@
 import { InjectionToken } from '@angular/core';
-import type { OfflineScope } from './offline-repository';
+import type { OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
 import type {
   OfflineGeneratedRemoteId,
   OfflineNaturalKey,
@@ -53,6 +53,24 @@ export interface OfflineReplicaPullPage {
   changes: readonly OfflineReplicaChange[];
   nextCursor: string;
   hasMore: boolean;
+  /** The server can no longer continue this cursor and requires a confirmed-state snapshot rebuild. */
+  rebaselineRequired?: boolean;
+}
+
+/** Product projection derived from one collapsed authoritative pull page. */
+export interface OfflineReplicaPullProjection {
+  putRows?: readonly OfflineReplicaRow[];
+  removeRows?: readonly OfflineReplicaRowKey[];
+}
+
+/** Pure product adapter for local-only projections derived from server replica changes. */
+export interface OfflineReplicaProjector {
+  project(input: {
+    scope: OfflineScope;
+    changes: readonly OfflineReplicaChange[];
+    commands: readonly import('./offline-repository').OfflineCommand[];
+    repository: import('./offline-repository').OfflineRepository;
+  }): Promise<OfflineReplicaPullProjection>;
 }
 
 /** Backend response accepted by the shared pull-page normalizer. */
@@ -62,6 +80,8 @@ export interface OfflineReplicaWirePullPage {
   changes: readonly OfflineReplicaWireChange[];
   nextCursor: string;
   hasMore: boolean;
+  /** The server can no longer continue this cursor and requires a confirmed-state snapshot rebuild. */
+  rebaselineRequired?: boolean;
 }
 
 /**
@@ -92,3 +112,6 @@ export interface OfflineReplicaPuller {
 
 /** DI token for the application-provided explicit replica pull transport. */
 export const OFFLINE_REPLICA_PULLER = new InjectionToken<OfflineReplicaPuller>('OFFLINE_REPLICA_PULLER');
+
+/** Optional product adapter for local-only replica projections. */
+export const OFFLINE_REPLICA_PROJECTOR = new InjectionToken<OfflineReplicaProjector>('OFFLINE_REPLICA_PROJECTOR');

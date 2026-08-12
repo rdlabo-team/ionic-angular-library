@@ -2,7 +2,12 @@ import { inject, Injectable } from '@angular/core';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
-import { OFFLINE_REPLICA_PULLER, type OfflineReplicaChange, type OfflineReplicaPullPage } from './offline-replica-puller';
+import {
+  OFFLINE_REPLICA_PROJECTOR,
+  OFFLINE_REPLICA_PULLER,
+  type OfflineReplicaChange,
+  type OfflineReplicaPullPage,
+} from './offline-replica-puller';
 import {
   canonicalOfflineCommandIdentity,
   commandIdentityFromReplicaIdentity,
@@ -21,6 +26,7 @@ import {
 } from './offline-replica-schema';
 import {
   OFFLINE_REPOSITORY,
+  canonicalOfflineReplicaRowKey,
   type OfflineCommand,
   type OfflineReplicaRow,
   type OfflineReplicaRowKey,
@@ -40,6 +46,7 @@ export class OfflineReplicaPullService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   readonly #puller = inject(OFFLINE_REPLICA_PULLER);
+  readonly #projector = inject(OFFLINE_REPLICA_PROJECTOR, { optional: true });
   readonly #executor = inject(OFFLINE_COMMAND_EXECUTOR);
   readonly #replicaMutations = inject(OfflineReplicaMutationCoordinator);
   #schemaHash: Promise<string> | null = null;
@@ -47,34 +54,49 @@ export class OfflineReplicaPullService {
   async pull(scope: OfflineScope): Promise<void> {
     if (this.#options.mode === 'readCacheOnly') return;
     const schemaHash = await (this.#schemaHash ??= sha256OfflineReplicaSchema(this.#options.replicaSchema));
-    let cursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
+    let persistedCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
+    let requestCursor = persistedCursor;
+    let rebaselinePending = false;
 
     for (;;) {
       const page = await this.#puller.pull({
         scope,
-        cursor,
+        cursor: requestCursor,
         schemaVersion: this.#options.replicaSchema.version,
         schemaHash,
       });
       this.#assertPullPage(page);
       this.#assertHandshake(page.schemaVersion, page.schemaHash, schemaHash);
-      if (page.hasMore && page.nextCursor === cursor) {
+      if (page.hasMore && page.nextCursor === requestCursor) {
         throw new Error(`Offline replica pull cursor did not advance for scope ${scope.userId}:${scope.scopeId}.`);
       }
-      if (page.changes.length === 0 && !page.hasMore && page.nextCursor === cursor) {
+      if (page.changes.length === 0 && !page.hasMore && page.nextCursor === requestCursor && !rebaselinePending) {
         return;
+      }
+      if (page.rebaselineRequired && page.changes.length === 0 && !page.hasMore) {
+        throw new Error('Offline replica rebaseline marker must lead to a snapshot page.');
+      }
+      if (page.rebaselineRequired && page.changes.length === 0 && page.hasMore) {
+        rebaselinePending = true;
+        requestCursor = page.nextCursor;
+        continue;
       }
 
       const applied = await this.#replicaMutations.run(async () => {
         const currentCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
-        if (currentCursor !== cursor) return currentCursor;
+        if (currentCursor !== persistedCursor) return currentCursor;
         const scopeCommands = await this.#repository.getCommands(scope);
         const userCommands = this.#repository.getCommandsForUser ? await this.#repository.getCommandsForUser(scope.userId) : scopeCommands;
         const changes = this.#collapseChanges(page.changes);
         const putRows: OfflineReplicaRow[] = [];
         const removeRows: OfflineReplicaRowKey[] = [];
+        const rebasedPutRows: OfflineReplicaRow[] = [];
+        const rebasedRemoveRows: OfflineReplicaRowKey[] = [];
         const putCommands = new Map<string, OfflineCommand>();
         const removeCommandIds = new Set<string>();
+        if (rebaselinePending || page.rebaselineRequired) {
+          removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, userCommands)));
+        }
 
         for (const change of changes) {
           const schema = this.#entitySchema(change.sourceKey);
@@ -172,17 +194,17 @@ export class OfflineReplicaPullService {
 
           const revisionChanged = related.some((command) => command.baseRevision !== change.serverRevision);
           const rebaseEligible = related.every(
-            (command) =>
-              (command.state === 'pending' || command.state === 'retry_wait') && command.serverCommitUnknown !== true,
+            (command) => (command.state === 'pending' || command.state === 'retry_wait') && command.serverCommitUnknown !== true,
           );
-          const rebase = revisionChanged && rebaseEligible
-            ? ((await this.#executor.rebasePendingCommands?.(
-                related,
-                confirmedValues,
-                change.serverRevision,
-                await this.#currentCompanionRows(related),
-              )) ?? null)
-            : null;
+          const rebase =
+            revisionChanged && rebaseEligible
+              ? ((await this.#executor.rebasePendingCommands?.(
+                  related,
+                  confirmedValues,
+                  change.serverRevision,
+                  await this.#currentCompanionRows(related),
+                )) ?? null)
+              : null;
           this.#assertRebasedSteps(related, rebase?.steps ?? null);
           const conflicted = revisionChanged && rebase === null;
           const rebasedCommands = rebase
@@ -196,7 +218,7 @@ export class OfflineReplicaPullService {
               }))
             : [];
           for (const command of rebasedCommands) putCommands.set(command.commandId, command);
-          this.#appendRebasedCompanionRows(rebasedCommands, putRows, removeRows);
+          this.#appendRebasedCompanionRows(rebasedCommands, rebasedPutRows, rebasedRemoveRows);
           putRows.push({
             ...existing,
             values: rebasedCommands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
@@ -217,9 +239,21 @@ export class OfflineReplicaPullService {
           }
         }
 
+        const projection = await this.#projector?.project({
+          scope,
+          changes,
+          commands: scopeCommands,
+          repository: this.#repository,
+        });
+        this.#assertProjection(scope, projection);
+        const finalRows = this.#mergeRowMutations([
+          { putRows, removeRows },
+          { putRows: projection?.putRows ?? [], removeRows: projection?.removeRows ?? [] },
+          { putRows: rebasedPutRows, removeRows: rebasedRemoveRows },
+        ]);
         await this.#repository.transactReplica({
-          putRows,
-          removeRows,
+          putRows: finalRows.putRows,
+          removeRows: finalRows.removeRows,
           putCommands: [...putCommands.values()],
           removeCommandIds: [...removeCommandIds],
           putCursors: [{ ...scope, cursor: page.nextCursor }],
@@ -227,11 +261,64 @@ export class OfflineReplicaPullService {
         return page.nextCursor;
       });
       if (applied !== page.nextCursor) {
-        cursor = applied;
+        persistedCursor = applied;
+        requestCursor = applied;
+        rebaselinePending = false;
         continue;
       }
-      cursor = page.nextCursor;
+      persistedCursor = page.nextCursor;
+      requestCursor = page.nextCursor;
+      rebaselinePending = false;
       if (!page.hasMore) return;
+    }
+  }
+
+  async #confirmedRowsForRebaseline(scope: OfflineScope, commands: readonly OfflineCommand[]): Promise<OfflineReplicaRowKey[]> {
+    const preserved = new Set(
+      commands.flatMap((command) => (command.optimisticCompanions ?? []).map((companion) => this.#rowKey(companion.key))),
+    );
+    const rows = (
+      await Promise.all(this.#options.replicaSchema.entities.map((entity) => this.#repository.getReplicaRows(scope, entity.sourceKey)))
+    ).flat();
+    return rows.filter((row) => row.syncState === 'confirmed' && !preserved.has(this.#rowKey(row)));
+  }
+
+  #rowKey(row: OfflineReplicaRowKey): string {
+    return canonicalOfflineReplicaRowKey(this.#entitySchema(row.sourceKey), row);
+  }
+
+  #mergeRowMutations(
+    layers: readonly {
+      putRows: readonly OfflineReplicaRow[];
+      removeRows: readonly OfflineReplicaRowKey[];
+    }[],
+  ): { putRows: OfflineReplicaRow[]; removeRows: OfflineReplicaRowKey[] } {
+    const mutations = new Map<string, { kind: 'put'; row: OfflineReplicaRow } | { kind: 'remove'; row: OfflineReplicaRowKey }>();
+    for (const layer of layers) {
+      for (const row of layer.removeRows) mutations.set(this.#rowKey(row), { kind: 'remove', row });
+      for (const row of layer.putRows) mutations.set(this.#rowKey(row), { kind: 'put', row });
+    }
+    const putRows: OfflineReplicaRow[] = [];
+    const removeRows: OfflineReplicaRowKey[] = [];
+    for (const mutation of mutations.values()) {
+      if (mutation.kind === 'put') putRows.push(mutation.row);
+      else removeRows.push(mutation.row);
+    }
+    return { putRows, removeRows };
+  }
+
+  #assertProjection(
+    scope: OfflineScope,
+    projection: { putRows?: readonly OfflineReplicaRow[]; removeRows?: readonly OfflineReplicaRowKey[] } | undefined,
+  ): void {
+    for (const row of [...(projection?.putRows ?? []), ...(projection?.removeRows ?? [])]) {
+      const schema = this.#entitySchema(row.sourceKey);
+      if (schema.identity.kind !== 'localOnly') {
+        throw new Error(`Offline replica projector may only mutate localOnly source "${row.sourceKey}".`);
+      }
+      if (row.userId !== scope.userId || row.scopeId !== scope.scopeId || row.identity.kind !== 'local') {
+        throw new Error('Offline replica projector rows must use the current scope and local identity.');
+      }
     }
   }
 
@@ -244,6 +331,9 @@ export class OfflineReplicaPullService {
     }
     if (!Array.isArray(page.changes)) {
       throw new Error('Offline replica pull page changes must be an array.');
+    }
+    if (page.rebaselineRequired !== undefined && typeof page.rebaselineRequired !== 'boolean') {
+      throw new Error('Offline replica pull page rebaselineRequired must be a boolean when present.');
     }
     for (const [index, change] of page.changes.entries()) {
       this.#assertPullChange(change, index);
@@ -267,11 +357,7 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #appendRebasedCompanionRows(
-    commands: readonly OfflineCommand[],
-    putRows: OfflineReplicaRow[],
-    removeRows: OfflineReplicaRowKey[],
-  ): void {
+  #appendRebasedCompanionRows(commands: readonly OfflineCommand[], putRows: OfflineReplicaRow[], removeRows: OfflineReplicaRowKey[]): void {
     const latest = new Map<string, { key: OfflineReplicaRowKey; after: OfflineReplicaRow | null }>();
     for (const command of commands) {
       for (const companion of command.optimisticCompanions ?? []) {
@@ -284,17 +370,10 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #rowKey(key: OfflineReplicaRowKey): string {
-    return `${key.userId}:${key.scopeId}:${key.sourceKey}:${JSON.stringify(key.identity)}`;
-  }
-
   async #currentCompanionRows(commands: readonly OfflineCommand[]): Promise<OfflineReplicaRow[]> {
     const keys = new Map(
       commands.flatMap((command) =>
-        (command.optimisticCompanions ?? []).map((companion) => [
-          this.#rowKey(companion.key),
-          companion.key,
-        ] as const),
+        (command.optimisticCompanions ?? []).map((companion) => [this.#rowKey(companion.key), companion.key] as const),
       ),
     );
     const rows = await Promise.all(

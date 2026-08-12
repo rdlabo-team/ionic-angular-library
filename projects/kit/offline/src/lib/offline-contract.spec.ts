@@ -7,8 +7,7 @@ import { offlineSessionManifestAllows } from './offline-session.service';
 
 describe('shared offline boundary contracts', () => {
   it('normalizes database serverId exactly once at the pull transport boundary', () => {
-    expect(
-      normalizeOfflineReplicaPullPage({
+    const normalized = normalizeOfflineReplicaPullPage({
         schemaVersion: 1,
         schemaHash: 'hash',
         changes: [
@@ -29,8 +28,9 @@ describe('shared offline boundary contracts', () => {
         ],
         nextCursor: '2',
         hasMore: false,
-      }).changes,
-    ).toEqual([
+        rebaselineRequired: true,
+      });
+    expect(normalized.changes).toEqual([
       {
         sourceKey: 'items',
         remoteId: 42,
@@ -46,6 +46,7 @@ describe('shared offline boundary contracts', () => {
         deleted: true,
       },
     ]);
+    expect(normalized.rebaselineRequired).toBe(true);
   });
 
   it('narrows positive database ids without accepting coercion or zero', () => {

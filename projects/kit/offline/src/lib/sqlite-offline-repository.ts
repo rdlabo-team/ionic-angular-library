@@ -28,6 +28,7 @@ import {
 } from './offline-replica-schema';
 import {
   OFFLINE_SCHEMA_VERSION,
+  canonicalOfflineReplicaRowKey,
   type OfflineCommand,
   type OfflineCommandIdentity,
   type OfflinePrincipalId,
@@ -905,7 +906,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   #replicaRowKey(row: OfflineReplicaRowKey): string {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
-    return `${canonicalOfflinePrincipalId(row.userId)}:${schema.scope === 'user' ? 'user' : row.scopeId}:${row.sourceKey}:${canonicalOfflineReplicaIdentity(row.identity)}`;
+    return canonicalOfflineReplicaRowKey(schema, row);
   }
 
   #assertReplicaIdentityAssignment(
