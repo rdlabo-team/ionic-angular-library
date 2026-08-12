@@ -72,4 +72,11 @@ describe('shared offline boundary contracts', () => {
     };
     void compileOnly;
   });
+
+  it('requires an encryption key factory for synchronized providers at compile time', () => {
+    type Options = import('./offline-provider').ProvideSynchronizedOfflineOptions;
+    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    const createEncryptionKeyIsRequired: IsRequired = true;
+    expect(createEncryptionKeyIsRequired).toBe(true);
+  });
 });
