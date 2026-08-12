@@ -36,6 +36,8 @@ interface ProvideOfflineOptionsBase extends OfflineKitOptions {
 /** Full replica pull and durable Outbox synchronization. */
 export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptionsBase {
   mode?: 'synchronized';
+  /** Creates the encrypted native database key on first install. */
+  createEncryptionKey: () => Promise<string>;
   /** Product policies that replace matched writes with atomic local-first mutations. */
   mutationPolicies?: readonly Type<OfflineMutationRequestPolicy>[];
   /** Product adapter that sends opaque commands to its API. */
@@ -47,6 +49,8 @@ export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptions
 /** Server- or external-source read cache with no mutation transport or Outbox. */
 export interface ProvideReadCacheOfflineOptions extends ProvideOfflineOptionsBase {
   mode: 'readCacheOnly';
+  /** Creates the encrypted native cache database key on first install. Unused by the web repository. */
+  createEncryptionKey: () => Promise<string>;
   mutationPolicies?: never;
   commandExecutor?: never;
   replicaPuller?: never;
