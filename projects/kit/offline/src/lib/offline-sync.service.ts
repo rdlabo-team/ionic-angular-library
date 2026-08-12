@@ -23,10 +23,9 @@ import type {
   OfflineRepository,
   OfflineScope,
 } from './offline-repository';
-import { OFFLINE_REPOSITORY } from './offline-repository';
+import { canonicalOfflineReplicaRowKey, OFFLINE_REPOSITORY } from './offline-repository';
 import {
   canonicalOfflinePrincipalId,
-  canonicalOfflineReplicaIdentity,
   canonicalOfflineCommandIdentity,
   commandIdentityFromReplicaIdentity,
   commandIdentityMatchesReplicaRow,
@@ -350,7 +349,10 @@ export class OfflineSyncService {
     const session = await this.#beginEnqueueSession(generation);
     this.#assertEnqueueScope(session, request.scopeId);
     const materialization = await this.#materializeEnqueue(session.userId, request, replicaTransaction, replaced);
-    await this.#assertOutboxCapacity(session.userId, [materialization.command], replaced?.commandId);
+    const currentCommands = await this.#commandsForUser(session.userId);
+    const retainedCommands = replaced ? currentCommands.filter((command) => command.commandId !== replaced.commandId) : currentCommands;
+    this.#assertDistinctBatchFootprints([materialization], retainedCommands);
+    await this.#assertOutboxCapacity(session.userId, [materialization.command], replaced?.commandId, currentCommands);
     await this.#commitMaterializedEnqueues([materialization], generation, options, replaced ? [replaced.commandId] : undefined);
     return materialization.command.commandId;
   }
@@ -372,16 +374,10 @@ export class OfflineSyncService {
     for (const [index, entry] of prepared.entries()) {
       this.#assertEnqueueScope(session, entry.request.scopeId);
       materializations.push(
-        await this.#materializeEnqueue(
-          session.userId,
-          entry.request,
-          entry.replicaTransaction,
-          undefined,
-          firstCreatedAt + index,
-        ),
+        await this.#materializeEnqueue(session.userId, entry.request, entry.replicaTransaction, undefined, firstCreatedAt + index),
       );
     }
-    this.#assertDistinctBatchFootprints(materializations);
+    this.#assertDistinctBatchFootprints(materializations, currentCommands);
     await this.#assertOutboxCapacity(
       session.userId,
       materializations.map((item) => item.command),
@@ -542,9 +538,14 @@ export class OfflineSyncService {
     return { command, optimisticRow, optimisticCompanions };
   }
 
-  #assertDistinctBatchFootprints(entries: readonly MaterializedOfflineEnqueue[]): void {
+  #assertDistinctBatchFootprints(entries: readonly MaterializedOfflineEnqueue[], existingCommands: readonly OfflineCommand[]): void {
     const aggregates = new Set<string>();
     const replicaKeys = new Set<string>();
+    const existingFootprints = new Map<string, string>();
+    for (const command of existingCommands) {
+      const aggregate = this.#aggregateKey(command);
+      for (const key of this.#commandFootprintKeys(command)) existingFootprints.set(key, aggregate);
+    }
     for (const entry of entries) {
       const aggregate = this.#aggregateKey(entry.command);
       if (aggregates.has(aggregate)) {
@@ -558,9 +559,24 @@ export class OfflineSyncService {
         if (replicaKeys.has(key)) {
           throw new Error('Prepared offline batch contains overlapping replica footprints.');
         }
+        const existingAggregate = existingFootprints.get(key);
+        if (existingAggregate !== undefined && existingAggregate !== aggregate) {
+          throw new Error('Offline commands for different aggregates cannot share a replica footprint.');
+        }
         replicaKeys.add(key);
       }
     }
+  }
+
+  #commandFootprintKeys(command: OfflineCommand): readonly string[] {
+    const identity =
+      command.identity.kind === 'generated'
+        ? offlineGeneratedReplicaIdentity(command.identity.localId, null)
+        : ({ kind: 'natural', naturalKey: command.identity.naturalKey } as const);
+    return [
+      this.#replicaRowKey({ ...command, identity }),
+      ...(command.optimisticCompanions ?? []).map((companion) => this.#replicaRowKey(companion.key)),
+    ];
   }
 
   async #commitMaterializedEnqueues(
@@ -678,7 +694,7 @@ export class OfflineSyncService {
   }
 
   #replicaRowKey(key: OfflineReplicaRowKey): string {
-    return `${canonicalOfflinePrincipalId(key.userId)}:${key.scopeId}:${key.sourceKey}:${canonicalOfflineReplicaIdentity(key.identity)}`;
+    return canonicalOfflineReplicaRowKey(this.#entitySchema(key.sourceKey), key);
   }
 
   async #assertOutboxCapacity(

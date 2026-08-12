@@ -12,7 +12,15 @@ import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-optio
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService } from './offline-replica-pull.service';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
-import { defineOfflineReplicaSchema, defineReplicaEntity, integer, naturalKey, generatedId, text } from './offline-replica-schema';
+import {
+  defineOfflineReplicaSchema,
+  defineReplicaEntity,
+  integer,
+  localOnly,
+  naturalKey,
+  generatedId,
+  text,
+} from './offline-replica-schema';
 import {
   canonicalOfflineReplicaIdentity,
   OFFLINE_REPOSITORY,
@@ -42,6 +50,13 @@ const replicaSchema = defineOfflineReplicaSchema({
         id: generatedId('integer'),
         title: text(),
       },
+    }),
+    defineReplicaEntity<{ title: string }>()({
+      table: 'document_views',
+      sourceKey: 'document_views',
+      scope: 'partition',
+      identity: localOnly(),
+      fields: { title: text() },
     }),
   ],
   migrations: [],
@@ -3404,6 +3419,13 @@ describe('OfflineSyncService', () => {
             name: text(),
           },
         }),
+        defineReplicaEntity<{ title: string }>()({
+          table: 'test_views',
+          sourceKey: 'test_views',
+          scope: 'user',
+          identity: localOnly(),
+          fields: { title: text() },
+        }),
       ],
       migrations: [],
     });
@@ -3414,7 +3436,7 @@ describe('OfflineSyncService', () => {
         { userId: 1, scopeId: '11' },
       ] as OfflineScope[],
     };
-    const userScopedSourceKeys = new Set(['test_items']);
+    const userScopedSourceKeys = new Set(['test_items', 'test_views']);
 
     function compareCommands(left: OfflineCommand, right: OfflineCommand): number {
       return left.createdAt - right.createdAt || (left.commandId < right.commandId ? -1 : left.commandId > right.commandId ? 1 : 0);
@@ -3677,6 +3699,106 @@ describe('OfflineSyncService', () => {
         confirmedValues: { title: 'Baseline' },
         syncState: 'pending',
       });
+    });
+
+    it('multi-scope batchは同じuser-scoped companionのscope alias重複をcommit前に拒否する', async () => {
+      const repository = TestBed.inject(OFFLINE_REPOSITORY);
+      const transactReplica = vi.mocked(repository.transactReplica);
+      const companion = (scopeId: string, title: string): OfflineReplicaRow => ({
+        userId: 1,
+        scopeId,
+        sourceKey: 'test_views',
+        identity: { kind: 'local', localId: 'shared-view' },
+        values: { title },
+        confirmedValues: { title: 'Baseline' },
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'pending',
+      });
+
+      await expect(
+        service.enqueuePreparedBatch(
+          async () => [
+            {
+              request: {
+                scopeId: '10',
+                aggregateType: 'test_items',
+                identity: { kind: 'generated', localId: 'batch-scope-10' },
+                operation: 'test_items.create',
+                payload: {},
+                optimisticValue: { id: 0, title: 'A' },
+              },
+              replicaTransaction: { putRows: [companion('10', 'A')] },
+            },
+            {
+              request: {
+                scopeId: '11',
+                aggregateType: 'test_items',
+                identity: { kind: 'generated', localId: 'batch-scope-11' },
+                operation: 'test_items.create',
+                payload: {},
+                optimisticValue: { id: 0, title: 'B' },
+              },
+              replicaTransaction: { putRows: [companion('11', 'B')] },
+            },
+          ],
+          { flush: false },
+        ),
+      ).rejects.toThrow('overlapping replica footprints');
+
+      expect(transactReplica).not.toHaveBeenCalled();
+      expect(commands).toEqual([]);
+      expect(rows).toHaveLength(1);
+    });
+
+    it('別aggregateの後続enqueueもuser-scoped companionのscope alias共有を拒否する', async () => {
+      const companion = (scopeId: string, title: string): OfflineReplicaRow => ({
+        userId: 1,
+        scopeId,
+        sourceKey: 'test_views',
+        identity: { kind: 'local', localId: 'shared-view' },
+        values: { title },
+        confirmedValues: { title: 'Baseline' },
+        serverRevision: null,
+        fetchedAt: 1,
+        syncState: 'pending',
+      });
+      const firstId = await service.enqueuePrepared(
+        async () => ({
+          request: {
+            scopeId: '10',
+            aggregateType: 'test_items',
+            identity: { kind: 'generated', localId: 'scope-10-item' },
+            operation: 'test_items.create',
+            payload: {},
+            optimisticValue: { id: 0, title: 'A' },
+          },
+          replicaTransaction: { putRows: [companion('10', 'A')] },
+        }),
+        { flush: false },
+      );
+
+      await expect(
+        service.enqueuePrepared(
+          async () => ({
+            request: {
+              scopeId: '11',
+              aggregateType: 'test_items',
+              identity: { kind: 'generated', localId: 'scope-11-item' },
+              operation: 'test_items.create',
+              payload: {},
+              optimisticValue: { id: 0, title: 'B' },
+            },
+            replicaTransaction: { putRows: [companion('11', 'B')] },
+          }),
+          { flush: false },
+        ),
+      ).rejects.toThrow('different aggregates cannot share a replica footprint');
+
+      expect(commands).toHaveLength(1);
+      await service.discard(firstId, { flush: false });
+      expect(commands).toEqual([]);
+      expect(findReplicaRow({ userId: 1, scopeId: '11' }, 'test_views', { kind: 'local', localId: 'shared-view' })).toBeUndefined();
     });
 
     it('partition-scopedの同一localIdはpartitionごとに独立aggregateのまま並列送信する', async () => {
