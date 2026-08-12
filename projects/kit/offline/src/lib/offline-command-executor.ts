@@ -57,12 +57,15 @@ export interface OfflineCommandExecutor {
   withoutServerRevision?(command: OfflineCommand): OfflineCommand;
 }
 
+/** Product projection result after safely replaying pending intents onto a newer confirmed revision. */
 export interface OfflinePendingRebase {
   /** Recomputed projections in the original durable FIFO order. */
   steps: readonly OfflinePendingRebaseStep[];
 }
 
+/** Projection state produced for one immutable durable command in FIFO order. */
 export interface OfflinePendingRebaseStep {
+  /** Recomputed full aggregate value after this command's intent is applied. */
   optimisticValue: unknown;
   /** Same footprint as the original command, rematerialized from the new confirmed value. */
   optimisticCompanions?: readonly OfflineOptimisticReplicaCompanion[];

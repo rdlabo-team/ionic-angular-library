@@ -171,12 +171,16 @@ export class OfflineReplicaPullService {
           }
 
           const revisionChanged = related.some((command) => command.baseRevision !== change.serverRevision);
-          const rebase = revisionChanged
+          const rebaseEligible = related.every(
+            (command) =>
+              (command.state === 'pending' || command.state === 'retry_wait') && command.serverCommitUnknown !== true,
+          );
+          const rebase = revisionChanged && rebaseEligible
             ? ((await this.#executor.rebasePendingCommands?.(
                 related,
                 confirmedValues,
                 change.serverRevision,
-                await this.#currentCompanionRows(scope, related),
+                await this.#currentCompanionRows(related),
               )) ?? null)
             : null;
           this.#assertRebasedSteps(related, rebase?.steps ?? null);
@@ -284,10 +288,7 @@ export class OfflineReplicaPullService {
     return `${key.userId}:${key.scopeId}:${key.sourceKey}:${JSON.stringify(key.identity)}`;
   }
 
-  async #currentCompanionRows(
-    scope: OfflineScope,
-    commands: readonly OfflineCommand[],
-  ): Promise<OfflineReplicaRow[]> {
+  async #currentCompanionRows(commands: readonly OfflineCommand[]): Promise<OfflineReplicaRow[]> {
     const keys = new Map(
       commands.flatMap((command) =>
         (command.optimisticCompanions ?? []).map((companion) => [
@@ -297,7 +298,13 @@ export class OfflineReplicaPullService {
       ),
     );
     const rows = await Promise.all(
-      [...keys.values()].map((key) => this.#repository.getReplicaRow(scope, key.sourceKey, key.identity)),
+      [...keys.values()].map((key) => {
+        const companionScope = { userId: key.userId, scopeId: key.scopeId };
+        return (
+          this.#repository.getReplicaRowIncludingPendingDelete?.(companionScope, key.sourceKey, key.identity) ??
+          this.#repository.getReplicaRow(companionScope, key.sourceKey, key.identity)
+        );
+      }),
     );
     return rows.filter((row): row is OfflineReplicaRow => row !== null);
   }
