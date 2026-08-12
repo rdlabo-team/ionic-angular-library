@@ -359,10 +359,6 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #rowKey(key: OfflineReplicaRowKey): string {
-    return `${key.userId}:${key.scopeId}:${key.sourceKey}:${JSON.stringify(key.identity)}`;
-  }
-
   async #currentCompanionRows(commands: readonly OfflineCommand[]): Promise<OfflineReplicaRow[]> {
     const keys = new Map(
       commands.flatMap((command) =>
