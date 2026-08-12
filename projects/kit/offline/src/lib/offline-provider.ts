@@ -49,8 +49,8 @@ export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptions
 /** Server- or external-source read cache with no mutation transport or Outbox. */
 export interface ProvideReadCacheOfflineOptions extends ProvideOfflineOptionsBase {
   mode: 'readCacheOnly';
-  /** Read-cache-only mode does not provision an encrypted native Outbox database. */
-  createEncryptionKey?: never;
+  /** Creates the encrypted native cache database key on first install. Unused by the web repository. */
+  createEncryptionKey: () => Promise<string>;
   mutationPolicies?: never;
   commandExecutor?: never;
   replicaPuller?: never;

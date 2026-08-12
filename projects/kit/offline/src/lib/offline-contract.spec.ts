@@ -66,6 +66,7 @@ describe('shared offline boundary contracts', () => {
       provideOffline({
         mode: 'readCacheOnly',
         databaseName: 'read-cache',
+        createEncryptionKey: async () => 'native-cache-key',
         replicaSchema: defineOfflineReplicaSchema({ version: 1, entities: [], migrations: [] }),
         requestPolicies: [],
       });
@@ -75,6 +76,13 @@ describe('shared offline boundary contracts', () => {
 
   it('requires an encryption key factory for synchronized providers at compile time', () => {
     type Options = import('./offline-provider').ProvideSynchronizedOfflineOptions;
+    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    const createEncryptionKeyIsRequired: IsRequired = true;
+    expect(createEncryptionKeyIsRequired).toBe(true);
+  });
+
+  it('requires an encryption key factory for native read-cache persistence too', () => {
+    type Options = import('./offline-provider').ProvideReadCacheOfflineOptions;
     type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
     const createEncryptionKeyIsRequired: IsRequired = true;
     expect(createEncryptionKeyIsRequired).toBe(true);
