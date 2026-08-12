@@ -39,6 +39,7 @@ import {
   type OfflineReplicaRowKey,
   type OfflineReplicaRemoteIdRelease,
   type OfflineRepository,
+  type OfflineRepositoryReader,
   type OfflineReplicaTransaction,
   type OfflineScope,
 } from './offline-repository';
@@ -197,6 +198,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   #databaseId: string | null = null;
   #initialization: Promise<void> | null = null;
   #writes: Promise<void> = Promise.resolve();
+  #activeReaders = 0;
+  #readersIdle: Promise<void> = Promise.resolve();
+  #resolveReadersIdle: (() => void) | null = null;
 
   initialize(): Promise<void> {
     this.#initialization ??= this.#open();
@@ -204,9 +208,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async getLastUserId(): Promise<OfflinePrincipalId | null> {
-    const rows = await this.#query('SELECT last_user_id FROM offline_metadata WHERE id = 1');
-    const value = this.#stringOrNull(rows[0]?.['last_user_id']);
-    return value === null ? null : parseOfflinePrincipalId(value);
+    return this.#withCommittedRead(() => this.#readLastUserId());
   }
 
   async setLastUserId(userId: OfflinePrincipalId): Promise<void> {
@@ -218,11 +220,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async getSessionManifest<T>(userId: OfflinePrincipalId): Promise<T | null> {
-    const rows = await this.#query('SELECT value_json FROM offline_session_manifests WHERE user_id = ?', [
-      canonicalOfflinePrincipalId(userId),
-    ]);
-    const row = rows[0];
-    return row ? this.#parse<T>(row['value_json']) : null;
+    return this.#withCommittedRead(() => this.#readSessionManifest<T>(userId));
   }
 
   async putSessionManifest<T>(userId: OfflinePrincipalId, value: T): Promise<void> {
@@ -238,8 +236,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
     sourceKey: string,
     identity: OfflineReplicaAddress,
   ): Promise<OfflineReplicaRow<TValues> | null> {
-    const row = await this.#queryReplicaRow(scope, sourceKey, identity, false);
-    return row as OfflineReplicaRow<TValues> | null;
+    return this.#withCommittedRead(async () => {
+      const row = await this.#queryReplicaRow(scope, sourceKey, identity, false);
+      return row as OfflineReplicaRow<TValues> | null;
+    });
   }
 
   async getReplicaRowIncludingPendingDelete<TValues = unknown>(
@@ -247,26 +247,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
     sourceKey: string,
     identity: OfflineReplicaAddress,
   ): Promise<OfflineReplicaRow<TValues> | null> {
-    const row = await this.#queryReplicaRow(scope, sourceKey, identity, true);
-    return row as OfflineReplicaRow<TValues> | null;
+    return this.#withCommittedRead(async () => {
+      const row = await this.#queryReplicaRow(scope, sourceKey, identity, true);
+      return row as OfflineReplicaRow<TValues> | null;
+    });
   }
 
   async getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
-    const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const predicates = ['_offline_user_id = ?'];
-    const values: SQLiteValue[] = [canonicalOfflinePrincipalId(scope.userId)];
-    if (schema.scope === 'partition') {
-      predicates.push('_offline_scope_id = ?');
-      values.push(scope.scopeId);
-    }
-    const orderBy =
-      schema.identity.kind === 'naturalKey'
-        ? schema.identity.sourceKeys.map((key) => schema.fields.find((field) => field.sourceKey === key)!.sqliteColumnName!).join(', ')
-        : 'local_id ASC';
-    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY ${orderBy}`, values);
-    return rows
-      .filter((row) => (row['_offline_visibility'] ?? 'present') !== 'pending_delete')
-      .map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row));
+    return this.#withCommittedRead(() => this.#readReplicaRows(scope, sourceKey));
   }
 
   async getReplicaRowByRemoteId<TValues = unknown>(
@@ -283,66 +271,27 @@ export class SqliteOfflineRepository implements OfflineRepository {
     sourceKey: string,
     identity: OfflineReplicaRemoteIdentity,
   ): Promise<OfflineReplicaRow<TValues> | null> {
-    const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    canonicalOfflineRemoteIdentity(schema, identity);
-    if (schema.identity.kind === 'generated') {
-      const predicates = ['server_id = ?', '_offline_user_id = ?'];
-      const values: SQLiteValue[] = [identity.remoteId!, canonicalOfflinePrincipalId(scope.userId)];
-      if (schema.scope === 'partition') {
-        predicates.push('_offline_scope_id = ?');
-        values.push(scope.scopeId);
-      }
-      const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
-      const row = rows[0];
-      return row ? this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row) : null;
-    }
-    const naturalKey = normalizeOfflineNaturalKey(schema, identity.naturalKey!);
-    const predicates = ['_offline_user_id = ?'];
-    const values: SQLiteValue[] = [canonicalOfflinePrincipalId(scope.userId)];
-    if (schema.scope === 'partition') {
-      predicates.push('_offline_scope_id = ?');
-      values.push(scope.scopeId);
-    }
-    for (const sourceKeyPart of schema.identity.sourceKeys) {
-      const field = schema.fields.find((candidate) => candidate.sourceKey === sourceKeyPart)!;
-      predicates.push(`${field.sqliteColumnName!} = ?`);
-      values.push(naturalKey[sourceKeyPart]!);
-    }
-    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
-    const row = rows[0];
-    return row ? this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row) : null;
+    return this.#withCommittedRead(() => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity));
   }
 
   async getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
-    const rows = await this.#query('SELECT cursor FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', [
-      canonicalOfflinePrincipalId(scope.userId),
-      scope.scopeId,
-    ]);
-    const row = rows[0];
-    if (!row) return null;
-    return { ...scope, cursor: this.#string(row['cursor']) };
+    return this.#withCommittedRead(() => this.#readReplicaCursor(scope));
   }
 
   async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
-    const rows = await this.#query('SELECT scope_id FROM offline_reconciliation_scopes WHERE user_id = ? ORDER BY scope_id', [
-      canonicalOfflinePrincipalId(userId),
-    ]);
-    return rows.map((row) => ({ userId, scopeId: this.#string(row['scope_id']) }));
+    return this.#withCommittedRead(() => this.#readReconciliationScopes(userId));
   }
 
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
-    const rows = await this.#query(
-      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC',
-      [canonicalOfflinePrincipalId(scope.userId), scope.scopeId],
-    );
-    return rows.map((row) => this.#command(row));
+    return this.#withCommittedRead(() => this.#readCommands(scope));
   }
 
   async getCommandsForUser(userId: OfflinePrincipalId): Promise<OfflineCommand[]> {
-    const rows = await this.#query('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC', [
-      canonicalOfflinePrincipalId(userId),
-    ]);
-    return rows.map((row) => this.#command(row));
+    return this.#withCommittedRead(() => this.#readCommandsForUser(userId));
+  }
+
+  async runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T> {
+    return this.#withCommittedRead(() => read(this.#reader()));
   }
 
   async putCommand(command: OfflineCommand): Promise<void> {
@@ -560,6 +509,163 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#databaseId;
   }
 
+  async #readLastUserId(): Promise<OfflinePrincipalId | null> {
+    const rows = await this.#query('SELECT last_user_id FROM offline_metadata WHERE id = 1');
+    const value = this.#stringOrNull(rows[0]?.['last_user_id']);
+    return value === null ? null : parseOfflinePrincipalId(value);
+  }
+
+  async #readSessionManifest<T>(userId: OfflinePrincipalId): Promise<T | null> {
+    const rows = await this.#query('SELECT value_json FROM offline_session_manifests WHERE user_id = ?', [
+      canonicalOfflinePrincipalId(userId),
+    ]);
+    const row = rows[0];
+    return row ? this.#parse<T>(row['value_json']) : null;
+  }
+
+  async #readReplicaRows<TValues>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const predicates = ['_offline_user_id = ?'];
+    const values: SQLiteValue[] = [canonicalOfflinePrincipalId(scope.userId)];
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
+    }
+    const orderBy =
+      schema.identity.kind === 'naturalKey'
+        ? schema.identity.sourceKeys.map((key) => schema.fields.find((field) => field.sourceKey === key)!.sqliteColumnName!).join(', ')
+        : 'local_id ASC';
+    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY ${orderBy}`, values);
+    return rows
+      .filter((row) => (row['_offline_visibility'] ?? 'present') !== 'pending_delete')
+      .map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row));
+  }
+
+  async #readReplicaRowByRemoteIdentity<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaRemoteIdentity,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    canonicalOfflineRemoteIdentity(schema, identity);
+    if (schema.identity.kind === 'generated') {
+      const predicates = ['server_id = ?', '_offline_user_id = ?'];
+      const values: SQLiteValue[] = [identity.remoteId!, canonicalOfflinePrincipalId(scope.userId)];
+      if (schema.scope === 'partition') {
+        predicates.push('_offline_scope_id = ?');
+        values.push(scope.scopeId);
+      }
+      const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
+      const row = rows[0];
+      return row ? this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row) : null;
+    }
+    const naturalKey = normalizeOfflineNaturalKey(schema, identity.naturalKey!);
+    const predicates = ['_offline_user_id = ?'];
+    const values: SQLiteValue[] = [canonicalOfflinePrincipalId(scope.userId)];
+    if (schema.scope === 'partition') {
+      predicates.push('_offline_scope_id = ?');
+      values.push(scope.scopeId);
+    }
+    for (const sourceKeyPart of schema.identity.sourceKeys) {
+      const field = schema.fields.find((candidate) => candidate.sourceKey === sourceKeyPart)!;
+      predicates.push(`${field.sqliteColumnName!} = ?`);
+      values.push(naturalKey[sourceKeyPart]!);
+    }
+    const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')}`, values);
+    const row = rows[0];
+    return row ? this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row) : null;
+  }
+
+  async #readReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
+    const rows = await this.#query('SELECT cursor FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', [
+      canonicalOfflinePrincipalId(scope.userId),
+      scope.scopeId,
+    ]);
+    const row = rows[0];
+    if (!row) return null;
+    return { ...scope, cursor: this.#string(row['cursor']) };
+  }
+
+  async #readReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
+    const rows = await this.#query('SELECT scope_id FROM offline_reconciliation_scopes WHERE user_id = ? ORDER BY scope_id', [
+      canonicalOfflinePrincipalId(userId),
+    ]);
+    return rows.map((row) => ({ userId, scopeId: this.#string(row['scope_id']) }));
+  }
+
+  async #readCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
+    const rows = await this.#query(
+      'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC',
+      [canonicalOfflinePrincipalId(scope.userId), scope.scopeId],
+    );
+    return rows.map((row) => this.#command(row));
+  }
+
+  async #readCommandsForUser(userId: OfflinePrincipalId): Promise<OfflineCommand[]> {
+    const rows = await this.#query('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC', [
+      canonicalOfflinePrincipalId(userId),
+    ]);
+    return rows.map((row) => this.#command(row));
+  }
+
+  #reader(): OfflineRepositoryReader {
+    return {
+      getLastUserId: () => this.#readLastUserId(),
+      getSessionManifest: (userId) => this.#readSessionManifest(userId),
+      getReplicaRow: async <TValues = unknown>(
+        scope: OfflineScope,
+        sourceKey: string,
+        identity: OfflineReplicaAddress,
+      ): Promise<OfflineReplicaRow<TValues> | null> =>
+        (await this.#queryReplicaRow(scope, sourceKey, identity, false)) as OfflineReplicaRow<TValues> | null,
+      getReplicaRowIncludingPendingDelete: async <TValues = unknown>(
+        scope: OfflineScope,
+        sourceKey: string,
+        identity: OfflineReplicaAddress,
+      ): Promise<OfflineReplicaRow<TValues> | null> =>
+        (await this.#queryReplicaRow(scope, sourceKey, identity, true)) as OfflineReplicaRow<TValues> | null,
+      getReplicaRows: (scope, sourceKey) => this.#readReplicaRows(scope, sourceKey),
+      getReplicaRowByRemoteId: async (scope, sourceKey, remoteId) => {
+        if (this.#resolveReplicaEntitySchema(sourceKey).identity.kind !== 'generated') return null;
+        return this.#readReplicaRowByRemoteIdentity(scope, sourceKey, { remoteId });
+      },
+      getReplicaRowByRemoteIdentity: (scope, sourceKey, identity) => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity),
+      getReplicaCursor: (scope) => this.#readReplicaCursor(scope),
+      getReconciliationScopes: (userId) => this.#readReconciliationScopes(userId),
+      getCommands: (scope) => this.#readCommands(scope),
+      getCommandsForUser: (userId) => this.#readCommandsForUser(userId),
+    };
+  }
+
+  async #withCommittedRead<T>(operation: () => Promise<T>): Promise<T> {
+    await this.initialize();
+    await this.#writes;
+    this.#beginReaders();
+    try {
+      return await operation();
+    } finally {
+      this.#endReaders();
+    }
+  }
+
+  #beginReaders(): void {
+    if (this.#activeReaders === 0) {
+      this.#readersIdle = new Promise<void>((resolve) => {
+        this.#resolveReadersIdle = resolve;
+      });
+    }
+    this.#activeReaders += 1;
+  }
+
+  #endReaders(): void {
+    this.#activeReaders -= 1;
+    if (this.#activeReaders === 0) {
+      this.#resolveReadersIdle?.();
+      this.#resolveReadersIdle = null;
+      this.#readersIdle = Promise.resolve();
+    }
+  }
+
   async #query(statement: string, values: SQLiteValue[] = []): Promise<SQLiteRow[]> {
     return this.#queryDatabase(await this.#databaseConnection(), statement, values);
   }
@@ -569,13 +675,17 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   #queueWrite(run: (databaseId: string) => Promise<void>): Promise<void> {
-    const write = this.#writes.then(async (): Promise<void> => run(await this.#databaseConnection()));
+    const write = this.#writes.then(async (): Promise<void> => {
+      if (this.#activeReaders > 0) await this.#readersIdle;
+      await run(await this.#databaseConnection());
+    });
     this.#writes = write.catch((): void => undefined);
     return write;
   }
 
   #transaction(run: (databaseId: string) => Promise<void>): Promise<void> {
     const write = this.#writes.then(async (): Promise<void> => {
+      if (this.#activeReaders > 0) await this.#readersIdle;
       const databaseId = await this.#databaseConnection();
       await this.#sqlite!.beginTransaction({ databaseId });
       try {

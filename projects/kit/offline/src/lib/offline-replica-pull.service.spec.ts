@@ -12,7 +12,7 @@ import {
   type OfflineReplicaPullPage,
   type OfflineReplicaPullRequest,
 } from './offline-replica-puller';
-import { OfflineReplicaPullService } from './offline-replica-pull.service';
+import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './offline-replica-pull.service';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import { generatedCommandIdentity, generatedReplicaIdentity } from './offline-test-helpers';
 import {
@@ -762,11 +762,18 @@ describe('OfflineReplicaPullService', () => {
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
   });
 
-  it('schema mismatchはrejectしcursorを進めない', async () => {
+  it('schema mismatchはtyped errorでrejectしcursorを進めない', async () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
     pull.mockResolvedValueOnce(page([itemChange(42, 'Created')], { nextCursor: 'cursor-v1', schemaVersion: 99, schemaHash: 'deadbeef' }));
 
-    await expect(service.pull(scope)).rejects.toThrow('Offline replica schema mismatch');
+    const rejection = service.pull(scope);
+    await expect(rejection).rejects.toBeInstanceOf(OfflineReplicaSchemaMismatchError);
+    await expect(rejection).rejects.toMatchObject({
+      code: OfflineReplicaSchemaMismatchError.code,
+      clientVersion: 1,
+      serverVersion: 99,
+      serverHash: 'deadbeef',
+    });
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v0' });
     expect(await repository.getReplicaRows(scope, 'test_items')).toEqual([]);
   });
@@ -1115,13 +1122,9 @@ describe('OfflineReplicaPullService', () => {
       })),
     });
     pull.mockResolvedValueOnce(
-      page(
-        [
-          itemChange(42, 'Remote 42', { serverRevision: 9 }),
-          itemChange(43, 'Remote 43', { serverRevision: 10 }),
-        ],
-        { nextCursor: 'cursor-v2' },
-      ),
+      page([itemChange(42, 'Remote 42', { serverRevision: 9 }), itemChange(43, 'Remote 43', { serverRevision: 10 })], {
+        nextCursor: 'cursor-v2',
+      }),
     );
 
     await service.pull(scope);

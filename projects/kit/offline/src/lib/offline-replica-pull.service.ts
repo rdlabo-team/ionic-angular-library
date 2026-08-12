@@ -40,6 +40,28 @@ type CollapsedOfflineReplicaChange = OfflineReplicaChange & {
   collapsedOrdinal: number;
 };
 
+/**
+ * Pull handshake reported a replica schema version/hash that does not match the local Kit schema.
+ *
+ * Prefer `instanceof` (or {@link OfflineReplicaSchemaMismatchError.code}) over English message text.
+ */
+export class OfflineReplicaSchemaMismatchError extends Error {
+  /** Stable machine-readable discriminator for fatal pull classification (pre- and post-send). */
+  static readonly code = 'OFFLINE_REPLICA_SCHEMA_MISMATCH' as const;
+
+  readonly code = OfflineReplicaSchemaMismatchError.code;
+
+  constructor(
+    readonly clientVersion: number,
+    readonly clientHash: string,
+    readonly serverVersion: number,
+    readonly serverHash: string,
+  ) {
+    super(`Offline replica schema mismatch: client=${clientVersion}/${clientHash}, server=${serverVersion}/${serverHash}.`);
+    this.name = 'OfflineReplicaSchemaMismatchError';
+  }
+}
+
 /** Pulls authoritative server deltas into one durable local replica partition. */
 @Injectable({ providedIn: 'root' })
 export class OfflineReplicaPullService {
@@ -456,9 +478,7 @@ export class OfflineReplicaPullService {
 
   #assertHandshake(version: number, hash: string, expectedHash: string): void {
     if (version !== this.#options.replicaSchema.version || hash !== expectedHash) {
-      throw new Error(
-        `Offline replica schema mismatch: client=${this.#options.replicaSchema.version}/${expectedHash}, server=${version}/${hash}.`,
-      );
+      throw new OfflineReplicaSchemaMismatchError(this.#options.replicaSchema.version, expectedHash, version, hash);
     }
   }
 
