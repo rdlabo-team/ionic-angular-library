@@ -191,10 +191,36 @@ export class OfflineReplicaPullService {
             continue;
           }
 
-          const conflicted = related.some((command) => command.baseRevision !== change.serverRevision);
+          const revisionChanged = related.some((command) => command.baseRevision !== change.serverRevision);
+          const rebaseEligible = related.every(
+            (command) =>
+              (command.state === 'pending' || command.state === 'retry_wait') && command.serverCommitUnknown !== true,
+          );
+          const rebase = revisionChanged && rebaseEligible
+            ? ((await this.#executor.rebasePendingCommands?.(
+                related,
+                confirmedValues,
+                change.serverRevision,
+                await this.#currentCompanionRows(related),
+              )) ?? null)
+            : null;
+          this.#assertRebasedSteps(related, rebase?.steps ?? null);
+          const conflicted = revisionChanged && rebase === null;
+          const rebasedCommands = rebase
+            ? related.map((command, index) => ({
+                ...command,
+                baseRevision: change.serverRevision,
+                optimisticValue: rebase.steps[index]!.optimisticValue,
+                ...(rebase.steps[index]!.optimisticCompanions === undefined
+                  ? {}
+                  : { optimisticCompanions: rebase.steps[index]!.optimisticCompanions }),
+              }))
+            : [];
+          for (const command of rebasedCommands) putCommands.set(command.commandId, command);
+          this.#appendRebasedCompanionRows(rebasedCommands, putRows, removeRows);
           putRows.push({
             ...existing,
-            values: hasPending ? existing.values : confirmedValues,
+            values: rebasedCommands.at(-1)?.optimisticValue ?? (hasPending ? existing.values : confirmedValues),
             confirmedValues,
             serverRevision: change.serverRevision,
             fetchedAt: Date.now(),
@@ -297,6 +323,65 @@ export class OfflineReplicaPullService {
     for (const [index, change] of page.changes.entries()) {
       this.#assertPullChange(change, index);
     }
+  }
+
+  #assertRebasedSteps(
+    original: readonly OfflineCommand[],
+    steps: readonly { optimisticCompanions?: readonly { key: OfflineReplicaRowKey }[] }[] | null,
+  ): void {
+    if (steps === null) return;
+    if (steps.length !== original.length) {
+      throw new Error('Rebased offline values must match the aggregate command count.');
+    }
+    for (const [index, step] of steps.entries()) {
+      const originalKeys = (original[index]?.optimisticCompanions ?? []).map((item) => this.#rowKey(item.key)).sort();
+      const rebasedKeys = (step.optimisticCompanions ?? []).map((item) => this.#rowKey(item.key)).sort();
+      if (JSON.stringify(originalKeys) !== JSON.stringify(rebasedKeys)) {
+        throw new Error('Rebased offline companions must preserve each command footprint.');
+      }
+    }
+  }
+
+  #appendRebasedCompanionRows(
+    commands: readonly OfflineCommand[],
+    putRows: OfflineReplicaRow[],
+    removeRows: OfflineReplicaRowKey[],
+  ): void {
+    const latest = new Map<string, { key: OfflineReplicaRowKey; after: OfflineReplicaRow | null }>();
+    for (const command of commands) {
+      for (const companion of command.optimisticCompanions ?? []) {
+        latest.set(this.#rowKey(companion.key), { key: companion.key, after: companion.after });
+      }
+    }
+    for (const { key, after } of latest.values()) {
+      if (after) putRows.push(after);
+      else removeRows.push(key);
+    }
+  }
+
+  #rowKey(key: OfflineReplicaRowKey): string {
+    return `${key.userId}:${key.scopeId}:${key.sourceKey}:${JSON.stringify(key.identity)}`;
+  }
+
+  async #currentCompanionRows(commands: readonly OfflineCommand[]): Promise<OfflineReplicaRow[]> {
+    const keys = new Map(
+      commands.flatMap((command) =>
+        (command.optimisticCompanions ?? []).map((companion) => [
+          this.#rowKey(companion.key),
+          companion.key,
+        ] as const),
+      ),
+    );
+    const rows = await Promise.all(
+      [...keys.values()].map((key) => {
+        const companionScope = { userId: key.userId, scopeId: key.scopeId };
+        return (
+          this.#repository.getReplicaRowIncludingPendingDelete?.(companionScope, key.sourceKey, key.identity) ??
+          this.#repository.getReplicaRow(companionScope, key.sourceKey, key.identity)
+        );
+      }),
+    );
+    return rows.filter((row): row is OfflineReplicaRow => row !== null);
   }
 
   #assertPullChange(change: unknown, index: number): void {
