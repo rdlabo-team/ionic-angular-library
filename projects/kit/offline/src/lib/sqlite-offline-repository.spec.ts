@@ -288,14 +288,80 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     const deletes = plugin.execute.mock.calls
       .map(([options]) => options as { statement: string; values?: unknown[] })
       .filter(({ statement }) => statement.startsWith('DELETE FROM'));
-    expect(deletes).toHaveLength(2);
+    expect(deletes).toHaveLength(3);
     expect(deletes.map(({ values }) => values)).toEqual([
+      [canonicalOfflinePrincipalId(7), '8'],
       [canonicalOfflinePrincipalId(7), '8'],
       [canonicalOfflinePrincipalId(7), '8'],
     ]);
     expect(plugin.beginTransaction).toHaveBeenCalledOnce();
     expect(plugin.commitTransaction).toHaveBeenCalledOnce();
     expect(plugin.rollbackTransaction).not.toHaveBeenCalled();
+  });
+
+  it('pull attentionをput/getしtransactionでupsertする', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: expect.stringContaining('CREATE TABLE IF NOT EXISTS offline_pull_attentions'),
+      }),
+    );
+    await repository.putPullAttention!({
+      userId: 1,
+      scopeId: '10',
+      reason: 'schema_upgrade_required',
+    });
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: expect.stringContaining('INSERT INTO offline_pull_attentions'),
+        values: [canonicalOfflinePrincipalId(1), '10', 'schema_upgrade_required', null],
+      }),
+    );
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement.includes('offline_pull_attentions')) {
+        return {
+          columns: ['scope_id', 'reason', 'status'],
+          rows: [['10', 'schema_upgrade_required', null]],
+        };
+      }
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    await expect(repository.getPullAttentions!(1)).resolves.toEqual([{ userId: 1, scopeId: '10', reason: 'schema_upgrade_required' }]);
+    await expect(repository.runReadSnapshot((reader) => reader.getPullAttentions!(1))).resolves.toEqual([
+      { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+    ]);
+    await repository.transactReplica({
+      putPullAttentions: [{ userId: 1, scopeId: '10', reason: 'authorization_required', status: 401 }],
+      removePullAttentions: [{ userId: 1, scopeId: '20' }],
+    });
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: expect.stringContaining('INSERT INTO offline_pull_attentions'),
+        values: [canonicalOfflinePrincipalId(1), '10', 'authorization_required', 401],
+      }),
+    );
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?',
+        values: [canonicalOfflinePrincipalId(1), '20'],
+      }),
+    );
+    plugin.execute.mockClear();
+    await repository.clearUser(1);
+    expect(plugin.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statement: 'DELETE FROM offline_pull_attentions WHERE user_id = ?',
+        values: [canonicalOfflinePrincipalId(1)],
+      }),
+    );
   });
 
   it('getCommandsはcreated_atとcommand_id昇順でSQL ORDER BYする', async () => {

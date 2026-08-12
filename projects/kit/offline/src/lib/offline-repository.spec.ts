@@ -1428,6 +1428,42 @@ describe('IonicOfflineRepository', () => {
     });
   });
 
+  describe('pull attentions', () => {
+    it('put/get/removeとtransactionでuser+scope attentionを永続化する', async () => {
+      await repository.putPullAttention!({
+        userId: 1,
+        scopeId: '10',
+        reason: 'schema_upgrade_required',
+      });
+      await repository.transactReplica({
+        putPullAttentions: [{ userId: 1, scopeId: '20', reason: 'authorization_required', status: 403 }],
+      });
+      expect(await repository.getPullAttentions!(1)).toEqual([
+        { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+        { userId: 1, scopeId: '20', reason: 'authorization_required', status: 403 },
+      ]);
+      await repository.removePullAttention!({ userId: 1, scopeId: '10' });
+      await repository.transactReplica({ removePullAttentions: [{ userId: 1, scopeId: '20' }] });
+      expect(await repository.getPullAttentions!(1)).toEqual([]);
+    });
+
+    it('clearScopeとclearUserはpull attentionを隔離削除する', async () => {
+      await repository.transactReplica({
+        putPullAttentions: [
+          { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+          { userId: 1, scopeId: '11', reason: 'authorization_required', status: 401 },
+          { userId: 2, scopeId: '10', reason: 'authorization_required', status: 403 },
+        ],
+      });
+      await repository.clearScope({ userId: 1, scopeId: '10' });
+      expect(await repository.getPullAttentions!(1)).toEqual([{ userId: 1, scopeId: '11', reason: 'authorization_required', status: 401 }]);
+      expect(await repository.getPullAttentions!(2)).toEqual([{ userId: 2, scopeId: '10', reason: 'authorization_required', status: 403 }]);
+      await repository.clearUser(1);
+      expect(await repository.getPullAttentions!(1)).toEqual([]);
+      expect(await repository.getPullAttentions!(2)).toEqual([{ userId: 2, scopeId: '10', reason: 'authorization_required', status: 403 }]);
+    });
+  });
+
   describe('replica remoteId uniqueness', () => {
     const scope = { userId: 1, scopeId: '10' };
     const groupRow = {

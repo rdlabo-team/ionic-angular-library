@@ -26,6 +26,7 @@ import {
   OFFLINE_REPOSITORY,
   type OfflineCommand,
   type OfflineCommandIdentity,
+  type OfflinePullAttention,
   type OfflineReplicaAddress,
   type OfflineReplicaRow,
   type OfflineRepository,
@@ -96,6 +97,7 @@ describe('OfflineSyncService', () => {
   let commands: OfflineCommand[];
   let rows: OfflineReplicaRow[];
   let reconciliationScopes: OfflineScope[];
+  let pullAttentions: OfflinePullAttention[];
   let connected: ReturnType<typeof signal<boolean>>;
   let session: { userId: number; scopes: OfflineScope[] } | null;
   let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
@@ -115,6 +117,7 @@ describe('OfflineSyncService', () => {
     commands = [];
     rows = [];
     reconciliationScopes = [];
+    pullAttentions = [];
     connected = signal(false);
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     localSession = undefined;
@@ -218,6 +221,31 @@ describe('OfflineSyncService', () => {
       getReconciliationScopes: vi.fn(async (userId: number) =>
         reconciliationScopes.filter((scope) => scope.userId === userId).map((scope) => ({ ...scope })),
       ),
+      getPullAttentions: vi.fn(async (userId: number) =>
+        pullAttentions.filter((attention) => attention.userId === userId).map((attention) => structuredClone(attention)),
+      ),
+      putPullAttention: vi.fn(async (attention: OfflinePullAttention) => {
+        pullAttentions = pullAttentions.filter(
+          (candidate) => candidate.userId !== attention.userId || candidate.scopeId !== attention.scopeId,
+        );
+        pullAttentions.push(structuredClone(attention));
+      }),
+      removePullAttention: vi.fn(async (scope: OfflineScope) => {
+        pullAttentions = pullAttentions.filter((candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId);
+      }),
+      clearUser: vi.fn(async (userId: number) => {
+        commands = commands.filter((item) => item.userId !== userId);
+        rows = rows.filter((item) => item.userId !== userId);
+        reconciliationScopes = reconciliationScopes.filter((scope) => scope.userId !== userId);
+        pullAttentions = pullAttentions.filter((attention) => attention.userId !== userId);
+      }),
+      clearScope: vi.fn(async (scope: OfflineScope) => {
+        commands = commands.filter((item) => item.userId !== scope.userId || item.scopeId !== scope.scopeId);
+        reconciliationScopes = reconciliationScopes.filter(
+          (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
+        );
+        pullAttentions = pullAttentions.filter((candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId);
+      }),
       transactReplica: vi.fn(async (transaction) => {
         for (const row of transaction.putRows ?? []) {
           rows = rows.filter(
@@ -253,6 +281,15 @@ describe('OfflineSyncService', () => {
           reconciliationScopes = reconciliationScopes.filter(
             (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
           );
+        }
+        for (const attention of transaction.putPullAttentions ?? []) {
+          pullAttentions = pullAttentions.filter(
+            (candidate) => candidate.userId !== attention.userId || candidate.scopeId !== attention.scopeId,
+          );
+          pullAttentions.push(structuredClone(attention));
+        }
+        for (const scope of transaction.removePullAttentions ?? []) {
+          pullAttentions = pullAttentions.filter((candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId);
         }
         commands.sort((left, right) => left.createdAt - right.createdAt);
       }),
@@ -1341,6 +1378,262 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toBe(schemaError);
     expect(execute).not.toHaveBeenCalled();
     expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(['10']);
+    expect(service.syncState()).toBe('attention');
+    expect(service.pullAttentions()).toEqual([
+      { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+      { userId: 1, scopeId: '20', reason: 'schema_upgrade_required' },
+    ]);
+
+    connected.set(false);
+    await service.resetSession();
+    await service.refreshLocalSession();
+    expect(service.syncState()).toBe('attention');
+    expect(execute).not.toHaveBeenCalled();
+
+    pull.mockResolvedValue(undefined);
+    connected.set(true);
+    await expect(service.flush()).resolves.toBeUndefined();
+    expect(service.pullAttentions()).toEqual([]);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('empty Outboxのschema fatalはattentionとして可視でrestart後もdurable、pendingは未送信のまま', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const schemaError = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw schemaError;
+    });
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(schemaError);
+    expect(commands).toEqual([]);
+    expect(service.syncState()).toBe('attention');
+    expect(service.pullAttentions()).toEqual([
+      { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+      { userId: 1, scopeId: '20', reason: 'schema_upgrade_required' },
+    ]);
+    expect(pullAttentions).toEqual(service.pullAttentions());
+
+    TestBed.resetTestingModule();
+    // Rebuild with the same durable pullAttentions / empty Outbox to simulate restart.
+    connected = signal(false);
+    pull = vi.fn(async () => undefined);
+    handleError = vi.fn();
+    const repository = {
+      initialize: vi.fn(async () => undefined),
+      getCommands: vi.fn(async () => []),
+      getCommandsForUser: vi.fn(async () => []),
+      putCommand: vi.fn(),
+      replaceCommand: vi.fn(),
+      removeCommand: vi.fn(),
+      getReplicaRow: vi.fn(async () => null),
+      getReplicaRowIncludingPendingDelete: vi.fn(async () => null),
+      getReplicaRowByRemoteId: vi.fn(async () => null),
+      getReplicaRowByRemoteIdentity: vi.fn(async () => null),
+      getReplicaCursor: vi.fn(async () => null),
+      getReconciliationScopes: vi.fn(async () => []),
+      getPullAttentions: vi.fn(async (userId: number) =>
+        pullAttentions.filter((attention) => attention.userId === userId).map((attention) => structuredClone(attention)),
+      ),
+      transactReplica: vi.fn(async () => undefined),
+    } as unknown as OfflineRepository;
+    TestBed.configureTestingModule({
+      providers: [
+        OfflineSyncService,
+        { provide: OFFLINE_REPOSITORY, useValue: repository },
+        { provide: OfflineNetworkService, useValue: { connected } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: options },
+        { provide: OfflineReplicaPullService, useValue: { pull } },
+        { provide: ErrorHandler, useValue: { handleError } },
+        { provide: OFFLINE_COMMAND_HOOKS, useValue: { entityType: (command: OfflineCommand) => command.aggregateType } },
+        {
+          provide: OFFLINE_SYNC_CONTEXT,
+          useValue: {
+            getLocalSession: vi.fn(async () => session),
+            getSession: vi.fn(async () => session),
+          },
+        },
+        {
+          provide: OFFLINE_COMMAND_EXECUTOR,
+          useValue: {
+            execute,
+            provesCommandNotCommitted,
+            withServerRevision: (command: OfflineCommand) => command,
+            withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
+          },
+        },
+        { provide: OFFLINE_RETRY_RANDOM, useValue: () => 0.5 },
+      ],
+    });
+    service = TestBed.inject(OfflineSyncService);
+    await service.refreshSession();
+    expect(service.syncState()).toBe('attention');
+    expect(service.pullAttentions()).toEqual([
+      { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+      { userId: 1, scopeId: '20', reason: 'schema_upgrade_required' },
+    ]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('schema fatal後の互換pullはattentionを消してpendingを送信する', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const schemaError = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw schemaError;
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'pending-after-schema' },
+        operation: 'documents.create',
+        payload: { title: 'pending' },
+        optimisticValue: { id: 0, title: 'pending' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(schemaError);
+    expect(execute).not.toHaveBeenCalled();
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.state).toBe('pending');
+    expect(service.syncState()).toBe('attention');
+
+    pull.mockImplementation(async () => undefined);
+    await service.flush();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(commands).toEqual([]);
+    expect(service.pullAttentions()).toEqual([]);
+    expect(pullAttentions).toEqual([]);
+    expect(service.syncState()).toBe('idle');
+  });
+
+  it('pre-pull HTTP 403はfailing scopeだけにauthorization attentionを付ける', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const forbidden = { status: 403, message: 'Forbidden' };
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw forbidden;
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-b-403' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+        optimisticValue: { id: 0, title: 'b' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(forbidden);
+    expect(service.pullAttentions()).toEqual([{ userId: 1, scopeId: '10', reason: 'authorization_required', status: 403 }]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.state).toBe('pending');
+  });
+
+  it('pre-pull HTTP 401はprincipal全scopeにauthorization attentionを付ける', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const unauthorized = { status: 401, message: 'Unauthorized' };
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw unauthorized;
+    });
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(unauthorized);
+    expect(service.pullAttentions()).toEqual([
+      { userId: 1, scopeId: '10', reason: 'authorization_required', status: 401 },
+      { userId: 1, scopeId: '20', reason: 'authorization_required', status: 401 },
+    ]);
+  });
+
+  it('clearUserはdurable pull attentionを削除する', async () => {
+    pullAttentions = [
+      { userId: 1, scopeId: '10', reason: 'schema_upgrade_required' },
+      { userId: 2, scopeId: '10', reason: 'authorization_required', status: 401 },
+    ];
+    const repository = TestBed.inject(OFFLINE_REPOSITORY);
+    await repository.clearUser!(1);
+    expect(pullAttentions).toEqual([{ userId: 2, scopeId: '10', reason: 'authorization_required', status: 401 }]);
+  });
+
+  it('遅延した旧世代のfatal pull attentionは新世代のattentionを上書きしない', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    let releaseFatal!: (error: unknown) => void;
+    let pullStarted!: () => void;
+    const pullEntered = new Promise<void>((resolve) => {
+      pullStarted = resolve;
+    });
+    const blockedPull = new Promise<never>((_resolve, reject) => {
+      releaseFatal = reject;
+    });
+    // Avoid unhandled rejection if the gate is abandoned mid-test.
+    void blockedPull.catch(() => undefined);
+    pull.mockImplementation(async (scope) => {
+      if (scope.userId === 1 && scope.scopeId === '10') {
+        pullStarted();
+        await blockedPull;
+      }
+    });
+    connected.set(true);
+    const flushA = service.flush();
+    const flushAResult = flushA.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    await pullEntered;
+
+    // Stay offline before revoke so the network effect cannot arm a background flush.
+    connected.set(false);
+    // Transition generation only after the old flush is blocked inside pull.
+    service.revokeSession();
+    pullAttentions = [{ userId: 2, scopeId: '30', reason: 'authorization_required', status: 403 }];
+    session = {
+      userId: 2,
+      scopes: [
+        { userId: 2, scopeId: '10' },
+        { userId: 2, scopeId: '30' },
+      ],
+    };
+    pull.mockImplementation(async () => undefined);
+    await service.refreshSession();
+    expect(service.pullAttentions()).toEqual([{ userId: 2, scopeId: '30', reason: 'authorization_required', status: 403 }]);
+
+    const staleFatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    releaseFatal(staleFatal);
+    expect(await flushAResult).toBe(staleFatal);
+    expect(pullAttentions).toEqual([{ userId: 2, scopeId: '30', reason: 'authorization_required', status: 403 }]);
+    expect(service.pullAttentions()).toEqual([{ userId: 2, scopeId: '30', reason: 'authorization_required', status: 403 }]);
   });
 
   it('pre-pull HTTP 409はschema mismatch fatalとして残りscopeを止め成功scopeも送らない', async () => {
@@ -2735,6 +3028,7 @@ describe('OfflineSyncService', () => {
       getReplicaRowByRemoteIdentity: vi.fn(async () => null),
       getReplicaCursor: vi.fn(async () => null),
       getReconciliationScopes: vi.fn(async () => []),
+      getPullAttentions: vi.fn(async () => []),
       transactReplica: vi.fn(async (transaction) => {
         for (const command of transaction.putCommands ?? []) {
           commands = commands.filter((item) => item.commandId !== command.commandId);
@@ -4444,6 +4738,7 @@ describe('OfflineSyncService', () => {
       commands = [];
       rows = [];
       reconciliationScopes = [];
+      pullAttentions = [];
       connected = signal(false);
       session = multiScopeSession;
       beforePutCommand = null;
@@ -4506,6 +4801,9 @@ describe('OfflineSyncService', () => {
         getReconciliationScopes: vi.fn(async (userId: number) =>
           reconciliationScopes.filter((scope) => scope.userId === userId).map((scope) => ({ ...scope })),
         ),
+        getPullAttentions: vi.fn(async (userId: number) =>
+          pullAttentions.filter((attention) => attention.userId === userId).map((attention) => structuredClone(attention)),
+        ),
         transactReplica: vi.fn(async (transaction) => {
           for (const row of transaction.putRows ?? []) {
             const existing = findReplicaRow(row, row.sourceKey, row.identity);
@@ -4542,6 +4840,15 @@ describe('OfflineSyncService', () => {
             reconciliationScopes = reconciliationScopes.filter(
               (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
             );
+          }
+          for (const attention of transaction.putPullAttentions ?? []) {
+            pullAttentions = pullAttentions.filter(
+              (candidate) => candidate.userId !== attention.userId || candidate.scopeId !== attention.scopeId,
+            );
+            pullAttentions.push(structuredClone(attention));
+          }
+          for (const scope of transaction.removePullAttentions ?? []) {
+            pullAttentions = pullAttentions.filter((candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId);
           }
           commands.sort(compareCommands);
         }),
@@ -5032,6 +5339,35 @@ describe('OfflineSyncService', () => {
       expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' });
       expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
       expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+    });
+
+    it('pulls every durable attention scope during partial recovery and clears recovered attentions', async () => {
+      pullAttentions = [
+        { userId: 1, scopeId: '10', reason: 'authorization_required', status: 401 },
+        { userId: 1, scopeId: '20', reason: 'authorization_required', status: 401 },
+      ];
+
+      await service.refreshSession(['10']);
+
+      await vi.waitFor(() => expect(pull.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' });
+      expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
+      expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '30' });
+      await vi.waitFor(() => expect(service.pullAttentions()).toEqual([]));
+    });
+
+    it('prunes durable attentions for scopes removed from the active session', async () => {
+      pullAttentions = [
+        { userId: 1, scopeId: '10', reason: 'authorization_required', status: 403 },
+        { userId: 1, scopeId: '99', reason: 'authorization_required', status: 403 },
+      ];
+
+      await service.refreshSession(['10']);
+
+      await vi.waitFor(() =>
+        expect(service.pullAttentions()).toEqual([{ userId: 1, scopeId: '10', reason: 'authorization_required', status: 403 }]),
+      );
+      expect(pullAttentions.some((attention) => attention.scopeId === '99')).toBe(false);
     });
 
     it('reconnect automatic flush respects foreground policy', async () => {

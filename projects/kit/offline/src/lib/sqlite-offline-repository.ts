@@ -32,6 +32,8 @@ import {
   type OfflineCommand,
   type OfflineCommandIdentity,
   type OfflinePrincipalId,
+  type OfflinePullAttention,
+  type OfflinePullAttentionReason,
   type OfflineReplicaAddress,
   type OfflineReplicaCursor,
   type OfflineReplicaIdentity,
@@ -188,6 +190,13 @@ const SCHEMA = [
   scope_id TEXT NOT NULL,
   PRIMARY KEY (user_id, scope_id)
 )`,
+  `CREATE TABLE IF NOT EXISTS offline_pull_attentions (
+  user_id TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status INTEGER,
+  PRIMARY KEY (user_id, scope_id)
+)`,
 ];
 
 /** Native iOS/Android repository backed by encrypted `@capacitor-community/sqlite`. */
@@ -282,6 +291,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#withCommittedRead(() => this.#readReconciliationScopes(userId));
   }
 
+  async getPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
+    return this.#withCommittedRead(() => this.#readPullAttentions(userId));
+  }
+
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     return this.#withCommittedRead(() => this.#readCommands(scope));
   }
@@ -306,6 +319,26 @@ export class SqliteOfflineRepository implements OfflineRepository {
     await this.#write('DELETE FROM offline_sync_commands WHERE command_id = ?', [commandId]);
   }
 
+  async putPullAttention(attention: OfflinePullAttention): Promise<void> {
+    await this.#write(
+      `INSERT INTO offline_pull_attentions (user_id, scope_id, reason, status) VALUES (?, ?, ?, ?)
+       ON CONFLICT(user_id, scope_id) DO UPDATE SET reason = excluded.reason, status = excluded.status`,
+      [
+        canonicalOfflinePrincipalId(attention.userId),
+        attention.scopeId,
+        attention.reason,
+        attention.status === undefined ? null : attention.status,
+      ],
+    );
+  }
+
+  async removePullAttention(scope: OfflineScope): Promise<void> {
+    await this.#write('DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', [
+      canonicalOfflinePrincipalId(scope.userId),
+      scope.scopeId,
+    ]);
+  }
+
   async clearUser(userId: OfflinePrincipalId): Promise<void> {
     await this.#transaction(async (database) => {
       const principal = canonicalOfflinePrincipalId(userId);
@@ -313,6 +346,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ?', [principal]);
       await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ?', [principal]);
       await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ?', [principal]);
+      await this.#execute(database, 'DELETE FROM offline_pull_attentions WHERE user_id = ?', [principal]);
       for (const entity of this.#options.replicaSchema.entities) {
         await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ?`, [principal]);
       }
@@ -336,6 +370,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       }
       await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', values);
       await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', values);
+      await this.#execute(database, 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', values);
       for (const entity of this.#options.replicaSchema.entities) {
         if (entity.scope !== 'partition') continue;
         await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_scope_id = ?`, values);
@@ -383,6 +418,25 @@ export class SqliteOfflineRepository implements OfflineRepository {
       }
       for (const scope of transaction.removeReconciliationScopes ?? []) {
         await this.#execute(databaseId, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', [
+          canonicalOfflinePrincipalId(scope.userId),
+          scope.scopeId,
+        ]);
+      }
+      for (const attention of transaction.putPullAttentions ?? []) {
+        await this.#execute(
+          databaseId,
+          `INSERT INTO offline_pull_attentions (user_id, scope_id, reason, status) VALUES (?, ?, ?, ?)
+           ON CONFLICT(user_id, scope_id) DO UPDATE SET reason = excluded.reason, status = excluded.status`,
+          [
+            canonicalOfflinePrincipalId(attention.userId),
+            attention.scopeId,
+            attention.reason,
+            attention.status === undefined ? null : attention.status,
+          ],
+        );
+      }
+      for (const scope of transaction.removePullAttentions ?? []) {
+        await this.#execute(databaseId, 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', [
           canonicalOfflinePrincipalId(scope.userId),
           scope.scopeId,
         ]);
@@ -593,6 +647,22 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return rows.map((row) => ({ userId, scopeId: this.#string(row['scope_id']) }));
   }
 
+  async #readPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
+    const rows = await this.#query('SELECT scope_id, reason, status FROM offline_pull_attentions WHERE user_id = ? ORDER BY scope_id', [
+      canonicalOfflinePrincipalId(userId),
+    ]);
+    return rows.map((row) => {
+      const status = row['status'];
+      const attention: OfflinePullAttention = {
+        userId,
+        scopeId: this.#string(row['scope_id']),
+        reason: this.#string(row['reason']) as OfflinePullAttentionReason,
+      };
+      if (status !== null && status !== undefined) attention.status = this.#number(status);
+      return attention;
+    });
+  }
+
   async #readCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     const rows = await this.#query(
       'SELECT * FROM offline_sync_commands WHERE user_id = ? AND scope_id = ? ORDER BY created_at ASC, command_id ASC',
@@ -632,6 +702,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       getReplicaRowByRemoteIdentity: (scope, sourceKey, identity) => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity),
       getReplicaCursor: (scope) => this.#readReplicaCursor(scope),
       getReconciliationScopes: (userId) => this.#readReconciliationScopes(userId),
+      getPullAttentions: (userId) => this.#readPullAttentions(userId),
       getCommands: (scope) => this.#readCommands(scope),
       getCommandsForUser: (userId) => this.#readCommandsForUser(userId),
     };
