@@ -1414,6 +1414,100 @@ describe('OfflineSyncService', () => {
     });
   });
 
+  it('同じaggregateの競合commandと後続intentを一transactionで再materializeする', async () => {
+    const firstId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-chain' },
+        operation: 'documents.update',
+        payload: { title: 'stocktake' },
+        optimisticValue: { id: 15, title: 'stocktake' },
+        baseRevision: 1,
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-chain' },
+        operation: 'documents.update',
+        payload: { title: 'later delta' },
+        optimisticValue: { id: 15, title: 'later delta' },
+        baseRevision: 1,
+      },
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+    const originalIds = commands.map((command) => command.commandId);
+    const originalCreatedAt = commands.map((command) => command.createdAt);
+
+    const replacementIds = await service.replacePreparedAggregate(
+      firstId,
+      async (_repository, chain) =>
+        chain.map((command, index) => ({
+          request: {
+            scopeId: command.scopeId,
+            aggregateType: command.aggregateType,
+            identity: command.identity,
+            operation: command.operation,
+            payload: command.payload,
+            optimisticValue: { id: 15, title: index === 0 ? 'new stocktake' : 'new stocktake plus delta' },
+            baseRevision: 2,
+          },
+        })),
+      { flush: false },
+    );
+
+    expect(replacementIds).toHaveLength(2);
+    expect(replacementIds).not.toEqual(originalIds);
+    expect(commands.map((command) => command.commandId)).toEqual(replacementIds);
+    expect(commands.map((command) => command.state)).toEqual(['pending', 'pending']);
+    expect(commands.map((command) => command.createdAt)).toEqual(originalCreatedAt);
+    expect(rows.find((row) => row.identity.kind === 'generated' && row.identity.localId === 'replace-chain')?.values).toEqual({
+      id: 15,
+      title: 'new stocktake plus delta',
+    });
+  });
+
+  it('aggregate chainの準備失敗では元commandとprojectionを一切変更しない', async () => {
+    const firstId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-chain-failure' },
+        operation: 'documents.update',
+        payload: { title: 'first' },
+        optimisticValue: { id: 16, title: 'first' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'replace-chain-failure' },
+        operation: 'documents.update',
+        payload: { title: 'second' },
+        optimisticValue: { id: 16, title: 'second' },
+      },
+      { flush: false },
+    );
+    commands[0] = { ...commands[0]!, state: 'conflict' };
+    const beforeCommands = structuredClone(commands);
+    const beforeRows = structuredClone(rows);
+
+    await expect(
+      service.replacePreparedAggregate(firstId, async () => {
+        throw new Error('chain preparation failed');
+      }),
+    ).rejects.toThrow('chain preparation failed');
+
+    expect(commands).toEqual(beforeCommands);
+    expect(rows).toEqual(beforeRows);
+  });
+
   it('companionの対象集合を変えるreplacementを元commandと楽観値を残して拒否する', async () => {
     const companion: OfflineReplicaRow = {
       userId: 1,
