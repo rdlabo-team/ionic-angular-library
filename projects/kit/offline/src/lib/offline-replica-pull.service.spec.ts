@@ -246,6 +246,76 @@ describe('OfflineReplicaPullService', () => {
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'snapshot-1' });
   });
 
+  it('keeps the previous replica durable until the first rebaseline snapshot can commit atomically', async () => {
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: 'stale', remoteId: 10 },
+          values: { id: 10, title: 'Stale' },
+          confirmedValues: { id: 10, title: 'Stale' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+      putCursors: [{ ...scope, cursor: 'expired' }],
+    });
+    const transact = vi.spyOn(repository, 'transactReplica');
+    transact.mockClear();
+    pull
+      .mockResolvedValueOnce(page([], { nextCursor: '', hasMore: true, rebaselineRequired: true }))
+      .mockResolvedValueOnce(page([itemChange(42, 'Fresh')], { nextCursor: 'snapshot-1' }));
+
+    await service.pull(scope);
+
+    expect(pull.mock.calls.map(([request]) => request.cursor)).toEqual(['expired', '']);
+    expect(transact).toHaveBeenCalledTimes(1);
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 10)).resolves.toBeNull();
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).resolves.toMatchObject({
+      values: { title: 'Fresh' },
+    });
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'snapshot-1' });
+  });
+
+  it('preserves the previous replica and cursor when the first rebaseline snapshot fails', async () => {
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: 'stale', remoteId: 10 },
+          values: { id: 10, title: 'Stale' },
+          confirmedValues: { id: 10, title: 'Stale' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+      putCursors: [{ ...scope, cursor: 'expired' }],
+    });
+    pull
+      .mockResolvedValueOnce(page([], { nextCursor: '', hasMore: true, rebaselineRequired: true }))
+      .mockRejectedValueOnce(new Error('snapshot unavailable'));
+
+    await expect(service.pull(scope)).rejects.toThrow('snapshot unavailable');
+
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 10)).resolves.toMatchObject({
+      values: { title: 'Stale' },
+    });
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'expired' });
+  });
+
+  it('rejects a terminal rebaseline marker without clearing the previous replica', async () => {
+    await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'expired' }] });
+    pull.mockResolvedValueOnce(page([], { nextCursor: '', rebaselineRequired: true }));
+
+    await expect(service.pull(scope)).rejects.toThrow('Offline replica rebaseline marker must lead to a snapshot page.');
+
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'expired' });
+  });
+
   it('rejects projector attempts to mutate synchronized base rows without advancing the cursor', async () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
     projector.project.mockResolvedValue({

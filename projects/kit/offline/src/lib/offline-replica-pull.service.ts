@@ -53,27 +53,37 @@ export class OfflineReplicaPullService {
   async pull(scope: OfflineScope): Promise<void> {
     if (this.#options.mode === 'readCacheOnly') return;
     const schemaHash = await (this.#schemaHash ??= sha256OfflineReplicaSchema(this.#options.replicaSchema));
-    let cursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
+    let persistedCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
+    let requestCursor = persistedCursor;
+    let rebaselinePending = false;
 
     for (;;) {
       const page = await this.#puller.pull({
         scope,
-        cursor,
+        cursor: requestCursor,
         schemaVersion: this.#options.replicaSchema.version,
         schemaHash,
       });
       this.#assertPullPage(page);
       this.#assertHandshake(page.schemaVersion, page.schemaHash, schemaHash);
-      if (page.hasMore && page.nextCursor === cursor) {
+      if (page.hasMore && page.nextCursor === requestCursor) {
         throw new Error(`Offline replica pull cursor did not advance for scope ${scope.userId}:${scope.scopeId}.`);
       }
-      if (page.changes.length === 0 && !page.hasMore && page.nextCursor === cursor) {
+      if (page.changes.length === 0 && !page.hasMore && page.nextCursor === requestCursor && !rebaselinePending) {
         return;
+      }
+      if (page.rebaselineRequired && page.changes.length === 0 && !page.hasMore) {
+        throw new Error('Offline replica rebaseline marker must lead to a snapshot page.');
+      }
+      if (page.rebaselineRequired && page.changes.length === 0 && page.hasMore) {
+        rebaselinePending = true;
+        requestCursor = page.nextCursor;
+        continue;
       }
 
       const applied = await this.#replicaMutations.run(async () => {
         const currentCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
-        if (currentCursor !== cursor) return currentCursor;
+        if (currentCursor !== persistedCursor) return currentCursor;
         const scopeCommands = await this.#repository.getCommands(scope);
         const userCommands = this.#repository.getCommandsForUser ? await this.#repository.getCommandsForUser(scope.userId) : scopeCommands;
         const changes = this.#collapseChanges(page.changes);
@@ -81,7 +91,7 @@ export class OfflineReplicaPullService {
         const removeRows: OfflineReplicaRowKey[] = [];
         const putCommands = new Map<string, OfflineCommand>();
         const removeCommandIds = new Set<string>();
-        if (page.rebaselineRequired) {
+        if (rebaselinePending || page.rebaselineRequired) {
           removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, scopeCommands)));
         }
 
@@ -217,10 +227,14 @@ export class OfflineReplicaPullService {
         return page.nextCursor;
       });
       if (applied !== page.nextCursor) {
-        cursor = applied;
+        persistedCursor = applied;
+        requestCursor = applied;
+        rebaselinePending = false;
         continue;
       }
-      cursor = page.nextCursor;
+      persistedCursor = page.nextCursor;
+      requestCursor = page.nextCursor;
+      rebaselinePending = false;
       if (!page.hasMore) return;
     }
   }
