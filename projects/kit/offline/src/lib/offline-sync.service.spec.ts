@@ -10,7 +10,7 @@ import {
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
-import { OfflineReplicaPullService } from './offline-replica-pull.service';
+import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './offline-replica-pull.service';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import {
   defineOfflineReplicaSchema,
@@ -36,6 +36,8 @@ import {
   OfflineCommandInFlightError,
   OfflinePayloadValidationError,
   OfflineSyncService,
+  OFFLINE_RETRY_RANDOM,
+  offlineRetryDelayMs,
   type PreparedOfflineCommand,
 } from './offline-sync.service';
 
@@ -283,6 +285,8 @@ describe('OfflineSyncService', () => {
             withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
           },
         },
+        // Fixed sample so backoff stays deterministic (except dedicated jitter unit tests).
+        { provide: OFFLINE_RETRY_RANDOM, useValue: () => 0.5 },
       ],
     });
     service = TestBed.inject(OfflineSyncService);
@@ -1123,6 +1127,655 @@ describe('OfflineSyncService', () => {
     expect(reconciliationScopes).toEqual([]);
   });
 
+  it('pre-pull: 無関係なscope A失敗でも成功したscope Bのeligible aggregateは送信する', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const scopeAError = new Error('scope A pre-pull failed');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw scopeAError;
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-a' },
+        operation: 'documents.create',
+        payload: { title: 'a' },
+        optimisticValue: { id: 0, title: 'a' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-b' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+        optimisticValue: { id: 0, title: 'b' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(scopeAError);
+
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls.map(([command]) => (command as OfflineCommand).identity)).toEqual([
+      expect.objectContaining({ localId: 'scope-b' }),
+    ]);
+    expect(commands.map((command) => command.identity)).toEqual([expect.objectContaining({ localId: 'scope-a' })]);
+  });
+
+  it('pre-pull: 同一scopeのpull失敗ではそのscopeのcommandを送らない', async () => {
+    const scopeError = new Error('same scope pre-pull failed');
+    pull.mockRejectedValue(scopeError);
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'blocked-by-pull' },
+        operation: 'documents.create',
+        payload: { title: 'blocked' },
+        optimisticValue: { id: 0, title: 'blocked' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(scopeError);
+    expect(execute).not.toHaveBeenCalled();
+    expect(commands).toEqual([expect.objectContaining({ identity: expect.objectContaining({ localId: 'blocked-by-pull' }) })]);
+  });
+
+  it('pre-pull失敗があってもsend workerが全てsettledしてからflushがrejectする', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const scopeAError = new Error('scope A pre-pull failed after workers');
+    let releaseSend: (() => void) | undefined;
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    let sendStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      sendStarted = resolve;
+    });
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw scopeAError;
+    });
+    execute.mockImplementation(async () => {
+      sendStarted?.();
+      await sendGate;
+      return { response: null };
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-a-wait' },
+        operation: 'documents.create',
+        payload: { title: 'a' },
+        optimisticValue: { id: 0, title: 'a' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-b-wait' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+        optimisticValue: { id: 0, title: 'b' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    const flush = service.flush();
+    const flushRejected = expect(flush).rejects.toBe(scopeAError);
+    await started;
+    expect(execute).toHaveBeenCalledOnce();
+    releaseSend?.();
+    await flushRejected;
+    expect(execute).toHaveBeenCalledOnce();
+    expect(commands.map((command) => command.identity)).toEqual([expect.objectContaining({ localId: 'scope-a-wait' })]);
+  });
+
+  it('status無しworker失敗でも他workerのACK完了までflushをrejectしない', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const statuslessFailure = new Error('status-less transport failure');
+    let releaseSuccess!: () => void;
+    const successGate = new Promise<void>((resolve) => {
+      releaseSuccess = resolve;
+    });
+    let successStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      successStarted = resolve;
+    });
+    execute.mockImplementation(async (command) => {
+      if (command.identity.kind === 'generated' && command.identity.localId === 'fail-early') {
+        throw statuslessFailure;
+      }
+      successStarted();
+      await successGate;
+      return { response: null, serverRevision: 2 };
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'fail-early' },
+        operation: 'documents.create',
+        payload: { title: 'fail' },
+        optimisticValue: { id: 0, title: 'fail' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'succeed-deferred' },
+        operation: 'documents.create',
+        payload: { title: 'ok' },
+        optimisticValue: { id: 0, title: 'ok' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    const flush = service.flush();
+    const flushRejected = expect(flush).rejects.toBe(statuslessFailure);
+    await started;
+    expect(commands.some((command) => command.identity.kind === 'generated' && command.identity.localId === 'succeed-deferred')).toBe(true);
+    releaseSuccess();
+    await flushRejected;
+    expect(commands.map((command) => command.identity)).toEqual([expect.objectContaining({ localId: 'fail-early' })]);
+    expect(commands[0]).toMatchObject({ state: 'retry_wait', serverCommitUnknown: true });
+    expect(service.syncState()).toBe('attention');
+    expect(pull.mock.calls.some((call) => call[0]?.scopeId === '20')).toBe(true);
+  });
+
+  it('typed schema mismatchのpre-pull fatalでは残りscopeを止め成功scopeも送らない', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const schemaError = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw schemaError;
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-b-fatal' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+        optimisticValue: { id: 0, title: 'b' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(schemaError);
+    expect(execute).not.toHaveBeenCalled();
+    expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(['10']);
+  });
+
+  it('pre-pull HTTP 409はschema mismatch fatalとして残りscopeを止め成功scopeも送らない', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const schemaConflict = { status: 409, message: 'Conflict' };
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw schemaConflict;
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-b-http-409' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+        optimisticValue: { id: 0, title: 'b' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(schemaConflict);
+    expect(execute).not.toHaveBeenCalled();
+    expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(['10']);
+  });
+
+  it.each([
+    ['OfflineReplicaSchemaMismatchError', () => new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def')],
+    ['HTTP 401', () => ({ status: 401, message: 'Unauthorized' })],
+    ['HTTP 403', () => ({ status: 403, message: 'Forbidden' })],
+    ['HTTP 409', () => ({ status: 409, message: 'Conflict' })],
+  ] as const)('pre-pull fatal (%s) は1s自動retryせずpending post-pullもスキップする', async (_label, createError) => {
+    vi.useFakeTimers();
+    try {
+      session = {
+        userId: 1,
+        scopes: [
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+        ],
+      };
+      let scope20Pulls = 0;
+      const postPullError = new Error('scope 20 post-send pull failed before fatal');
+      const fatalError = createError();
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '20') {
+          scope20Pulls += 1;
+          // First full flush: pre-pull ok, post-send pull fails and leaves pending marker.
+          if (scope20Pulls === 2) throw postPullError;
+        }
+      });
+      await service.enqueue(
+        {
+          scopeId: '20',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: `fatal-skip-post-${_label.replace(/\s+/g, '-')}` },
+          operation: 'documents.create',
+          payload: { title: 'seed' },
+          optimisticValue: { id: 0, title: 'seed' },
+        },
+        { flush: false },
+      );
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(postPullError);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(commands).toEqual([]);
+      // Drop the transient post-pull retry so this case only asserts fatal does not arm a new one.
+      vi.clearAllTimers();
+
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '10') throw fatalError;
+      });
+      const pullsBeforeFatal = pull.mock.calls.length;
+      await expect(service.flush()).rejects.toBe(fatalError);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(pull.mock.calls.slice(pullsBeforeFatal).map((call) => call[0]?.scopeId)).toEqual(['10']);
+
+      const pullsAfterFatal = pull.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(pull.mock.calls.length).toBe(pullsAfterFatal);
+      expect(handleError).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['OfflineReplicaSchemaMismatchError', () => new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def')],
+    ['HTTP 401', () => ({ status: 401, message: 'Unauthorized' })],
+    ['HTTP 403', () => ({ status: 403, message: 'Forbidden' })],
+    ['HTTP 409', () => ({ status: 409, message: 'Conflict' })],
+  ] as const)('post-send pull fatal (%s) は残りpending post-pullを止めACK保持・1s自動retryなし', async (_label, createError) => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      session = {
+        userId: 1,
+        scopes: [
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+        ],
+      };
+      const fatalError = createError();
+      const pullsByScope = new Map<string, number>();
+      pull.mockImplementation(async (scope) => {
+        const count = (pullsByScope.get(scope.scopeId) ?? 0) + 1;
+        pullsByScope.set(scope.scopeId, count);
+        // Second pull for a scope is the post-send pull after ACK.
+        if (count >= 2) throw fatalError;
+      });
+      await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: `post-fatal-a-${_label.replace(/\s+/g, '-')}` },
+          operation: 'documents.create',
+          payload: { title: 'a' },
+          optimisticValue: { id: 0, title: 'a' },
+        },
+        { flush: false },
+      );
+      await service.enqueue(
+        {
+          scopeId: '20',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: `post-fatal-b-${_label.replace(/\s+/g, '-')}` },
+          operation: 'documents.create',
+          payload: { title: 'b' },
+          optimisticValue: { id: 0, title: 'b' },
+        },
+        { flush: false },
+      );
+
+      setTimeoutSpy.mockClear();
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(fatalError);
+
+      // Both commands ACKed (removed); no resend path.
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(commands).toEqual([]);
+      expect(service.pendingCount()).toBe(0);
+      // Two pending post-pull scopes: first fatal stops the second immediately.
+      expect(pullsByScope.get('10')).toBeGreaterThanOrEqual(1);
+      expect(pullsByScope.get('20')).toBeGreaterThanOrEqual(1);
+      const postPullScopes = [...pullsByScope.entries()].filter(([, count]) => count >= 2).map(([scopeId]) => scopeId);
+      expect(postPullScopes).toHaveLength(1);
+      expect([...pullsByScope.values()].reduce((sum, count) => sum + count, 0)).toBe(3);
+      // Reconciliation markers remain for later auth/upgrade recovery.
+      expect(reconciliationScopes).toEqual(
+        expect.arrayContaining([
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+        ]),
+      );
+      expect(reconciliationScopes).toHaveLength(2);
+      // Fatal must not arm the 1s automatic post-pull flush retry.
+      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
+
+      const pullsAfterFatal = pull.mock.calls.length;
+      // Drop unrelated scheduler/effect timers, then prove no 1s retry remained.
+      vi.clearAllTimers();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(pull.mock.calls.length).toBe(pullsAfterFatal);
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('post-send pull transientの後のfatalはfatalを優先して投げ残りpendingを止める', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      session = {
+        userId: 1,
+        scopes: [
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+          { userId: 1, scopeId: '30' },
+        ],
+      };
+      const transient = new Error('post-send transient');
+      const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+      const pullsByScope = new Map<string, number>();
+      let postPullAttempts = 0;
+      pull.mockImplementation(async (scope) => {
+        const count = (pullsByScope.get(scope.scopeId) ?? 0) + 1;
+        pullsByScope.set(scope.scopeId, count);
+        if (count < 2) return;
+        postPullAttempts += 1;
+        if (postPullAttempts === 1) throw transient;
+        throw fatal;
+      });
+      for (const [scopeId, localId] of [
+        ['10', 'post-prefer-a'],
+        ['20', 'post-prefer-b'],
+        ['30', 'post-prefer-c'],
+      ] as const) {
+        await service.enqueue(
+          {
+            scopeId,
+            aggregateType: 'documents',
+            identity: { kind: 'generated', localId },
+            operation: 'documents.create',
+            payload: { title: localId },
+            optimisticValue: { id: 0, title: localId },
+          },
+          { flush: false },
+        );
+      }
+
+      setTimeoutSpy.mockClear();
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(fatal);
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(commands).toEqual([]);
+      expect(postPullAttempts).toBe(2);
+      expect([...pullsByScope.values()].filter((count) => count >= 2)).toHaveLength(2);
+      expect([...pullsByScope.values()].filter((count) => count === 1)).toHaveLength(1);
+      expect(reconciliationScopes).toHaveLength(3);
+      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
+
+      const pullsAfterFatal = pull.mock.calls.length;
+      vi.clearAllTimers();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(pull.mock.calls.length).toBe(pullsAfterFatal);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('遅延した旧世代のpost-pull fatalは新世代のretry_wait timerを消さない', async () => {
+    vi.useFakeTimers();
+    try {
+      let releasePostPull!: (error: unknown) => void;
+      let postPullStarted!: () => void;
+      const postPullEntered = new Promise<void>((resolve) => {
+        postPullStarted = resolve;
+      });
+      const postPullGate = new Promise<void>((_resolve, reject) => {
+        releasePostPull = (error) => reject(error);
+      });
+      // Avoid unhandled rejection if the gate is abandoned mid-test.
+      void postPullGate.catch(() => undefined);
+
+      const pullsByScope = new Map<string, number>();
+      pull.mockImplementation(async (scope) => {
+        const count = (pullsByScope.get(`${scope.userId}:${scope.scopeId}`) ?? 0) + 1;
+        pullsByScope.set(`${scope.userId}:${scope.scopeId}`, count);
+        // Session A post-send pull stays pending until we release the fatal.
+        if (scope.userId === 1 && scope.scopeId === '10' && count >= 2) {
+          postPullStarted();
+          await postPullGate;
+        }
+      });
+
+      await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'stale-fatal-a' },
+          operation: 'documents.create',
+          payload: { title: 'a' },
+          optimisticValue: { id: 0, title: 'a' },
+        },
+        { flush: false },
+      );
+      connected.set(true);
+      const flushA = service.flush();
+      await postPullEntered;
+
+      // Transition generation without waiting for A's deferred post-pull to settle.
+      service.revokeSession();
+      commands = commands.filter((command) => command.userId !== 1);
+      rows = rows.filter((row) => row.userId !== 1);
+      session = { userId: 2, scopes: [{ userId: 2, scopeId: '20' }] };
+      // Stay offline during session B activation so refreshSession does not start a
+      // background flush that would swallow the subsequent explicit flush().
+      connected.set(false);
+      await service.refreshSession();
+
+      execute.mockRejectedValueOnce({ status: 500 }).mockResolvedValue({ response: null });
+      await service.enqueue(
+        {
+          scopeId: '20',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'stale-fatal-b' },
+          operation: 'documents.create',
+          payload: { title: 'b' },
+          optimisticValue: { id: 0, title: 'b' },
+        },
+        { flush: false },
+      );
+      connected.set(true);
+      await service.flush();
+      expect(service.pendingCommands()[0]).toMatchObject({
+        state: 'retry_wait',
+        retryAt: expect.any(Number),
+        identity: { kind: 'generated', localId: 'stale-fatal-b' },
+      });
+      const executesBeforeRetry = execute.mock.calls.length;
+
+      const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+      releasePostPull(fatal);
+      await expect(flushA).rejects.toBe(fatal);
+      // Stale fatal must settle/reject without clearing B's armed retry timer.
+      expect(service.pendingCommands()[0]).toMatchObject({
+        state: 'retry_wait',
+        identity: { kind: 'generated', localId: 'stale-fatal-b' },
+      });
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(execute.mock.calls.length).toBeGreaterThan(executesBeforeRetry);
+      expect(service.pendingCount()).toBe(0);
+      expect(commands.some((command) => command.identity.kind === 'generated' && command.identity.localId === 'stale-fatal-b')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pre-pull transient失敗はscope隔離し1s自動retryをスケジュールする', async () => {
+    vi.useFakeTimers();
+    try {
+      session = {
+        userId: 1,
+        scopes: [
+          { userId: 1, scopeId: '10' },
+          { userId: 1, scopeId: '20' },
+        ],
+      };
+      const transient = new Error('scope 10 transient pre-pull');
+      let scope10Pulls = 0;
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '10' && ++scope10Pulls === 1) throw transient;
+      });
+      await service.enqueue(
+        {
+          scopeId: '20',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'transient-isolated' },
+          operation: 'documents.create',
+          payload: { title: 'b' },
+          optimisticValue: { id: 0, title: 'b' },
+        },
+        { flush: false },
+      );
+
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(transient);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(expect.arrayContaining(['10', '20']));
+
+      const pullsBeforeRetry = pull.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(pull.mock.calls.length).toBeGreaterThan(pullsBeforeRetry);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('pre-pull transientの後のfatalはfatalを優先して投げ残りscopeを止める', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+        { userId: 1, scopeId: '30' },
+      ],
+    };
+    const transient = new Error('scope 10 transient');
+    const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw transient;
+      if (scope.scopeId === '20') throw fatal;
+    });
+    await service.enqueue(
+      {
+        scopeId: '30',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'prefer-fatal' },
+        operation: 'documents.create',
+        payload: { title: 'c' },
+        optimisticValue: { id: 0, title: 'c' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(fatal);
+    expect(execute).not.toHaveBeenCalled();
+    expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(['10', '20']);
+  });
+
+  it('英語messageだけのgeneric Errorはpre-pull fatalにしない', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const lookalike = new Error('Offline replica schema mismatch: client=1/abc, server=2/def.');
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw lookalike;
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'scope-b-lookalike' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+        optimisticValue: { id: 0, title: 'b' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(lookalike);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0]).toMatchObject({ identity: { localId: 'scope-b-lookalike' } });
+  });
+
   it('所属から外れたdurable reconciliation scopeをsession discoveryで破棄する', async () => {
     reconciliationScopes = [{ userId: 1, scopeId: '20' }];
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
@@ -1230,6 +1883,52 @@ describe('OfflineSyncService', () => {
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     await service.refreshSession();
     expect(service.pendingCommands()[0]).toMatchObject({ state: 'pending', serverCommitUnknown: true });
+  });
+
+  it('restart正規化のpending+serverCommitUnknownはattentionでdiscard禁止かつretry UI対象', async () => {
+    session = null;
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: '019d-restart-unknown', remoteId: null },
+      values: {},
+      confirmedValues: null,
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'pending',
+    });
+    commands.push({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'restart-unknown',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: '019d-restart-unknown' },
+      operation: 'documents.create',
+      payload: {},
+      optimisticValue: {},
+      payloadHash: 'hash',
+      baseRevision: null,
+      state: 'sending',
+      attempts: 1,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+    await service.initialize();
+    session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
+    await service.refreshSession();
+
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'pending', serverCommitUnknown: true });
+    expect(service.syncState()).toBe('attention');
+    await expect(service.discard('restart-unknown', { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+    await expect(service.discardAllPending()).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+
+    execute.mockResolvedValueOnce({ response: null });
+    connected.set(true);
+    await service.retryNow('restart-unknown');
+    expect(execute).toHaveBeenCalledOnce();
   });
 
   it('未同期createを破棄するとoutboxと未確定replica rowを同時に除く', async () => {
@@ -1919,6 +2618,196 @@ describe('OfflineSyncService', () => {
     await service.flush();
     expect(service.pendingCommands()[0]).toMatchObject({ state, lastErrorCode: String(status) });
     expect(rows[0]?.syncState).toBe(rowSyncState);
+  });
+
+  it('retry_waitかつserverCommitUnknownのcommandはattentionとして見える', async () => {
+    execute.mockRejectedValueOnce({ status: 500 });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'ambiguous-retry' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(service.pendingCommands()[0]).toMatchObject({ state: 'retry_wait', serverCommitUnknown: true });
+    expect(service.syncState()).toBe('attention');
+  });
+
+  it('pendingかつserverCommitUnknownのcommandもattentionとして見える', async () => {
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'pending-unknown' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    const current = commands[0]!;
+    commands[0] = { ...current, state: 'pending', serverCommitUnknown: true };
+    await service.reloadPendingCommands();
+    expect(service.syncState()).toBe('attention');
+    await expect(service.discard(current.commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
+  });
+
+  it('serverCommitUnknownでないretry_waitはpendingのままattentionにしない', async () => {
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'safe-retry' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    const current = commands[0]!;
+    commands[0] = {
+      ...current,
+      state: 'retry_wait',
+      retryAt: Date.now() + 60_000,
+      serverCommitUnknown: false,
+    };
+    await service.reloadPendingCommands();
+    expect(service.syncState()).toBe('pending');
+  });
+
+  it('retry delayはequal jitterで注入可能な乱数を使う', async () => {
+    TestBed.resetTestingModule();
+    const random = vi.fn(() => 0.25);
+    // Rebuild the standard providers from beforeEach with an injectable random source.
+    connected = signal(false);
+    session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
+    commands = [];
+    rows = [];
+    pull = vi.fn(async () => undefined);
+    execute.mockReset();
+    execute.mockRejectedValueOnce({ status: 500 });
+    const repository = {
+      initialize: vi.fn(async () => undefined),
+      getCommands: vi.fn(async (scope: OfflineScope) =>
+        commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId),
+      ),
+      getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId)),
+      putCommand: vi.fn(async (command: OfflineCommand) => {
+        commands = commands.filter((item) => item.commandId !== command.commandId);
+        commands.push(structuredClone(command));
+      }),
+      replaceCommand: vi.fn(async (command: OfflineCommand) => {
+        commands = commands.filter((item) => item.commandId !== command.commandId);
+        commands.push(structuredClone(command));
+      }),
+      removeCommand: vi.fn(async (commandId: string) => {
+        commands = commands.filter((item) => item.commandId !== commandId);
+      }),
+      getReplicaRow: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineReplicaAddress) => {
+        return (
+          rows.find((item) => {
+            if (item.userId !== scope.userId || item.scopeId !== scope.scopeId || item.sourceKey !== sourceKey) return false;
+            if (identity.kind === 'generated') {
+              return item.identity.kind === 'generated' && item.identity.localId === identity.localId;
+            }
+            return false;
+          }) ?? null
+        );
+      }),
+      getReplicaRowIncludingPendingDelete: vi.fn(async (scope: OfflineScope, sourceKey: string, identity: OfflineReplicaAddress) => {
+        return (
+          rows.find((item) => {
+            if (item.userId !== scope.userId || item.scopeId !== scope.scopeId || item.sourceKey !== sourceKey) return false;
+            if (identity.kind === 'generated') {
+              return item.identity.kind === 'generated' && item.identity.localId === identity.localId;
+            }
+            return false;
+          }) ?? null
+        );
+      }),
+      getReplicaRowByRemoteId: vi.fn(async () => null),
+      getReplicaRowByRemoteIdentity: vi.fn(async () => null),
+      getReplicaCursor: vi.fn(async () => null),
+      getReconciliationScopes: vi.fn(async () => []),
+      transactReplica: vi.fn(async (transaction) => {
+        for (const command of transaction.putCommands ?? []) {
+          commands = commands.filter((item) => item.commandId !== command.commandId);
+          commands.push(structuredClone(command));
+        }
+        for (const row of transaction.putRows ?? []) {
+          rows = rows.filter(
+            (item) =>
+              item.userId !== row.userId ||
+              item.scopeId !== row.scopeId ||
+              item.sourceKey !== row.sourceKey ||
+              canonicalOfflineReplicaIdentity(item.identity) !== canonicalOfflineReplicaIdentity(row.identity),
+          );
+          rows.push(structuredClone(row));
+        }
+        commands = commands.filter((command) => !(transaction.removeCommandIds ?? []).includes(command.commandId));
+      }),
+    } as unknown as OfflineRepository;
+    TestBed.configureTestingModule({
+      providers: [
+        OfflineSyncService,
+        { provide: OFFLINE_REPOSITORY, useValue: repository },
+        { provide: OfflineNetworkService, useValue: { connected } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OfflineReplicaPullService, useValue: { pull } },
+        { provide: ErrorHandler, useValue: { handleError: vi.fn() } },
+        { provide: OFFLINE_RETRY_RANDOM, useValue: random },
+        {
+          provide: OFFLINE_COMMAND_HOOKS,
+          useValue: { entityType: (command: OfflineCommand) => command.aggregateType },
+        },
+        {
+          provide: OFFLINE_SYNC_CONTEXT,
+          useValue: {
+            getLocalSession: vi.fn(async () => session),
+            getSession: vi.fn(async () => session),
+          },
+        },
+        {
+          provide: OFFLINE_COMMAND_EXECUTOR,
+          useValue: {
+            execute,
+            provesCommandNotCommitted: () => false,
+            withServerRevision: (command: OfflineCommand) => command,
+          },
+        },
+      ],
+    });
+    service = TestBed.inject(OfflineSyncService);
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'jitter' },
+        operation: 'documents.upsert',
+        payload: {},
+        optimisticValue: {},
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(random).toHaveBeenCalled();
+    const retryAt = service.pendingCommands()[0]?.retryAt;
+    expect(retryAt).toEqual(expect.any(Number));
+    expect(retryAt! - Date.now()).toBeLessThanOrEqual(offlineRetryDelayMs(1, () => 0.25));
+  });
+
+  it('offlineRetryDelayMsは[⌊cap/2⌋, cap)のequal jitterを返す', () => {
+    expect(offlineRetryDelayMs(1, () => 0)).toBe(500);
+    expect(offlineRetryDelayMs(1, () => 0.999)).toBe(999);
+    expect(offlineRetryDelayMs(3, () => 0.5)).toBe(3000);
+    expect(() => offlineRetryDelayMs(1, () => 1)).toThrow('must return a number in [0, 1)');
   });
 
   it('retryNowは未来のbackoffを解除して選択したcommandを直ちに再送する', async () => {
@@ -3679,6 +4568,7 @@ describe('OfflineSyncService', () => {
               }),
             },
           },
+          { provide: OFFLINE_RETRY_RANDOM, useValue: () => 0.5 },
         ],
       });
       service = TestBed.inject(OfflineSyncService);
@@ -3753,6 +4643,151 @@ describe('OfflineSyncService', () => {
         { title: 'G11 edit' },
       ]);
       expect(service.pendingCount()).toBe(0);
+    });
+
+    it('pre-pull: head scope成功/後続scope失敗の同一user-scoped aggregateは成功prefixだけ送る', async () => {
+      const scope11Error = new Error('scope 11 pre-pull failed');
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '11') throw scope11Error;
+      });
+      await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'A' },
+          optimisticValue: { id: 42, title: 'A' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+      await service.enqueue(
+        {
+          scopeId: '11',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'B' },
+          optimisticValue: { id: 42, title: 'B' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(scope11Error);
+
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]?.[0]).toMatchObject({ scopeId: '10', payload: { title: 'A' } });
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toMatchObject({ scopeId: '11', optimisticValue: { title: 'B' }, state: 'pending' });
+    });
+
+    it('pre-pull: head scope失敗/後続scope成功の同一user-scoped aggregateは一切送らない', async () => {
+      const scope10Error = new Error('scope 10 pre-pull failed');
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '10') throw scope10Error;
+      });
+      await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'A' },
+          optimisticValue: { id: 42, title: 'A' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+      await service.enqueue(
+        {
+          scopeId: '11',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'B' },
+          optimisticValue: { id: 42, title: 'B' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(scope10Error);
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(commands.map((command) => command.scopeId)).toEqual(['10', '11']);
+    });
+
+    it('pre-pull: 成功prefix送信後、両scope成功の次flushは残りのBだけ送る', async () => {
+      const scope11Error = new Error('scope 11 pre-pull failed once');
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '11') throw scope11Error;
+      });
+      await service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'A' },
+          optimisticValue: { id: 42, title: 'A' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+      await service.enqueue(
+        {
+          scopeId: '11',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'B' },
+          optimisticValue: { id: 42, title: 'B' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(scope11Error);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(commands).toHaveLength(1);
+      expect(commands[0]).toMatchObject({ scopeId: '11', payload: { title: 'B' } });
+
+      pull.mockResolvedValue(undefined);
+      execute.mockClear();
+      await service.flush();
+
+      expect(execute).toHaveBeenCalledOnce();
+      expect(execute.mock.calls[0]?.[0]).toMatchObject({ scopeId: '11', payload: { title: 'B' } });
+      expect(service.pendingCount()).toBe(0);
+    });
+
+    it('pre-pull: user-scoped aggregateでもfatalは成功scopeを送らず残りscopeを止める', async () => {
+      const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+      pull.mockImplementation(async (scope) => {
+        if (scope.scopeId === '10') throw fatal;
+      });
+      await service.enqueue(
+        {
+          scopeId: '11',
+          aggregateType: 'test_items',
+          identity: { kind: 'generated', localId: '019d-user-item' },
+          operation: 'test_items.update',
+          payload: { title: 'B' },
+          optimisticValue: { id: 42, title: 'B' },
+          baseRevision: 1,
+        },
+        { flush: false },
+      );
+
+      connected.set(true);
+      await expect(service.flush()).rejects.toBe(fatal);
+      expect(execute).not.toHaveBeenCalled();
+      expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(['10']);
     });
 
     it('cross-partition commandの一方discardでも他方のoptimistic valueを保持する', async () => {

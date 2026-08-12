@@ -1836,6 +1836,351 @@ describe('IonicOfflineRepository', () => {
       await Promise.all([update, clear]);
       await expect(repository.getReplicaRows(scope, 'test_group_items')).resolves.toEqual([]);
     });
+
+    it('standalone getReplicaRowsはreader leaseを保持し、完了までwriterを開始せずin-flight writeを観測しない', async () => {
+      const scope = { userId: 1, scopeId: '10' };
+      const initial: OfflineReplicaRow = {
+        ...baseRow,
+        ...scope,
+        identity: generatedReplicaIdentity('019d-lease-read', 50),
+        values: { id: 50, title: 'Before' },
+        confirmedValues: { id: 50, title: 'Before' },
+        serverRevision: 1,
+        syncState: 'confirmed',
+      };
+      await repository.transactReplica({ putRows: [initial] });
+      // Build indexes first so the deferred get is the leased partition read, not the write-lane build.
+      await repository.getReplicaRows(scope, 'test_items');
+
+      let releaseRead!: () => void;
+      const readGate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let announceRead!: () => void;
+      const readStarted = new Promise<void>((resolve) => {
+        announceRead = resolve;
+      });
+      const originalGet = storage.get.bind(storage);
+      let deferPartitionRead = true;
+      vi.spyOn(storage, 'get').mockImplementation(async <T>(key: string): Promise<T | null> => {
+        if (deferPartitionRead && key === 'offline:replica:rows:index:v1:n:1:user:test_items') {
+          deferPartitionRead = false;
+          announceRead();
+          await readGate;
+        }
+        return originalGet<T>(key);
+      });
+
+      const read = repository.getReplicaRows(scope, 'test_items');
+      await readStarted;
+
+      let writeFinished = false;
+      const write = repository
+        .transactReplica({
+          putRows: [{ ...initial, values: { id: 50, title: 'After' }, confirmedValues: { id: 50, title: 'After' } }],
+        })
+        .then(() => {
+          writeFinished = true;
+        });
+      void write.then(
+        () => undefined,
+        () => undefined,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+      const rowsBeforeRelease = storage.values.get('offline:replica:rows') as Record<string, OfflineReplicaRow>;
+      expect(Object.values(rowsBeforeRelease)).toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'Before' }) })]);
+
+      releaseRead();
+      await expect(read).resolves.toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'Before' }) })]);
+      await write;
+      expect(writeFinished).toBe(true);
+
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...initial,
+              identity: generatedReplicaIdentity('019d-lease-read', 51),
+              values: { id: 51, title: 'illegal-rebind' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica remoteId is immutable');
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toEqual([
+        expect.objectContaining({
+          values: expect.objectContaining({ title: 'After' }),
+          identity: expect.objectContaining({ remoteId: 50 }),
+        }),
+      ]);
+    });
+
+    it('ready確認のawait中に開始したwriterを先に確定してからreaderを登録し、committed状態だけを観測する', async () => {
+      const scope = { userId: 1, scopeId: '10' };
+      const initial: OfflineReplicaRow = {
+        ...baseRow,
+        ...scope,
+        identity: generatedReplicaIdentity('019d-admit-order', 60),
+        values: { id: 60, title: 'Before' },
+        confirmedValues: { id: 60, title: 'Before' },
+        serverRevision: 1,
+        syncState: 'confirmed',
+      };
+      await repository.transactReplica({ putRows: [initial] });
+      // Indexes must already be ready so ensure only does an async ready check (admission gap).
+      await repository.getReplicaRows(scope, 'test_items');
+
+      let releaseReadyCheck!: () => void;
+      const readyCheckGate = new Promise<void>((resolve) => {
+        releaseReadyCheck = resolve;
+      });
+      let announceReadyCheck!: () => void;
+      const readyCheckStarted = new Promise<void>((resolve) => {
+        announceReadyCheck = resolve;
+      });
+      const originalGet = storage.get.bind(storage);
+      let deferReadyCheck = true;
+      vi.spyOn(storage, 'get').mockImplementation(async <T>(key: string): Promise<T | null> => {
+        if (deferReadyCheck && key === 'offline:replica:rows:index:v1:ready') {
+          deferReadyCheck = false;
+          announceReadyCheck();
+          await readyCheckGate;
+        }
+        return originalGet<T>(key);
+      });
+
+      let releaseWrite!: () => void;
+      const writeGate = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      let announceWrite!: () => void;
+      const writeStarted = new Promise<void>((resolve) => {
+        announceWrite = resolve;
+      });
+      const originalSet = storage.set.bind(storage);
+      let deferRowsWrite = true;
+      vi.spyOn(storage, 'set').mockImplementation(async <T>(key: string, value: T): Promise<T> => {
+        if (deferRowsWrite && key === 'offline:replica:rows') {
+          deferRowsWrite = false;
+          announceWrite();
+          await writeGate;
+        }
+        return originalSet(key, value);
+      });
+
+      const read = repository.getReplicaRows(scope, 'test_items');
+      await readyCheckStarted;
+
+      let writeFinished = false;
+      const write = repository
+        .transactReplica({
+          putRows: [{ ...initial, values: { id: 60, title: 'After' }, confirmedValues: { id: 60, title: 'After' } }],
+        })
+        .then(() => {
+          writeFinished = true;
+        });
+      void write.then(
+        () => undefined,
+        () => undefined,
+      );
+      await writeStarted;
+
+      releaseReadyCheck();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+      // Reader must still be waiting on the write tail — not overlapping the in-flight write.
+      let readSettled = false;
+      void read.then(
+        () => {
+          readSettled = true;
+        },
+        () => {
+          readSettled = true;
+        },
+      );
+      await Promise.resolve();
+      expect(readSettled).toBe(false);
+
+      releaseWrite();
+      await write;
+      expect(writeFinished).toBe(true);
+      await expect(read).resolves.toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'After' }) })]);
+    });
+  });
+
+  describe('runReadSnapshot', () => {
+    const scope = { userId: 1 as const, scopeId: '10' };
+    const row: OfflineReplicaRow = {
+      ...scope,
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: '019d-snap', remoteId: 7 },
+      values: { id: 7, title: 'before' },
+      confirmedValues: { id: 7, title: 'before' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    const command: OfflineCommand = {
+      ...scope,
+      commandId: 'cmd-snap',
+      aggregateType: 'test_items',
+      sourceKey: 'test_items',
+      identity: generatedCommandIdentity('019d-snap'),
+      operation: 'test_items.update',
+      payload: {},
+      optimisticValue: row.values,
+      payloadHash: 'hash',
+      baseRevision: 1,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    };
+
+    it('複数readを同一snapshotで一貫させ、in-flight writeのtorn readを防ぐ', async () => {
+      await repository.transactReplica({ putRows: [row], putCommands: [command] });
+
+      let releaseSnapshot: (() => void) | undefined;
+      const snapshotGate = new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      });
+      let writeStarted: (() => void) | undefined;
+      const writeBegan = new Promise<void>((resolve) => {
+        writeStarted = resolve;
+      });
+
+      const snapshot = repository.runReadSnapshot(async (reader) => {
+        const commandsBefore = await reader.getCommands(scope);
+        const write = repository.transactReplica({
+          putRows: [{ ...row, values: { id: 7, title: 'after' }, confirmedValues: { id: 7, title: 'after' } }],
+          putCommands: [{ ...command, state: 'retry_wait', retryAt: 99 }],
+        });
+        void write.then(
+          () => undefined,
+          () => undefined,
+        );
+        writeStarted?.();
+        await snapshotGate;
+        const rowsAfterWait = await reader.getReplicaRows(scope, 'test_items');
+        const commandsAfterWait = await reader.getCommands(scope);
+        return { commandsBefore, rowsAfterWait, commandsAfterWait, write };
+      });
+
+      await writeBegan;
+      await Promise.resolve();
+      expect(storage.values.get('offline:outbox:commands')).toEqual(
+        expect.objectContaining({
+          'cmd-snap': expect.objectContaining({ state: 'pending' }),
+        }),
+      );
+
+      releaseSnapshot?.();
+      const observed = await snapshot;
+      await observed.write;
+
+      expect(observed.commandsBefore).toEqual([expect.objectContaining({ commandId: 'cmd-snap', state: 'pending' })]);
+      expect(observed.rowsAfterWait).toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'before' }) })]);
+      expect(observed.commandsAfterWait).toEqual([expect.objectContaining({ state: 'pending' })]);
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toEqual([
+        expect.objectContaining({ values: expect.objectContaining({ title: 'after' }) }),
+      ]);
+    });
+
+    it('独立した並行snapshotはそれぞれreader leaseを持ち、writerは両方の完了を待つ', async () => {
+      await repository.transactReplica({ putRows: [row], putCommands: [command] });
+
+      let releaseA: (() => void) | undefined;
+      let releaseB: (() => void) | undefined;
+      const gateA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const gateB = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+      let bothReadersReady: (() => void) | undefined;
+      const readersReady = new Promise<void>((resolve) => {
+        bothReadersReady = resolve;
+      });
+      let readersHeld = 0;
+
+      const snapshotA = repository.runReadSnapshot(async (reader) => {
+        const before = await reader.getCommands(scope);
+        readersHeld += 1;
+        if (readersHeld === 2) bothReadersReady?.();
+        await gateA;
+        return before;
+      });
+      const snapshotB = repository.runReadSnapshot(async (reader) => {
+        const before = await reader.getReplicaRows(scope, 'test_items');
+        readersHeld += 1;
+        if (readersHeld === 2) bothReadersReady?.();
+        await gateB;
+        return before;
+      });
+
+      await readersReady;
+      let writeFinished = false;
+      const write = repository
+        .transactReplica({
+          putRows: [{ ...row, values: { id: 7, title: 'after' }, confirmedValues: { id: 7, title: 'after' } }],
+        })
+        .then(() => {
+          writeFinished = true;
+        });
+      void write.then(
+        () => undefined,
+        () => undefined,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+
+      releaseA?.();
+      await snapshotA;
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+
+      releaseB?.();
+      await expect(snapshotB).resolves.toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'before' }) })]);
+      await write;
+      expect(writeFinished).toBe(true);
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toEqual([
+        expect.objectContaining({ values: expect.objectContaining({ title: 'after' }) }),
+      ]);
+    });
+
+    it('write開始前のvalidation失敗ではcommitted snapshotが変わらない', async () => {
+      await repository.transactReplica({ putRows: [row], putCommands: [command] });
+      await expect(
+        repository.transactReplica({
+          putRows: [
+            {
+              ...row,
+              identity: { kind: 'generated', localId: '019d-snap', remoteId: 8 },
+              values: { id: 8, title: 'illegal-rebind' },
+            },
+          ],
+        }),
+      ).rejects.toThrow('Offline replica remoteId is immutable');
+
+      await expect(
+        repository.runReadSnapshot(async (reader) => ({
+          rows: await reader.getReplicaRows(scope, 'test_items'),
+          commands: await reader.getCommands(scope),
+        })),
+      ).resolves.toEqual({
+        rows: [
+          expect.objectContaining({
+            values: expect.objectContaining({ title: 'before' }),
+            identity: expect.objectContaining({ remoteId: 7 }),
+          }),
+        ],
+        commands: [expect.objectContaining({ commandId: 'cmd-snap', state: 'pending' })],
+      });
+    });
   });
 });
 

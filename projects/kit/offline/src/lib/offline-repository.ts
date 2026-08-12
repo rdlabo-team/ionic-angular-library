@@ -158,6 +158,42 @@ export interface OfflineReplicaTransaction {
   removeReconciliationScopes?: readonly OfflineScope[];
 }
 
+/**
+ * Read-only view of durable offline state that cannot observe an in-flight write transaction.
+ *
+ * Obtain via {@link OfflineRepository.runReadSnapshot}. Compose multiple reads through this
+ * handle inside one callback; do not call {@link OfflineRepository.runReadSnapshot} recursively.
+ */
+export interface OfflineRepositoryReader {
+  getLastUserId(): Promise<OfflinePrincipalId | null>;
+  getSessionManifest<T>(userId: OfflinePrincipalId): Promise<T | null>;
+  getReplicaRow<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaAddress,
+  ): Promise<OfflineReplicaRow<TValues> | null>;
+  getReplicaRowIncludingPendingDelete?<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaAddress,
+  ): Promise<OfflineReplicaRow<TValues> | null>;
+  getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
+  getReplicaRowByRemoteId<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    remoteId: OfflineGeneratedRemoteId,
+  ): Promise<OfflineReplicaRow<TValues> | null>;
+  getReplicaRowByRemoteIdentity<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaRemoteIdentity,
+  ): Promise<OfflineReplicaRow<TValues> | null>;
+  getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
+  getReconciliationScopes?(userId: OfflinePrincipalId): Promise<OfflineScope[]>;
+  getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
+  getCommandsForUser?(userId: OfflinePrincipalId): Promise<OfflineCommand[]>;
+}
+
 /** Durable local replica and outbox persistence contract. */
 export interface OfflineRepository {
   initialize(): Promise<void>;
@@ -197,6 +233,16 @@ export interface OfflineRepository {
   clearUser(userId: OfflinePrincipalId): Promise<void>;
   clearScope(scope: OfflineScope): Promise<void>;
   transactReplica(transaction: OfflineReplicaTransaction): Promise<void>;
+  /**
+   * Runs `read` against a committed snapshot that cannot observe an in-flight write.
+   *
+   * Each call independently waits for prior writes, then holds a reader lease until `read`
+   * settles so concurrent writers wait for all active readers. Compose multi-reads only via
+   * the provided {@link OfflineRepositoryReader}; callers must not invoke `runReadSnapshot`
+   * recursively from inside `read` (nested support is intentionally absent). Mutating APIs
+   * must not be called from `read`.
+   */
+  runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T>;
 }
 
 /** DI token for the selected platform repository. */
@@ -254,6 +300,9 @@ export class IonicOfflineRepository implements OfflineRepository {
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   #initialization: Promise<void> | null = null;
   #writes: Promise<void> = Promise.resolve();
+  #activeReaders = 0;
+  #readersIdle: Promise<void> = Promise.resolve();
+  #resolveReadersIdle: (() => void) | null = null;
   #rowIndexBuild: Promise<void> | null = null;
 
   initialize(): Promise<void> {
@@ -267,20 +316,18 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   async getLastUserId(): Promise<OfflinePrincipalId | null> {
-    await this.initialize();
-    return (await this.#metadata()).lastUserId;
+    return this.#withCommittedRead(() => this.#readLastUserId());
   }
 
   async setLastUserId(userId: OfflinePrincipalId): Promise<void> {
     await this.initialize();
-    await this.#storage.set<OfflineMetadata>(METADATA_KEY, { ...(await this.#metadata()), lastUserId: userId });
+    await this.#enqueueWrite(async () => {
+      await this.#storage.set<OfflineMetadata>(METADATA_KEY, { ...(await this.#metadata()), lastUserId: userId });
+    });
   }
 
   async getSessionManifest<T>(userId: OfflinePrincipalId): Promise<T | null> {
-    await this.initialize();
-    await this.#writes;
-    const manifests = await this.#readRecord<T>(SESSION_MANIFESTS_KEY);
-    return manifests[canonicalOfflinePrincipalId(userId)] ?? null;
+    return this.#withCommittedRead(() => this.#readSessionManifest<T>(userId));
   }
 
   async putSessionManifest<T>(userId: OfflinePrincipalId, value: T): Promise<void> {
@@ -296,13 +343,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     sourceKey: string,
     identity: OfflineReplicaAddress,
   ): Promise<OfflineReplicaRow<TValues> | null> {
-    await this.initialize();
-    await this.#writes;
-    const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
-    const row = this.#findRowByAddress(rows, scope, sourceKey, schema, identity);
-    if (!row || (row.visibility ?? 'present') === 'pending_delete') return null;
-    return this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>;
+    return this.#withCommittedRead(() => this.#readReplicaRow(scope, sourceKey, identity, false));
   }
 
   async getReplicaRowIncludingPendingDelete<TValues = unknown>(
@@ -310,27 +351,11 @@ export class IonicOfflineRepository implements OfflineRepository {
     sourceKey: string,
     identity: OfflineReplicaAddress,
   ): Promise<OfflineReplicaRow<TValues> | null> {
-    await this.initialize();
-    await this.#writes;
-    const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
-    const row = this.#findRowByAddress(rows, scope, sourceKey, schema, identity);
-    return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
+    return this.#withCommittedRead(() => this.#readReplicaRow(scope, sourceKey, identity, true));
   }
 
   async getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
-    await this.initialize();
-    await this.#writes;
-    const schema = this.#resolveReplicaEntitySchema(sourceKey);
-    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
-    return Object.values(rows)
-      .filter((row) => {
-        if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
-        if ((row.visibility ?? 'present') === 'pending_delete') return false;
-        return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
-      })
-      .map((row) => this.#rowForScope(row, schema, scope))
-      .sort((left, right) => this.#compareReplicaIdentity(schema, left.identity, right.identity));
+    return this.#withCommittedRead(() => this.#readReplicaRows(scope, sourceKey));
   }
 
   async getReplicaRowByRemoteId<TValues = unknown>(
@@ -347,8 +372,77 @@ export class IonicOfflineRepository implements OfflineRepository {
     sourceKey: string,
     identity: OfflineReplicaRemoteIdentity,
   ): Promise<OfflineReplicaRow<TValues> | null> {
-    await this.initialize();
-    await this.#writes;
+    return this.#withCommittedRead(() => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity));
+  }
+
+  async getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
+    return this.#withCommittedRead(() => this.#readReplicaCursor(scope));
+  }
+
+  async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
+    return this.#withCommittedRead(() => this.#readReconciliationScopes(userId));
+  }
+
+  async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
+    return this.#withCommittedRead(() => this.#readCommands(scope));
+  }
+
+  async getCommandsForUser(userId: OfflinePrincipalId): Promise<OfflineCommand[]> {
+    return this.#withCommittedRead(() => this.#readCommandsForUser(userId));
+  }
+
+  async runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T> {
+    return this.#withCommittedRead(() => read(this.#reader()));
+  }
+
+  #normalizeCommand(command: OfflineCommand): OfflineCommand {
+    if (command.serverCommitUnknown !== undefined) return command;
+    const legacyAmbiguousFailure = command.attempts >= 2 && ['blocked_auth', 'conflict', 'rejected'].includes(command.state);
+    return command.state === 'sending' || command.state === 'retry_wait' || legacyAmbiguousFailure
+      ? { ...command, serverCommitUnknown: true }
+      : command;
+  }
+
+  async #readLastUserId(): Promise<OfflinePrincipalId | null> {
+    return (await this.#metadata()).lastUserId;
+  }
+
+  async #readSessionManifest<T>(userId: OfflinePrincipalId): Promise<T | null> {
+    const manifests = await this.#readRecord<T>(SESSION_MANIFESTS_KEY);
+    return manifests[canonicalOfflinePrincipalId(userId)] ?? null;
+  }
+
+  async #readReplicaRow<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaAddress,
+    includePendingDelete: boolean,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
+    const row = this.#findRowByAddress(rows, scope, sourceKey, schema, identity);
+    if (!row || (!includePendingDelete && (row.visibility ?? 'present') === 'pending_delete')) return null;
+    return this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>;
+  }
+
+  async #readReplicaRows<TValues>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
+    const schema = this.#resolveReplicaEntitySchema(sourceKey);
+    const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
+    return Object.values(rows)
+      .filter((row) => {
+        if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
+        if ((row.visibility ?? 'present') === 'pending_delete') return false;
+        return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
+      })
+      .map((row) => this.#rowForScope(row, schema, scope))
+      .sort((left, right) => this.#compareReplicaIdentity(schema, left.identity, right.identity));
+  }
+
+  async #readReplicaRowByRemoteIdentity<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    identity: OfflineReplicaRemoteIdentity,
+  ): Promise<OfflineReplicaRow<TValues> | null> {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const canonical = canonicalOfflineRemoteIdentity(schema, identity);
     const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
@@ -361,24 +455,18 @@ export class IonicOfflineRepository implements OfflineRepository {
     return row ? (this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>) : null;
   }
 
-  async getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
-    await this.initialize();
-    await this.#writes;
+  async #readReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null> {
     const cursors = await this.#readRecord<string>(CURSORS_KEY);
     const cursor = cursors[this.#cursorKey(scope)];
     return cursor === undefined ? null : { ...scope, cursor };
   }
 
-  async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
-    await this.initialize();
-    await this.#writes;
+  async #readReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
     const scopes = await this.#readRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY);
     return Object.values(scopes).filter((scope) => scope.userId === userId);
   }
 
-  async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
-    await this.initialize();
-    await this.#writes;
+  async #readCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === scope.userId && command.scopeId === scope.scopeId)
@@ -386,9 +474,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       .sort(compareOfflineCommands);
   }
 
-  async getCommandsForUser(userId: OfflinePrincipalId): Promise<OfflineCommand[]> {
-    await this.initialize();
-    await this.#writes;
+  async #readCommandsForUser(userId: OfflinePrincipalId): Promise<OfflineCommand[]> {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
       .filter((command) => command.userId === userId)
@@ -396,12 +482,55 @@ export class IonicOfflineRepository implements OfflineRepository {
       .sort(compareOfflineCommands);
   }
 
-  #normalizeCommand(command: OfflineCommand): OfflineCommand {
-    if (command.serverCommitUnknown !== undefined) return command;
-    const legacyAmbiguousFailure = command.attempts >= 2 && ['blocked_auth', 'conflict', 'rejected'].includes(command.state);
-    return command.state === 'sending' || command.state === 'retry_wait' || legacyAmbiguousFailure
-      ? { ...command, serverCommitUnknown: true }
-      : command;
+  #reader(): OfflineRepositoryReader {
+    return {
+      getLastUserId: () => this.#readLastUserId(),
+      getSessionManifest: (userId) => this.#readSessionManifest(userId),
+      getReplicaRow: (scope, sourceKey, identity) => this.#readReplicaRow(scope, sourceKey, identity, false),
+      getReplicaRowIncludingPendingDelete: (scope, sourceKey, identity) => this.#readReplicaRow(scope, sourceKey, identity, true),
+      getReplicaRows: (scope, sourceKey) => this.#readReplicaRows(scope, sourceKey),
+      getReplicaRowByRemoteId: async (scope, sourceKey, remoteId) => {
+        if (this.#resolveReplicaEntitySchema(sourceKey).identity.kind !== 'generated') return null;
+        return this.#readReplicaRowByRemoteIdentity(scope, sourceKey, { remoteId });
+      },
+      getReplicaRowByRemoteIdentity: (scope, sourceKey, identity) => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity),
+      getReplicaCursor: (scope) => this.#readReplicaCursor(scope),
+      getReconciliationScopes: (userId) => this.#readReconciliationScopes(userId),
+      getCommands: (scope) => this.#readCommands(scope),
+      getCommandsForUser: (userId) => this.#readCommandsForUser(userId),
+    };
+  }
+
+  async #withCommittedRead<T>(operation: () => Promise<T>): Promise<T> {
+    await this.initialize();
+    // Finish index readiness first (may enqueue a write). Then await the latest write
+    // tail and register the reader synchronously — no await gap for a writer to start.
+    await this.#ensureRowPartitionsReady();
+    await this.#writes;
+    this.#beginReaders();
+    try {
+      return await operation();
+    } finally {
+      this.#endReaders();
+    }
+  }
+
+  #beginReaders(): void {
+    if (this.#activeReaders === 0) {
+      this.#readersIdle = new Promise<void>((resolve) => {
+        this.#resolveReadersIdle = resolve;
+      });
+    }
+    this.#activeReaders += 1;
+  }
+
+  #endReaders(): void {
+    this.#activeReaders -= 1;
+    if (this.#activeReaders === 0) {
+      this.#resolveReadersIdle?.();
+      this.#resolveReadersIdle = null;
+      this.#readersIdle = Promise.resolve();
+    }
   }
 
   async putCommand(command: OfflineCommand): Promise<void> {
@@ -731,14 +860,32 @@ export class IonicOfflineRepository implements OfflineRepository {
     const cached = await this.#storage.get<Record<string, OfflineReplicaRow<TValues>>>(key);
     if (cached !== null) return cached;
     if (await this.#storage.get<boolean>(ROW_PARTITION_READY_KEY)) return {};
+    // Non-mutating fallback under a reader lease (indexes are normally built before the lease).
+    return this.#legacyRowPartition(scope, sourceKey, schema);
+  }
+
+  async #legacyRowPartition<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    schema: OfflineReplicaEntitySchema<Record<string, unknown>>,
+  ): Promise<Record<string, OfflineReplicaRow<TValues>>> {
+    const rows = await this.#readRecord<OfflineReplicaRow<TValues>>(ROWS_KEY);
+    return Object.fromEntries(
+      Object.entries(rows).filter(([, row]) => {
+        if (row.userId !== scope.userId || row.sourceKey !== sourceKey) return false;
+        return schema.scope === 'user' || row.scopeId === scope.scopeId;
+      }),
+    );
+  }
+
+  async #ensureRowPartitionsReady(): Promise<void> {
+    if (await this.#storage.get<boolean>(ROW_PARTITION_READY_KEY)) return;
     await this.#buildRowPartitions();
-    const built = await this.#storage.get<Record<string, OfflineReplicaRow<TValues>>>(key);
-    return built ?? {};
   }
 
   #buildRowPartitions(): Promise<void> {
     if (!this.#rowIndexBuild) {
-      const build = this.#enqueueWrite(async () => {
+      const run = async (): Promise<void> => {
         if (await this.#storage.get<boolean>(ROW_PARTITION_READY_KEY)) return;
         const rows = await this.#readRecord<OfflineReplicaRow>(ROWS_KEY);
         const partitions = new Map<string, Record<string, OfflineReplicaRow>>();
@@ -751,7 +898,8 @@ export class IonicOfflineRepository implements OfflineRepository {
         }
         await Promise.all([...partitions].map(([key, partition]) => this.#storage.set(key, partition)));
         await this.#storage.set(ROW_PARTITION_READY_KEY, true);
-      });
+      };
+      const build = this.#enqueueWrite(run);
       this.#rowIndexBuild = build.finally(() => {
         this.#rowIndexBuild = null;
       });
@@ -824,7 +972,10 @@ export class IonicOfflineRepository implements OfflineRepository {
   }
 
   #enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
-    const write = this.#writes.then(operation);
+    const write = this.#writes.then(async () => {
+      if (this.#activeReaders > 0) await this.#readersIdle;
+      return operation();
+    });
     this.#writes = write.then(
       () => undefined,
       () => undefined,

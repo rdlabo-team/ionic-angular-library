@@ -1,4 +1,4 @@
-import { computed, effect, ErrorHandler, inject, Injectable, signal } from '@angular/core';
+import { computed, effect, ErrorHandler, inject, Injectable, InjectionToken, signal } from '@angular/core';
 import {
   OFFLINE_COMMAND_EXECUTOR,
   OFFLINE_SYNC_CONTEXT,
@@ -11,7 +11,7 @@ import {
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
-import { OfflineReplicaPullService } from './offline-replica-pull.service';
+import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './offline-replica-pull.service';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import type {
   OfflineCommand,
@@ -123,6 +123,28 @@ const POST_SEND_PULL_RETRY_MS = 1_000;
 const DEFAULT_MAX_OUTBOX_COMMANDS_PER_USER = 1_000;
 const DEFAULT_MAX_OUTBOX_BYTES_PER_USER = 10 * 1024 * 1024;
 
+/** Injectable `[0, 1)` source used by equal-jitter retry delay. Defaults to `Math.random`. */
+export const OFFLINE_RETRY_RANDOM = new InjectionToken<() => number>('OFFLINE_RETRY_RANDOM', {
+  factory: () => Math.random,
+});
+
+/**
+ * Equal-jitter delay in `[⌊cap/2⌋, cap)` for exponential offline command backoff.
+ * Keeps a positive lower bound (half the exponential cap) while still desynchronizing clients.
+ *
+ * @param attempts - Attempt count already recorded on the failed command (`>= 1` after a send claim).
+ * @param random - Unit interval sample in `[0, 1)`.
+ */
+export function offlineRetryDelayMs(attempts: number, random: () => number = Math.random): number {
+  const cap = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.max(0, attempts - 1));
+  const unit = random();
+  if (!(unit >= 0 && unit < 1)) {
+    throw new Error('Offline retry random() must return a number in [0, 1).');
+  }
+  const half = cap / 2;
+  return Math.floor(half + unit * half);
+}
+
 /** Maintains the optimistic local replica and synchronizes its durable outbox. */
 @Injectable({ providedIn: 'root' })
 export class OfflineSyncService {
@@ -135,6 +157,7 @@ export class OfflineSyncService {
   readonly #pull = inject(OfflineReplicaPullService);
   readonly #replicaMutations = inject(OfflineReplicaMutationCoordinator);
   readonly #errorHandler = inject(ErrorHandler);
+  readonly #retryRandom = inject(OFFLINE_RETRY_RANDOM);
   readonly #commands = signal<OfflineCommand[]>([]);
   readonly #knownScopes = new Map<string, OfflineScope>();
   /** ACKed scopes whose authoritative post-send pull has not completed yet. */
@@ -159,6 +182,8 @@ export class OfflineSyncService {
   readonly syncState = computed<OfflineSyncState>(() => {
     const commands = this.#commands();
     if (commands.some((command) => ['blocked_auth', 'rejected', 'conflict'].includes(command.state))) return 'attention';
+    // Any non-sending ambiguous commit (including restart-normalized pending+unknown) needs attention.
+    if (commands.some((command) => command.state !== 'sending' && command.serverCommitUnknown === true)) return 'attention';
     if (commands.some((command) => command.state === 'sending')) return 'syncing';
     return commands.length > 0 ? 'pending' : 'idle';
   });
@@ -317,10 +342,7 @@ export class OfflineSyncService {
    */
   replacePreparedAggregate<T>(
     commandId: string,
-    prepare: (
-      repository: OfflineRepository,
-      commands: readonly OfflineCommand[],
-    ) => Promise<readonly PreparedOfflineCommand<T>[]>,
+    prepare: (repository: OfflineRepository, commands: readonly OfflineCommand[]) => Promise<readonly PreparedOfflineCommand<T>[]>,
     options: PreparedOfflineBatchOptions = {},
   ): Promise<readonly string[]> {
     const generation = this.#generation;
@@ -341,14 +363,7 @@ export class OfflineSyncService {
       const materializations: MaterializedOfflineEnqueue[] = [];
       for (const [index, entry] of prepared.entries()) {
         this.#assertEnqueueScope(session, entry.request.scopeId);
-        materializations.push(
-          await this.#materializeEnqueue(
-            session.userId,
-            entry.request,
-            entry.replicaTransaction,
-            replaced[index],
-          ),
-        );
+        materializations.push(await this.#materializeEnqueue(session.userId, entry.request, entry.replicaTransaction, replaced[index]));
       }
       const retained = knownCommands.filter((command) => !replaced.some((item) => item.commandId === command.commandId));
       this.#assertDistinctBatchFootprints(materializations, retained, true);
@@ -413,7 +428,12 @@ export class OfflineSyncService {
     const currentCommands = await this.#commandsForUser(session.userId);
     const retainedCommands = replaced ? currentCommands.filter((command) => command.commandId !== replaced.commandId) : currentCommands;
     this.#assertDistinctBatchFootprints([materialization], retainedCommands);
-    await this.#assertOutboxCapacity(session.userId, [materialization.command], replaced ? [replaced.commandId] : undefined, currentCommands);
+    await this.#assertOutboxCapacity(
+      session.userId,
+      [materialization.command],
+      replaced ? [replaced.commandId] : undefined,
+      currentCommands,
+    );
     await this.#commitMaterializedEnqueues([materialization], generation, options, replaced ? [replaced.commandId] : undefined);
     return materialization.command.commandId;
   }
@@ -923,57 +943,101 @@ export class OfflineSyncService {
     const pullScopes = isPartial
       ? this.#scopesForPartialPull(this.#foregroundScopePolicy!, await this.#readKnownCommands())
       : [...this.#knownScopes.values()];
+    const prePullFailures: unknown[] = [];
+    let fatalPullFailure: unknown | null = null;
+    const pulledScopeKeys = new Set<string>();
     for (const scope of pullScopes) {
       if (!this.#isCurrent(generation) || !this.#network.connected()) return;
       try {
         await this.#pull.pull(scope);
         await this.#markScopeReconciled(scope, generation);
+        pulledScopeKeys.add(this.#scopeKey(scope));
       } catch (error) {
+        prePullFailures.push(error);
+        if (this.#isFatalPullFailure(error)) {
+          // Auth/upgrade-driven recovery only: stop remaining scopes immediately.
+          fatalPullFailure = fatalPullFailure ?? error;
+          break;
+        }
         if (this.#pendingPullScopes.has(this.#scopeKey(scope))) {
           this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
         }
-        throw error;
       }
     }
     const dirtyScopes = new Map<string, OfflineScope>();
-    while (this.#network.connected() && this.#isCurrent(generation)) {
-      const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands());
+    const sendWorkerFailures: unknown[] = [];
+    while (this.#network.connected() && this.#isCurrent(generation) && fatalPullFailure === null) {
+      const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands()).filter((group) => {
+        const head = group[0];
+        return head !== undefined && pulledScopeKeys.has(this.#scopeKey(head));
+      });
       if (!this.#isCurrent(generation)) return;
       if (groups.length === 0) break;
       let cursor = 0;
       const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
         while (cursor < groups.length) {
           const group = groups[cursor++];
-          if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation, dirtyScopes);
+          if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation, dirtyScopes, pulledScopeKeys);
         }
       });
-      await Promise.all(workers);
+      // Drain with allSettled so one rejecting worker cannot skip sibling settlement or post-send pull.
+      const settled = await Promise.allSettled(workers);
+      for (const result of settled) {
+        if (result.status === 'rejected') sendWorkerFailures.push(result.reason);
+      }
+      if (sendWorkerFailures.length > 0) break;
     }
     for (const scope of dirtyScopes.values()) {
       this.#pendingPullScopes.set(this.#scopeKey(scope), scope);
     }
     const postPullFailures: unknown[] = [];
-    for (const scope of this.#pendingPullScopes.values()) {
-      if (!this.#isCurrent(generation) || !this.#network.connected()) break;
-      try {
-        // A command response may contain only the aggregate's base row. Pull
-        // once per dirty scope so sibling-table journal entries are visible
-        // before the completed Outbox state is exposed to product UI.
-        await this.#pull.pull(scope);
-        await this.#markScopeReconciled(scope, generation);
-      } catch (error) {
-        postPullFailures.push(error);
+    // Fatal pre-pull skips pending post-pulls; recovery is auth/upgrade-driven, not timer retry.
+    // Fatal post-send pull stops remaining pending scopes the same way (ACK preserved, no resend).
+    if (fatalPullFailure === null) {
+      for (const scope of this.#pendingPullScopes.values()) {
+        if (!this.#isCurrent(generation) || !this.#network.connected()) break;
+        try {
+          // A command response may contain only the aggregate's base row. Pull
+          // once per dirty scope so sibling-table journal entries are visible
+          // before the completed Outbox state is exposed to product UI.
+          await this.#pull.pull(scope);
+          await this.#markScopeReconciled(scope, generation);
+        } catch (error) {
+          if (this.#isFatalPullFailure(error)) {
+            fatalPullFailure = fatalPullFailure ?? error;
+            break;
+          }
+          postPullFailures.push(error);
+        }
       }
     }
     await this.#refreshState(generation);
-    if (postPullFailures.length > 0 && this.#isCurrent(generation)) {
-      // The server command is already committed and acknowledged locally, so
-      // never resend it. Retry only the idempotent scope pull and surface the
-      // failure to explicit flush callers/ErrorHandler.
-      this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
-      throw postPullFailures[0];
+    if (fatalPullFailure !== null) {
+      // Auth/upgrade recovery only — never arm the 1s automatic flush retry.
+      // Post-send ACK already removed the command; reconciliation markers remain for later recovery.
+      // Only the owning generation may clear the timer — a stale fatal must not disarm a
+      // newer session's already-armed retry_wait / post-pull retry.
+      if (this.#isCurrent(generation)) this.#scheduleRetry(null);
+      throw fatalPullFailure;
+    }
+    const failures = [...prePullFailures, ...sendWorkerFailures, ...postPullFailures];
+    if (failures.length > 0) {
+      // Keep rejecting the flush promise after workers settle even when the session
+      // was revoked mid-flight, so callers and ErrorHandler still observe the failure.
+      if (this.#isCurrent(generation)) {
+        this.#scheduleRetry(Date.now() + POST_SEND_PULL_RETRY_MS);
+      }
+      throw failures[0];
     }
     if (this.#isCurrent(generation)) this.#coldReconciliationRequired = false;
+  }
+
+  #isFatalPullFailure(error: unknown): boolean {
+    const status = this.#errorStatus(error);
+    // Pull-protocol HTTP 409 is schema mismatch (distinct from command-send conflict
+    // classification elsewhere in this service). Same classifier for pre-pull and post-send pull.
+    if (status === 401 || status === 403 || status === 409) return true;
+    return error instanceof OfflineReplicaSchemaMismatchError;
   }
 
   #setForegroundScopePolicy(foregroundScopeIds?: readonly string[]): void {
@@ -1006,11 +1070,19 @@ export class OfflineSyncService {
     });
   }
 
-  async #sendAggregate(commands: OfflineCommand[], generation: number, dirtyScopes: Map<string, OfflineScope>): Promise<void> {
+  async #sendAggregate(
+    commands: OfflineCommand[],
+    generation: number,
+    dirtyScopes: Map<string, OfflineScope>,
+    pulledScopeKeys: ReadonlySet<string>,
+  ): Promise<void> {
     for (const command of commands) {
       if (!this.#isCurrent(generation)) return;
       if (command.state === 'retry_wait' && (command.retryAt ?? 0) > Date.now()) break;
       if (!['pending', 'retry_wait'].includes(command.state)) break;
+      // User-scoped aggregates ignore scopeId in the FIFO key, so later commands may
+      // belong to scopes that failed pre-pull even when the head was admitted.
+      if (!pulledScopeKeys.has(this.#scopeKey({ userId: command.userId, scopeId: command.scopeId }))) break;
       let sending = await this.#claimSendingCommand(command, generation);
       if (!sending) return;
       if (!this.#isCurrent(generation)) return;
@@ -1339,7 +1411,7 @@ export class OfflineSyncService {
     if (status >= 400 && status < 500 && status !== 429) {
       return { ...command, state: 'rejected', lastErrorCode: String(status), serverCommitUnknown };
     }
-    const retryAt = Date.now() + Math.min(MAX_BACKOFF_MS, 1000 * 2 ** Math.max(0, command.attempts - 1));
+    const retryAt = Date.now() + offlineRetryDelayMs(command.attempts, this.#retryRandom);
     return {
       ...command,
       state: 'retry_wait',

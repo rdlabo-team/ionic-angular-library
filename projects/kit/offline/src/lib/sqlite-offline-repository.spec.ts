@@ -1290,6 +1290,110 @@ describe('SqliteOfflineRepository replica rows', () => {
         repository.getReplicaRow({ userId: 2, scopeId: '10' }, 'test_items', generatedCommandIdentity(localId)),
       ).resolves.toMatchObject({ values: { title: 'User 2' } });
     });
+
+    it('standalone getReplicaRowsはreader leaseを保持し、完了までwriterを開始せずrollbackを漏らさない', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      const scope = { userId: 1 as const, scopeId: '10' };
+      const row: OfflineReplicaRow = {
+        ...scope,
+        sourceKey: 'test_items',
+        identity: generatedReplicaIdentity('019d-lease-read', 50),
+        values: { id: 50, title: 'Before' },
+        confirmedValues: { id: 50, title: 'Before' },
+        serverRevision: 1,
+        fetchedAt: 1,
+        syncState: 'confirmed',
+      };
+      await repository.transactReplica({ putRows: [row] });
+
+      let releaseRead!: () => void;
+      const readGate = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+      let announceRead!: () => void;
+      const readStarted = new Promise<void>((resolve) => {
+        announceRead = resolve;
+      });
+      let deferRowsQuery = true;
+      const originalQuery = plugin.query.getMockImplementation() as (options: {
+        statement: string;
+        values?: unknown[];
+      }) => Promise<unknown>;
+      plugin.query.mockImplementation(async (options: { statement: string; values?: unknown[] }) => {
+        if (deferRowsQuery && options.statement.startsWith('SELECT * FROM test_items')) {
+          deferRowsQuery = false;
+          announceRead();
+          await readGate;
+        }
+        return originalQuery(options);
+      });
+
+      plugin.execute.mockClear();
+      const read = repository.getReplicaRows(scope, 'test_items');
+      await readStarted;
+
+      let writeFinished = false;
+      const write = repository
+        .putCommand({
+          userId: 1,
+          scopeId: '10',
+          commandId: 'cmd-after-lease-read',
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-lease-read' },
+          operation: 'test_items.update',
+          payload: {},
+          optimisticValue: {},
+          payloadHash: 'hash',
+          baseRevision: null,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 1,
+          lastErrorCode: null,
+        })
+        .then(() => {
+          writeFinished = true;
+        });
+      void write.then(
+        () => undefined,
+        () => undefined,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+      expect(
+        plugin.execute.mock.calls.some(([options]) =>
+          String((options as { statement: string }).statement).includes('INSERT INTO offline_sync_commands'),
+        ),
+      ).toBe(false);
+
+      releaseRead();
+      await expect(read).resolves.toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'Before' }) })]);
+      await write;
+      expect(writeFinished).toBe(true);
+
+      const originalExecute = plugin.execute.getMockImplementation() as (options: {
+        statement: string;
+        values?: unknown[];
+      }) => Promise<unknown>;
+      plugin.execute.mockImplementation(async (options: { statement: string; values?: unknown[] }) => {
+        if (options.statement.includes('INSERT INTO offline_replica_cursors')) throw new Error('constraint failed');
+        return originalExecute(options);
+      });
+      await expect(
+        repository.transactReplica({
+          putCursors: [{ userId: 1, scopeId: '10', cursor: 'c-rollback' }],
+        }),
+      ).rejects.toThrow('constraint failed');
+      expect(plugin.rollbackTransaction).toHaveBeenCalled();
+      plugin.execute.mockImplementation(originalExecute);
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toEqual([
+        expect.objectContaining({ values: expect.objectContaining({ title: 'Before' }) }),
+      ]);
+      await expect(repository.getReplicaCursor(scope)).resolves.toBeNull();
+    });
   });
 
   describe('replica pull persistence', () => {
@@ -1659,4 +1763,188 @@ describe('SqliteOfflineRepository replica rows', () => {
     });
     return TestBed.inject(SqliteOfflineRepository);
   }
+
+  describe('runReadSnapshot', () => {
+    it('open snapshot中はwriteが待機し、readerはcommit前の状態だけを見る', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      plugin.execute.mockClear();
+
+      let releaseSnapshot: (() => void) | undefined;
+      const snapshotGate = new Promise<void>((resolve) => {
+        releaseSnapshot = resolve;
+      });
+      let write: Promise<void> = Promise.resolve();
+
+      const snapshot = repository.runReadSnapshot(async (reader) => {
+        await reader.getCommands({ userId: 1, scopeId: '10' });
+        write = repository.putCommand({
+          userId: 1,
+          scopeId: '10',
+          commandId: 'cmd-after-snapshot',
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-aaaa' },
+          operation: 'test_items.update',
+          payload: {},
+          optimisticValue: {},
+          payloadHash: 'hash',
+          baseRevision: null,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 1,
+          lastErrorCode: null,
+        });
+        void write.then(
+          () => undefined,
+          () => undefined,
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(
+          plugin.execute.mock.calls.some(([options]) =>
+            String((options as { statement: string }).statement).includes('INSERT INTO offline_sync_commands'),
+          ),
+        ).toBe(false);
+        await snapshotGate;
+      });
+
+      releaseSnapshot?.();
+      await snapshot;
+      await write;
+      expect(
+        plugin.execute.mock.calls.some(([options]) =>
+          String((options as { statement: string }).statement).includes('INSERT INTO offline_sync_commands'),
+        ),
+      ).toBe(true);
+    });
+
+    it('transaction rollback後にcommitted readへ失敗を漏らさない', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      plugin.execute.mockImplementation(async ({ statement }: { statement: string }) => {
+        if (statement.includes('INSERT INTO offline_replica_cursors')) throw new Error('constraint failed');
+        return {};
+      });
+
+      await expect(
+        repository.transactReplica({
+          putCursors: [{ userId: 1, scopeId: '10', cursor: 'c1' }],
+        }),
+      ).rejects.toThrow('constraint failed');
+      expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
+      expect(plugin.commitTransaction).not.toHaveBeenCalled();
+
+      plugin.execute.mockImplementation(async () => ({}));
+      plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+        if (statement.includes('offline_replica_schema_metadata')) {
+          return {
+            columns: ['version', 'schema_hash'],
+            rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+          };
+        }
+        if (statement.includes('offline_replica_cursors')) return { rows: [] };
+        return { rows: [] };
+      });
+      await expect(repository.runReadSnapshot((reader) => reader.getReplicaCursor({ userId: 1, scopeId: '10' }))).resolves.toBeNull();
+    });
+
+    it('独立した並行snapshotはそれぞれreader leaseを持ち、writerは両方の完了を待つ', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+      plugin.execute.mockClear();
+
+      let releaseA: (() => void) | undefined;
+      let releaseB: (() => void) | undefined;
+      const gateA = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      const gateB = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+      let bothReadersReady: (() => void) | undefined;
+      const readersReady = new Promise<void>((resolve) => {
+        bothReadersReady = resolve;
+      });
+      let readersHeld = 0;
+
+      plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+        if (statement.includes('offline_replica_schema_metadata')) {
+          return {
+            columns: ['version', 'schema_hash'],
+            rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+          };
+        }
+        if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+        if (statement.includes('offline_sync_commands')) return { rows: [] };
+        return { rows: [] };
+      });
+
+      const snapshotA = repository.runReadSnapshot(async (reader) => {
+        await reader.getCommands({ userId: 1, scopeId: '10' });
+        readersHeld += 1;
+        if (readersHeld === 2) bothReadersReady?.();
+        await gateA;
+      });
+      const snapshotB = repository.runReadSnapshot(async (reader) => {
+        await reader.getCommands({ userId: 1, scopeId: '10' });
+        readersHeld += 1;
+        if (readersHeld === 2) bothReadersReady?.();
+        await gateB;
+      });
+
+      await readersReady;
+      let writeFinished = false;
+      const write = repository
+        .putCommand({
+          userId: 1,
+          scopeId: '10',
+          commandId: 'cmd-after-concurrent-snapshots',
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-aaaa' },
+          operation: 'test_items.update',
+          payload: {},
+          optimisticValue: {},
+          payloadHash: 'hash',
+          baseRevision: null,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 1,
+          lastErrorCode: null,
+        })
+        .then(() => {
+          writeFinished = true;
+        });
+      void write.then(
+        () => undefined,
+        () => undefined,
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+      expect(
+        plugin.execute.mock.calls.some(([options]) =>
+          String((options as { statement: string }).statement).includes('INSERT INTO offline_sync_commands'),
+        ),
+      ).toBe(false);
+
+      releaseA?.();
+      await snapshotA;
+      await Promise.resolve();
+      expect(writeFinished).toBe(false);
+
+      releaseB?.();
+      await snapshotB;
+      await write;
+      expect(writeFinished).toBe(true);
+      expect(
+        plugin.execute.mock.calls.some(([options]) =>
+          String((options as { statement: string }).statement).includes('INSERT INTO offline_sync_commands'),
+        ),
+      ).toBe(true);
+    });
+  });
 });
