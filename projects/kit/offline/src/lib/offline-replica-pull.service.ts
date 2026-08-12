@@ -9,7 +9,9 @@ import {
   type OfflineReplicaPullPage,
 } from './offline-replica-puller';
 import {
+  canonicalOfflinePrincipalId,
   canonicalOfflineCommandIdentity,
+  canonicalOfflineReplicaIdentity,
   commandIdentityFromReplicaIdentity,
   commandIdentityMatchesReplicaRow,
   offlineGeneratedReplicaIdentity,
@@ -92,7 +94,7 @@ export class OfflineReplicaPullService {
         const putCommands = new Map<string, OfflineCommand>();
         const removeCommandIds = new Set<string>();
         if (rebaselinePending || page.rebaselineRequired) {
-          removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, scopeCommands)));
+          removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, userCommands)));
         }
 
         for (const change of changes) {
@@ -217,9 +219,13 @@ export class OfflineReplicaPullService {
           repository: this.#repository,
         });
         this.#assertProjection(scope, projection);
+        const finalPutRows = [...putRows, ...(projection?.putRows ?? [])];
+        const finalPutKeys = new Set(finalPutRows.map((row) => this.#rowKey(row)));
         await this.#repository.transactReplica({
-          putRows: [...putRows, ...(projection?.putRows ?? [])],
-          removeRows: [...removeRows, ...(projection?.removeRows ?? [])],
+          putRows: finalPutRows,
+          removeRows: [...removeRows, ...(projection?.removeRows ?? [])].filter(
+            (row) => !finalPutKeys.has(this.#rowKey(row)),
+          ),
           putCommands: [...putCommands.values()],
           removeCommandIds: [...removeCommandIds],
           putCursors: [{ ...scope, cursor: page.nextCursor }],
@@ -257,7 +263,7 @@ export class OfflineReplicaPullService {
   }
 
   #rowKey(row: OfflineReplicaRowKey): string {
-    return `${row.userId}:${row.scopeId}:${row.sourceKey}:${JSON.stringify(row.identity)}`;
+    return `${canonicalOfflinePrincipalId(row.userId)}:${row.scopeId}:${row.sourceKey}:${canonicalOfflineReplicaIdentity(row.identity)}`;
   }
 
   #assertProjection(

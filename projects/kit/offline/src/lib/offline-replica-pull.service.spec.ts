@@ -246,6 +246,115 @@ describe('OfflineReplicaPullService', () => {
     await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'snapshot-1' });
   });
 
+  it('keeps snapshot and derived rows whose keys overlap the rebaseline removal set', async () => {
+    await repository.transactReplica({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: 'existing', remoteId: 42 },
+          values: { id: 42, title: 'Stale' },
+          confirmedValues: { id: 42, title: 'Stale' },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+        {
+          ...scope,
+          sourceKey: 'test_views',
+          identity: { kind: 'local', localId: 'view-42' },
+          values: { title: 'Stale derived' },
+          confirmedValues: { title: 'Stale derived' },
+          serverRevision: null,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        },
+      ],
+      putCursors: [{ ...scope, cursor: 'expired' }],
+    });
+    projector.project.mockResolvedValue({
+      putRows: [
+        {
+          ...scope,
+          sourceKey: 'test_views',
+          identity: { kind: 'local', localId: 'view-42' },
+          values: { title: 'Fresh derived' },
+          confirmedValues: { title: 'Fresh derived' },
+          serverRevision: null,
+          fetchedAt: 2,
+          syncState: 'confirmed',
+        },
+      ],
+    });
+    pull.mockResolvedValueOnce(page([itemChange(42, 'Fresh')], { nextCursor: 'snapshot-1', rebaselineRequired: true }));
+
+    await service.pull(scope);
+
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).resolves.toMatchObject({
+      values: { title: 'Fresh' },
+    });
+    await expect(repository.getReplicaRow(scope, 'test_views', { kind: 'local', localId: 'view-42' })).resolves.toMatchObject({
+      values: { title: 'Fresh derived' },
+    });
+  });
+
+  it('preserves pending companions by canonical identity across user-scoped partitions', async () => {
+    const otherScope = { userId: scope.userId, scopeId: '20' };
+    const companion: OfflineReplicaRow = {
+      ...scope,
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: 'shared', remoteId: 42 },
+      values: { id: 42, title: 'Optimistic' },
+      confirmedValues: { id: 42, title: 'Confirmed' },
+      serverRevision: 1,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    await repository.transactReplica({
+      putRows: [companion],
+      putCommands: [
+        {
+          ...otherScope,
+          commandId: 'other-scope-command',
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: 'other' },
+          operation: 'test_items.update',
+          payload: {},
+          optimisticValue: {},
+          optimisticCompanions: [
+            {
+              key: {
+                ...scope,
+                sourceKey: 'test_items',
+                identity: { kind: 'generated', localId: 'shared', remoteId: null },
+              },
+              before: companion,
+              after: companion,
+            },
+          ],
+          payloadHash: 'hash',
+          baseRevision: 1,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 1,
+          lastErrorCode: null,
+        },
+      ],
+      putCursors: [{ ...scope, cursor: 'expired' }],
+    });
+    pull
+      .mockResolvedValueOnce(page([], { nextCursor: 'snapshot-1', rebaselineRequired: true, hasMore: true }))
+      .mockResolvedValueOnce(page([], { nextCursor: 'snapshot-1' }));
+
+    await service.pull(scope);
+
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).resolves.toMatchObject({
+      values: { title: 'Optimistic' },
+    });
+  });
+
   it('keeps the previous replica durable until the first rebaseline snapshot can commit atomically', async () => {
     await repository.transactReplica({
       putRows: [

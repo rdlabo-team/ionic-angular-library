@@ -80,6 +80,8 @@ export interface OfflineReplicaWirePullPage {
   changes: readonly OfflineReplicaWireChange[];
   nextCursor: string;
   hasMore: boolean;
+  /** The server can no longer continue this cursor and requires a confirmed-state snapshot rebuild. */
+  rebaselineRequired?: boolean;
 }
 
 /**
