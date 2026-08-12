@@ -15,6 +15,8 @@ import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import type {
   OfflineCommand,
+  OfflinePullAttention,
+  OfflinePullAttentionReason,
   OfflineReplicaSyncState,
   OfflineReplicaRow,
   OfflineReplicaRowKey,
@@ -159,6 +161,7 @@ export class OfflineSyncService {
   readonly #errorHandler = inject(ErrorHandler);
   readonly #retryRandom = inject(OFFLINE_RETRY_RANDOM);
   readonly #commands = signal<OfflineCommand[]>([]);
+  readonly #pullAttentions = signal<OfflinePullAttention[]>([]);
   readonly #knownScopes = new Map<string, OfflineScope>();
   /** ACKed scopes whose authoritative post-send pull has not completed yet. */
   readonly #pendingPullScopes = new Map<string, OfflineScope>();
@@ -179,7 +182,10 @@ export class OfflineSyncService {
   readonly pendingCommands = this.#commands.asReadonly();
   readonly pendingCount = computed(() => this.pendingCommands().length);
   readonly conflicts = computed(() => this.#commands().filter((command) => command.state === 'conflict'));
+  /** Durable fatal-pull attentions for the active principal, restored across restart. */
+  readonly pullAttentions = this.#pullAttentions.asReadonly();
   readonly syncState = computed<OfflineSyncState>(() => {
+    if (this.#pullAttentions().length > 0) return 'attention';
     const commands = this.#commands();
     if (commands.some((command) => ['blocked_auth', 'rejected', 'conflict'].includes(command.state))) return 'attention';
     // Any non-sending ambiguous commit (including restart-normalized pending+unknown) needs attention.
@@ -251,6 +257,7 @@ export class OfflineSyncService {
     this.#knownScopes.clear();
     this.#pendingPullScopes.clear();
     this.#commands.set([]);
+    this.#pullAttentions.set([]);
     this.#scheduleRetry(null);
   }
 
@@ -957,6 +964,7 @@ export class OfflineSyncService {
         if (this.#isFatalPullFailure(error)) {
           // Auth/upgrade-driven recovery only: stop remaining scopes immediately.
           fatalPullFailure = fatalPullFailure ?? error;
+          await this.#persistFatalPullAttentions(error, scope, pullScopes, generation);
           break;
         }
         if (this.#pendingPullScopes.has(this.#scopeKey(scope))) {
@@ -994,7 +1002,8 @@ export class OfflineSyncService {
     // Fatal pre-pull skips pending post-pulls; recovery is auth/upgrade-driven, not timer retry.
     // Fatal post-send pull stops remaining pending scopes the same way (ACK preserved, no resend).
     if (fatalPullFailure === null) {
-      for (const scope of this.#pendingPullScopes.values()) {
+      const postPullScopes = [...this.#pendingPullScopes.values()];
+      for (const scope of postPullScopes) {
         if (!this.#isCurrent(generation) || !this.#network.connected()) break;
         try {
           // A command response may contain only the aggregate's base row. Pull
@@ -1005,6 +1014,7 @@ export class OfflineSyncService {
         } catch (error) {
           if (this.#isFatalPullFailure(error)) {
             fatalPullFailure = fatalPullFailure ?? error;
+            await this.#persistFatalPullAttentions(error, scope, postPullScopes, generation);
             break;
           }
           postPullFailures.push(error);
@@ -1038,6 +1048,50 @@ export class OfflineSyncService {
     // classification elsewhere in this service). Same classifier for pre-pull and post-send pull.
     if (status === 401 || status === 403 || status === 409) return true;
     return error instanceof OfflineReplicaSchemaMismatchError;
+  }
+
+  #pullAttentionReason(error: unknown): OfflinePullAttentionReason | null {
+    if (error instanceof OfflineReplicaSchemaMismatchError) return 'schema_upgrade_required';
+    const status = this.#errorStatus(error);
+    if (status === 409) return 'schema_upgrade_required';
+    if (status === 401 || status === 403) return 'authorization_required';
+    return null;
+  }
+
+  /**
+   * Persists durable pull attentions for a current-generation fatal pull.
+   * Schema/409 marks all attempted pull scopes; 401 marks every known principal scope;
+   * 403 marks only the failing scope. Stale generations must not mutate a newer session.
+   */
+  async #persistFatalPullAttentions(
+    error: unknown,
+    failingScope: OfflineScope,
+    attemptedScopes: readonly OfflineScope[],
+    generation: number,
+  ): Promise<void> {
+    if (!this.#isCurrent(generation)) return;
+    const reason = this.#pullAttentionReason(error);
+    if (reason === null) return;
+    const status = this.#errorStatus(error);
+    // Snapshot synchronously before any await so a concurrent session switch cannot retarget scopes.
+    const scoped =
+      status === 403
+        ? [failingScope]
+        : status === 401
+          ? [...this.#knownScopes.values()].filter((scope) => scope.userId === failingScope.userId)
+          : attemptedScopes.filter((scope) => scope.userId === failingScope.userId);
+    const scopes = scoped.length > 0 ? scoped : [failingScope];
+    const attentions: OfflinePullAttention[] = scopes.map((scope) => {
+      const attention: OfflinePullAttention = {
+        userId: scope.userId,
+        scopeId: scope.scopeId,
+        reason,
+      };
+      if (status > 0) attention.status = status;
+      return attention;
+    });
+    if (!this.#isCurrent(generation)) return;
+    await this.#repository.transactReplica({ putPullAttentions: attentions });
   }
 
   #setForegroundScopePolicy(foregroundScopeIds?: readonly string[]): void {
@@ -1560,6 +1614,7 @@ export class OfflineSyncService {
     if (!session) {
       this.#activeUserId = null;
       this.#knownScopes.clear();
+      this.#pullAttentions.set([]);
       return true;
     }
     this.#assertSessionPrincipalBoundary(session);
@@ -1578,6 +1633,7 @@ export class OfflineSyncService {
     if (this.#activeUserId === userId) return;
     this.#knownScopes.clear();
     this.#pendingPullScopes.clear();
+    this.#pullAttentions.set([]);
     this.#activeUserId = userId;
     this.#lastCommandCreatedAt = 0;
   }
@@ -1613,8 +1669,11 @@ export class OfflineSyncService {
 
   async #refreshState(generation = this.#generation): Promise<void> {
     const commands = await this.#readKnownCommands();
+    const attentions =
+      this.#activeUserId !== null && this.#repository.getPullAttentions ? await this.#repository.getPullAttentions(this.#activeUserId) : [];
     if (!this.#isCurrent(generation)) return;
     this.#commands.set(commands);
+    this.#pullAttentions.set(attentions);
     const nextRetry = commands
       .filter((command) => command.state === 'retry_wait' && command.retryAt !== null)
       .reduce<number | null>((earliest, command) => Math.min(earliest ?? command.retryAt!, command.retryAt!), null);
@@ -1716,7 +1775,10 @@ export class OfflineSyncService {
 
   async #markScopeReconciled(scope: OfflineScope, generation: number): Promise<void> {
     if (!this.#isCurrent(generation)) return;
-    await this.#repository.transactReplica({ removeReconciliationScopes: [scope] });
+    await this.#repository.transactReplica({
+      removeReconciliationScopes: [scope],
+      removePullAttentions: [scope],
+    });
     if (!this.#isCurrent(generation)) return;
     this.#pendingPullScopes.delete(this.#scopeKey(scope));
   }

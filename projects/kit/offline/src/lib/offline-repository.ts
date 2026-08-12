@@ -140,6 +140,22 @@ export interface OfflineReplicaCursor extends OfflineScope {
   cursor: string;
 }
 
+/**
+ * Closed set of durable reasons a scope cannot be pulled until the client recovers
+ * (app upgrade or re-authorization). Independent of Outbox command state.
+ */
+export type OfflinePullAttentionReason = 'schema_upgrade_required' | 'authorization_required';
+
+/**
+ * First-class durable attention for a fatal pull failure scoped to user+scope.
+ * Survives restart even when the Outbox is empty.
+ */
+export interface OfflinePullAttention extends OfflineScope {
+  reason: OfflinePullAttentionReason;
+  /** Optional HTTP status that produced this attention (for example 401, 403, or 409). */
+  status?: number;
+}
+
 /** Atomic changes applied to the local replica and durable outbox together. */
 export interface OfflineReplicaTransaction {
   putRows?: readonly OfflineReplicaRow[];
@@ -156,6 +172,10 @@ export interface OfflineReplicaTransaction {
   putReconciliationScopes?: readonly OfflineScope[];
   /** Scopes whose authoritative post-acknowledgement pull completed successfully. */
   removeReconciliationScopes?: readonly OfflineScope[];
+  /** Durable fatal-pull attentions to upsert for user+scope. */
+  putPullAttentions?: readonly OfflinePullAttention[];
+  /** Scopes whose fatal-pull attentions should be removed after a successful pull. */
+  removePullAttentions?: readonly OfflineScope[];
 }
 
 /**
@@ -190,6 +210,7 @@ export interface OfflineRepositoryReader {
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
   getReconciliationScopes?(userId: OfflinePrincipalId): Promise<OfflineScope[]>;
+  getPullAttentions?(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
   getCommandsForUser?(userId: OfflinePrincipalId): Promise<OfflineCommand[]>;
 }
@@ -225,11 +246,17 @@ export interface OfflineRepository {
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
   getReconciliationScopes?(userId: OfflinePrincipalId): Promise<OfflineScope[]>;
+  /** Durable fatal-pull attentions for the principal, ordered by scope id. */
+  getPullAttentions?(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
   getCommandsForUser?(userId: OfflinePrincipalId): Promise<OfflineCommand[]>;
   putCommand(command: OfflineCommand): Promise<void>;
   replaceCommand(command: OfflineCommand): Promise<void>;
   removeCommand(commandId: string): Promise<void>;
+  /** Upserts a durable fatal-pull attention for user+scope. */
+  putPullAttention?(attention: OfflinePullAttention): Promise<void>;
+  /** Removes a durable fatal-pull attention for user+scope when present. */
+  removePullAttention?(scope: OfflineScope): Promise<void>;
   clearUser(userId: OfflinePrincipalId): Promise<void>;
   clearScope(scope: OfflineScope): Promise<void>;
   transactReplica(transaction: OfflineReplicaTransaction): Promise<void>;
@@ -288,6 +315,7 @@ const OUTBOX_KEY = 'offline:outbox:commands';
 const REPLICA_TRANSACTION_KEY = 'offline:replica:transaction';
 const REPLICA_SCHEMA_MIGRATION_KEY = 'offline:replica:schema-migration';
 const RECONCILIATION_SCOPES_KEY = 'offline:replica:reconciliation-scopes';
+const PULL_ATTENTIONS_KEY = 'offline:replica:pull-attentions';
 
 function compareOfflineCommands(left: OfflineCommand, right: OfflineCommand): number {
   return left.createdAt - right.createdAt || (left.commandId < right.commandId ? -1 : left.commandId > right.commandId ? 1 : 0);
@@ -383,6 +411,10 @@ export class IonicOfflineRepository implements OfflineRepository {
     return this.#withCommittedRead(() => this.#readReconciliationScopes(userId));
   }
 
+  async getPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
+    return this.#withCommittedRead(() => this.#readPullAttentions(userId));
+  }
+
   async getCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     return this.#withCommittedRead(() => this.#readCommands(scope));
   }
@@ -466,6 +498,13 @@ export class IonicOfflineRepository implements OfflineRepository {
     return Object.values(scopes).filter((scope) => scope.userId === userId);
   }
 
+  async #readPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
+    const attentions = await this.#readRecord<OfflinePullAttention>(PULL_ATTENTIONS_KEY);
+    return Object.values(attentions)
+      .filter((attention) => attention.userId === userId)
+      .sort((left, right) => (left.scopeId < right.scopeId ? -1 : left.scopeId > right.scopeId ? 1 : 0));
+  }
+
   async #readCommands(scope: OfflineScope): Promise<OfflineCommand[]> {
     const commands = await this.#readRecord<OfflineCommand>(OUTBOX_KEY);
     return Object.values(commands)
@@ -496,6 +535,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       getReplicaRowByRemoteIdentity: (scope, sourceKey, identity) => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity),
       getReplicaCursor: (scope) => this.#readReplicaCursor(scope),
       getReconciliationScopes: (userId) => this.#readReconciliationScopes(userId),
+      getPullAttentions: (userId) => this.#readPullAttentions(userId),
       getCommands: (scope) => this.#readCommands(scope),
       getCommandsForUser: (userId) => this.#readCommandsForUser(userId),
     };
@@ -554,6 +594,22 @@ export class IonicOfflineRepository implements OfflineRepository {
     });
   }
 
+  async putPullAttention(attention: OfflinePullAttention): Promise<void> {
+    await this.initialize();
+    await this.#mutateRecord<OfflinePullAttention>(PULL_ATTENTIONS_KEY, (attentions) => {
+      attentions[this.#cursorKey(attention)] = attention;
+      return attentions;
+    });
+  }
+
+  async removePullAttention(scope: OfflineScope): Promise<void> {
+    await this.initialize();
+    await this.#mutateRecord<OfflinePullAttention>(PULL_ATTENTIONS_KEY, (attentions) => {
+      delete attentions[this.#cursorKey(scope)];
+      return attentions;
+    });
+  }
+
   async clearUser(userId: OfflinePrincipalId): Promise<void> {
     await this.initialize();
     await this.#enqueueWrite(async () => {
@@ -567,6 +623,7 @@ export class IonicOfflineRepository implements OfflineRepository {
         this.#filterRecordNow<OfflineCommand>(OUTBOX_KEY, (value) => value.userId !== userId),
         this.#filterRecordNow<string>(CURSORS_KEY, (_value, key) => !key.startsWith(`${canonicalOfflinePrincipalId(userId)}:`)),
         this.#filterRecordNow<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => value.userId !== userId),
+        this.#filterRecordNow<OfflinePullAttention>(PULL_ATTENTIONS_KEY, (value) => value.userId !== userId),
       ]);
       const metadata = await this.#metadata();
       if (metadata.lastUserId === userId) {
@@ -594,6 +651,7 @@ export class IonicOfflineRepository implements OfflineRepository {
         }),
         this.#filterRecordNow<string>(CURSORS_KEY, (_value, key) => key !== this.#cursorKey(scope)),
         this.#filterRecordNow<OfflineScope>(RECONCILIATION_SCOPES_KEY, (value) => !belongsToGroup(value)),
+        this.#filterRecordNow<OfflinePullAttention>(PULL_ATTENTIONS_KEY, (value) => !belongsToGroup(value)),
       ]);
     });
   }
@@ -781,11 +839,12 @@ export class IonicOfflineRepository implements OfflineRepository {
   async #applyReplicaTransaction(transaction: OfflineReplicaTransaction, journal: boolean): Promise<void> {
     await this.#assertReplicaSchemaLocked();
     for (const row of transaction.putRows ?? []) this.#validateReplicaRow(row);
-    const [rows, commands, cursors, reconciliationScopes] = await Promise.all([
+    const [rows, commands, cursors, reconciliationScopes, pullAttentions] = await Promise.all([
       this.#readRecord<OfflineReplicaRow>(ROWS_KEY),
       this.#readRecord<OfflineCommand>(OUTBOX_KEY),
       this.#readRecord<string>(CURSORS_KEY),
       this.#readRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY),
+      this.#readRecord<OfflinePullAttention>(PULL_ATTENTIONS_KEY),
     ]);
     const identityCheckRows = { ...rows };
     const releases = new Map<string, OfflineReplicaRemoteIdRelease>();
@@ -841,11 +900,18 @@ export class IonicOfflineRepository implements OfflineRepository {
     for (const scope of transaction.removeReconciliationScopes ?? []) {
       delete reconciliationScopes[this.#cursorKey(scope)];
     }
+    for (const attention of transaction.putPullAttentions ?? []) {
+      pullAttentions[this.#cursorKey(attention)] = attention;
+    }
+    for (const scope of transaction.removePullAttentions ?? []) {
+      delete pullAttentions[this.#cursorKey(scope)];
+    }
     await Promise.all([
       this.#storage.set(ROWS_KEY, rows),
       this.#storage.set(OUTBOX_KEY, commands),
       this.#storage.set(CURSORS_KEY, cursors),
       this.#storage.set(RECONCILIATION_SCOPES_KEY, reconciliationScopes),
+      this.#storage.set(PULL_ATTENTIONS_KEY, pullAttentions),
     ]);
     await this.#writeAffectedRowPartitions(rows, transaction);
     await this.#storage.remove(REPLICA_TRANSACTION_KEY);
