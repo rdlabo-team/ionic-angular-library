@@ -44,7 +44,7 @@ export {
 } from './offline-identity';
 
 /** Current durable storage schema used by both web and native repositories. */
-export const OFFLINE_SCHEMA_VERSION = 1;
+export const OFFLINE_SCHEMA_VERSION = 2;
 
 /** User and partition scope of all local offline data. */
 export interface OfflineScope {
@@ -58,7 +58,7 @@ export type OfflineReplicaVisibility = 'present' | 'pending_delete';
 export type OfflineReplicaMutation = 'upsert' | 'delete';
 
 /** Durable processing state of an outbox command. */
-export type OfflineCommandState = 'pending' | 'sending' | 'retry_wait' | 'blocked_auth' | 'rejected' | 'conflict';
+export type OfflineCommandState = 'pending' | 'sending' | 'retry_wait' | 'awaiting_pull' | 'blocked_auth' | 'rejected' | 'conflict';
 
 interface OfflineCommandBase<T> extends OfflineScope {
   commandId: string;
@@ -69,10 +69,11 @@ interface OfflineCommandBase<T> extends OfflineScope {
   identity: OfflineCommandIdentity;
   operation: string;
   payload: T;
-  /** Full optimistic entity value displayed while this command is pending. */
-  optimisticValue: unknown;
-  /** Product-owned companion rows changed atomically with this command. */
-  optimisticCompanions?: readonly OfflineOptimisticReplicaCompanion[];
+  /**
+   * Declared localOnly projection rows this intent may create, update, or remove.
+   * Kit persists keys only; before/after images are not durable truth.
+   */
+  localOnlyFootprint?: readonly OfflineReplicaRowKey[];
   /** Durable intent used to preserve a hidden tombstone across restart and replay. */
   replicaMutation?: OfflineReplicaMutation;
   payloadHash: string;
@@ -84,13 +85,8 @@ interface OfflineCommandBase<T> extends OfflineScope {
   lastErrorCode: string | null;
   /** True when transport started but the client cannot prove whether the server committed. */
   serverCommitUnknown?: boolean;
-}
-
-/** Durable before/after image used to reconcile product-owned derived rows. */
-export interface OfflineOptimisticReplicaCompanion {
-  key: OfflineReplicaRowKey;
-  before: OfflineReplicaRow | null;
-  after: OfflineReplicaRow | null;
+  /** Remote identity captured after transport for journal-independent authoritative reconciliation. */
+  reconciliationIdentity?: OfflineReplicaRemoteIdentity;
 }
 
 export type OfflineCommand<T = unknown> = OfflineCommandBase<T>;

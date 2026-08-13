@@ -1,6 +1,7 @@
 /** Standard scoped local replica and outbox runtime for offline-capable Ionic applications. */
 export * from './lib/offline-replica-schema';
 export * from './lib/offline-identity';
+export * from './lib/offline-aggregate-intent-projector';
 export * from './lib/offline-replica-puller';
 export * from './lib/offline-replica-pull.service';
 export * from './lib/offline-replica-mutation-coordinator';

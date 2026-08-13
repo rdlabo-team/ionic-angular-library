@@ -1,11 +1,5 @@
 import { InjectionToken } from '@angular/core';
-import type {
-  OfflineCommand,
-  OfflineOptimisticReplicaCompanion,
-  OfflineReplicaRow,
-  OfflineReplicaRowKey,
-  OfflineScope,
-} from './offline-repository';
+import type { OfflineCommand, OfflineScope } from './offline-repository';
 import type { OfflineCommandIdentity, OfflinePrincipalId, OfflineReplicaIdentity } from './offline-identity';
 import type { OfflineGeneratedRemoteId, OfflineNaturalKey } from './offline-replica-schema';
 
@@ -14,16 +8,14 @@ export interface OfflineCommandResult {
   /** Remote id returned by a successful generated-identity mutation. */
   remoteId?: OfflineGeneratedRemoteId;
   serverRevision?: string | number;
-  /** Full server-confirmed domain values after applying the mutation. */
-  confirmedValues?: unknown;
   /**
-   * Server-confirmed local-only projection changes owned by this command.
+   * Full server-confirmed domain values after applying the mutation.
    *
-   * Kit validates that every row belongs to the command's declared optimistic
-   * companion footprint, then commits these changes atomically with the base
-   * row acknowledgement, command removal, and reconciliation marker.
+   * Kit does not treat this as the durable confirmed baseline while the
+   * command remains in the Outbox. Authoritative confirmed values come from
+   * pull acknowledgement of `commandId`.
    */
-  confirmedCompanions?: readonly OfflineConfirmedReplicaCompanion[];
+  confirmedValues?: unknown;
   /** Removes the local replica row after a confirmed server delete. */
   removeReplica?: boolean;
   /**
@@ -34,41 +26,16 @@ export interface OfflineCommandResult {
   response?: unknown;
 }
 
-/** Local-only projection changes confirmed by one server acknowledgement. */
-export interface OfflineConfirmedReplicaCompanion {
-  /** Exact optimistic companion footprint entry owned by this command. */
-  readonly key: OfflineReplicaRowKey;
-  /**
-   * Applies the acknowledged domain effect to the latest confirmed projection read inside Kit's
-   * ACK lane. Return `null` to remove the confirmed projection.
-   */
-  readonly reduce: (latestConfirmedValues: unknown) => unknown | null;
-}
-
 /** Target identity resolved from the local replica immediately before transport. */
 export type OfflineCommandTarget =
   | { readonly kind: 'generated'; readonly localId: string; readonly remoteId: OfflineGeneratedRemoteId | null }
   | { readonly kind: 'natural'; readonly naturalKey: OfflineNaturalKey };
 
-/** 不透明なoperationを製品APIへ送信し、local replicaへ投影するadapter。 */
 /** Product adapter that sends commands and projects acknowledgements into entities. */
 export interface OfflineCommandExecutor {
   /** Sends the command using `command.commandId` as its durable server-side idempotency key. */
   execute(command: OfflineCommand, target: OfflineCommandTarget): Promise<OfflineCommandResult>;
   withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
-  /**
-   * Reapplies a complete aggregate's pending intents to a newer confirmed
-   * value. Return null when any intent is revision-sensitive. The returned
-   * values correspond to the original FIFO command order. Kit alone updates
-   * command metadata; payload and idempotency identity remain immutable.
-   * Without this hook, revision changes conflict by default.
-   */
-  rebasePendingCommands?(
-    commands: readonly OfflineCommand[],
-    confirmedValues: unknown,
-    revision: string | number,
-    companionRows: readonly OfflineReplicaRow[],
-  ): OfflinePendingRebase | null | Promise<OfflinePendingRebase | null>;
   /**
    * Whether this transport error authoritatively proves that this idempotency
    * key did not commit. Returning true may clear an ambiguity retained from an
@@ -80,20 +47,6 @@ export interface OfflineCommandExecutor {
    * Required only when `clearRemoteId` completes while later commands remain.
    */
   withoutServerRevision?(command: OfflineCommand): OfflineCommand;
-}
-
-/** Product projection result after safely replaying pending intents onto a newer confirmed revision. */
-export interface OfflinePendingRebase {
-  /** Recomputed projections in the original durable FIFO order. */
-  steps: readonly OfflinePendingRebaseStep[];
-}
-
-/** Projection state produced for one immutable durable command in FIFO order. */
-export interface OfflinePendingRebaseStep {
-  /** Recomputed full aggregate value after this command's intent is applied. */
-  optimisticValue: unknown;
-  /** Same footprint as the original command, rematerialized from the new confirmed value. */
-  optimisticCompanions?: readonly OfflineOptimisticReplicaCompanion[];
 }
 
 /** DI token for the product-specific command transport adapter. */

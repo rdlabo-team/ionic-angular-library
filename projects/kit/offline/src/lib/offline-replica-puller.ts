@@ -1,10 +1,6 @@
 import { InjectionToken } from '@angular/core';
 import type { OfflineReplicaRow, OfflineReplicaRowKey, OfflineScope } from './offline-repository';
-import type {
-  OfflineGeneratedRemoteId,
-  OfflineNaturalKey,
-  OfflineReplicaRemoteIdentity,
-} from './offline-replica-schema';
+import type { OfflineGeneratedRemoteId, OfflineNaturalKey, OfflineReplicaRemoteIdentity } from './offline-replica-schema';
 
 /** Server pull request for one user or partition-scoped replica. */
 export interface OfflineReplicaPullRequest {
@@ -12,6 +8,20 @@ export interface OfflineReplicaPullRequest {
   cursor: string;
   schemaVersion: number;
   schemaHash: string;
+  /**
+   * Successfully transported commands that still require an authoritative row acknowledgement.
+   * The server must hydrate and authorize each target from primary state and acknowledge it only
+   * on the returned reconciliation change; it must never trust this client identity as proof.
+   */
+  reconciliationTargets: readonly OfflineReplicaReconciliationTarget[];
+}
+
+/** One awaiting-pull command whose canonical state must be hydrated independently of journal retention. */
+export interface OfflineReplicaReconciliationTarget {
+  readonly commandId: string;
+  readonly operation: string;
+  readonly sourceKey: string;
+  readonly identity: OfflineReplicaRemoteIdentity;
 }
 
 /** One server-side replica mutation returned by an explicit pull page. */

@@ -1,6 +1,6 @@
 import { ErrorHandler, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   OFFLINE_COMMAND_EXECUTOR,
   OFFLINE_SYNC_CONTEXT,
@@ -32,7 +32,8 @@ import {
   type OfflineRepository,
   type OfflineScope,
 } from './offline-repository';
-import { generatedCommandIdentity } from './offline-test-helpers';
+import { generatedCommandIdentity, rematerializeTestAggregate } from './offline-test-helpers';
+import { OFFLINE_AGGREGATE_INTENT_PROJECTOR } from './offline-aggregate-intent-projector';
 import {
   OfflineCommandInFlightError,
   OfflinePayloadValidationError,
@@ -112,6 +113,13 @@ describe('OfflineSyncService', () => {
     async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({ response: null }),
   );
   const provesCommandNotCommitted = vi.fn((_error: unknown, _command: OfflineCommand) => false);
+
+  function expectAwaitingPull(count = commands.length): void {
+    expect(commands).toHaveLength(count);
+    expect(commands.every((command) => command.state === 'awaiting_pull')).toBe(true);
+    expect(service.pendingCount()).toBe(count);
+    expect(onCommandRemoved).not.toHaveBeenCalled();
+  }
 
   beforeEach(() => {
     commands = [];
@@ -322,11 +330,19 @@ describe('OfflineSyncService', () => {
             withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
           },
         },
+        { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
         // Fixed sample so backoff stays deterministic (except dedicated jitter unit tests).
         { provide: OFFLINE_RETRY_RANDOM, useValue: () => 0.5 },
       ],
     });
     service = TestBed.inject(OfflineSyncService);
+  });
+
+  afterEach(() => {
+    connected.set(false);
+    service.revokeSession();
+    vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   it('readCacheOnly mode rejects enqueue before creating replica or Outbox state', async () => {
@@ -340,7 +356,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'forbidden-write' },
           operation: 'documents.create',
           payload: { title: 'write' },
-          optimisticValue: { id: 0, title: 'write' },
         },
         { flush: false },
       ),
@@ -349,19 +364,19 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([]);
   });
 
-  it('prepared enqueue persists the base row, companion row, and Outbox command together', async () => {
+  it('prepared enqueue rematerializes the base row and declared localOnly footprint', async () => {
     const companion: OfflineReplicaRow = {
       userId: 1,
       scopeId: '10',
       sourceKey: 'document_views',
       identity: { kind: 'local', localId: 'view-1' },
-      values: { title: 'Optimistic view' },
+      values: { title: 'Baseline view' },
       confirmedValues: { title: 'Baseline view' },
       serverRevision: null,
       fetchedAt: 2,
       syncState: 'confirmed',
     };
-    rows.push({ ...structuredClone(companion), values: { title: 'Baseline view' } });
+    rows.push(structuredClone(companion));
 
     await service.enqueuePrepared(
       async (repository) => {
@@ -374,9 +389,8 @@ describe('OfflineSyncService', () => {
             identity: { kind: 'generated', localId: 'prepared-1' },
             operation: 'documents.create',
             payload: { title: 'Optimistic' },
-            optimisticValue: { id: 0, title: 'Optimistic' },
+            localOnlyFootprint: [companion],
           },
-          replicaTransaction: { putRows: [companion] },
         };
       },
       { flush: false },
@@ -385,14 +399,15 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ sourceKey: 'documents', values: { id: 0, title: 'Optimistic' } }),
-        expect.objectContaining({ sourceKey: 'document_views', values: { title: 'Optimistic view' } }),
+        expect.objectContaining({
+          sourceKey: 'document_views',
+          values: { title: 'Optimistic' },
+          confirmedValues: { title: 'Baseline view' },
+        }),
       ]),
     );
-    expect(commands[0]?.optimisticCompanions).toEqual([
-      expect.objectContaining({
-        before: expect.objectContaining({ values: { title: 'Baseline view' } }),
-        after: expect.objectContaining({ values: { title: 'Optimistic view' } }),
-      }),
+    expect(commands[0]?.localOnlyFootprint).toEqual([
+      expect.objectContaining({ sourceKey: 'document_views', identity: { kind: 'local', localId: 'view-1' } }),
     ]);
   });
 
@@ -406,49 +421,35 @@ describe('OfflineSyncService', () => {
     expect(commands).toEqual([]);
   });
 
-  it('prepared enqueue rejects duplicate or cross-scope companion rows before persistence', async () => {
+  it('prepared enqueue rejects duplicate or cross-scope localOnly footprint keys before persistence', async () => {
     const base = {
       userId: 1,
       scopeId: '10',
       sourceKey: 'document_views',
       identity: { kind: 'local' as const, localId: 'duplicate' },
-      values: {},
-      confirmedValues: null,
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed' as const,
     };
     const request = {
       scopeId: '10',
       aggregateType: 'documents',
       identity: { kind: 'generated' as const, localId: 'prepared-invalid' },
       operation: 'documents.create',
-      payload: {},
-      optimisticValue: { id: 0, title: 'x' },
+      payload: { title: 'x' },
     };
     await expect(
       service.enqueuePrepared(async () => ({
-        request,
-        replicaTransaction: { putRows: [base, structuredClone(base)] },
+        request: { ...request, localOnlyFootprint: [base, structuredClone(base)] },
       })),
     ).rejects.toThrow('duplicate replica row');
     await expect(
       service.enqueuePrepared(async () => ({
-        request,
-        replicaTransaction: { putRows: [{ ...base, scopeId: '11' }] },
+        request: { ...request, localOnlyFootprint: [{ ...base, scopeId: '11' }] },
       })),
     ).rejects.toThrow('must use the command scope');
-    await expect(
-      service.enqueuePrepared(async () => ({
-        request,
-        replicaTransaction: { putCommands: [] } as never,
-      })),
-    ).rejects.toThrow('cannot mutate putCommands');
     expect(rows).toEqual([]);
     expect(commands).toEqual([]);
   });
 
-  it('discard restores a prepared companion before-image', async () => {
+  it('discard rematerializes remaining intents onto confirmed localOnly values', async () => {
     const before: OfflineReplicaRow = {
       userId: 1,
       scopeId: '10',
@@ -468,10 +469,9 @@ describe('OfflineSyncService', () => {
           aggregateType: 'documents',
           identity: { kind: 'generated', localId: 'discard-prepared' },
           operation: 'documents.create',
-          payload: {},
-          optimisticValue: { id: 0, title: 'Optimistic' },
+          payload: { title: 'Optimistic' },
+          localOnlyFootprint: [before],
         },
-        replicaTransaction: { putRows: [{ ...before, values: { title: 'Optimistic' } }] },
       }),
       { flush: false },
     );
@@ -504,10 +504,7 @@ describe('OfflineSyncService', () => {
             identity: { kind: 'generated', localId: 'discard-race' },
             operation: 'documents.update',
             payload: { title },
-            optimisticValue: { id: 1, title },
-          },
-          replicaTransaction: {
-            putRows: [{ ...before, values: { title }, fetchedAt: index + 2 }],
+            localOnlyFootprint: [before],
           },
         }),
         { flush: false },
@@ -551,7 +548,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'first' },
         operation: 'documents.create',
         payload: { title: 'first' },
-        optimisticValue: { id: 0, title: 'first' },
       },
       { flush: false },
     );
@@ -564,7 +560,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'second' },
           operation: 'documents.create',
           payload: { title: 'second' },
-          optimisticValue: { id: 0, title: 'second' },
         },
         { flush: false },
       ),
@@ -584,7 +579,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'oversized' },
           operation: 'documents.create',
           payload: { title: 'too large' },
-          optimisticValue: { id: 0, title: 'too large' },
         },
         { flush: false },
       ),
@@ -601,9 +595,8 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId },
         operation: 'documents.create',
         payload: { title },
-        optimisticValue: { id: 0, title },
+        localOnlyFootprint: companion ? [companion] : undefined,
       },
-      replicaTransaction: companion ? { putRows: [companion] } : undefined,
     });
 
     it('2件の成功は1回のtransactReplicaでFIFO createdAtを永続化する', async () => {
@@ -705,8 +698,7 @@ describe('OfflineSyncService', () => {
               aggregateType: 'documents',
               identity: { kind: 'natural', naturalKey: { favFrom: 1, favTo: 'x' } },
               operation: 'documents.create',
-              payload: {},
-              optimisticValue: { id: 0, title: 'bad' },
+              payload: { title: 'bad' },
             },
           },
         ]),
@@ -809,7 +801,7 @@ describe('OfflineSyncService', () => {
       await service.initialize({ flush: false });
       let failRefresh = true;
       getCommands.mockImplementation(async (scope) => {
-        if (failRefresh) {
+        if (failRefresh && commands.length > 0) {
           failRefresh = false;
           throw new Error('postcommit read failed');
         }
@@ -843,7 +835,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'offline-local' },
         operation: 'documents.create',
         payload: { title: 'offline' },
-        optimisticValue: { id: 0, title: 'offline' },
       },
       { flush: false },
     );
@@ -871,7 +862,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'reconnect-local' },
         operation: 'documents.create',
         payload: { title: 'queued offline' },
-        optimisticValue: { id: 0, title: 'queued offline' },
       },
       { flush: false },
     );
@@ -880,7 +870,8 @@ describe('OfflineSyncService', () => {
     connected.set(true);
 
     await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(service.pendingCount()).toBe(0));
+    await vi.waitFor(() => expect(commands[0]?.state).toBe('awaiting_pull'));
+    expect(service.pendingCount()).toBe(1);
   });
 
   it('session失効前に開始したenqueueを永続commitせずreset完了まで直列化する', async () => {
@@ -904,7 +895,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'revoked' },
         operation: 'documents.create',
         payload: { title: 'stale' },
-        optimisticValue: { id: 0, title: 'stale' },
       },
       { flush: false },
     );
@@ -950,7 +940,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
-        optimisticValue: { seq: 1 },
       },
       { flush: false },
     );
@@ -961,16 +950,14 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
-        optimisticValue: { seq: 2 },
       },
       { flush: false },
     );
     connected.set(true);
     await service.flush();
     expect(execute.mock.calls.map(([command]) => (command as OfflineCommand<{ seq: number }>).payload.seq)).toEqual([1, 2]);
-    expect(service.pendingCount()).toBe(0);
     expect(pull).toHaveBeenCalledTimes(2);
-    expect(onCommandRemoved).toHaveBeenCalledTimes(2);
+    expectAwaitingPull(2);
   });
 
   it('送信成功後は同一scopeの複数aggregateを一度だけ再pullする', async () => {
@@ -981,7 +968,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'post-pull-1' },
         operation: 'documents.create',
         payload: { title: 'one' },
-        optimisticValue: { id: 0, title: 'one' },
       },
       { flush: false },
     );
@@ -992,7 +978,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'post-pull-2' },
         operation: 'documents.create',
         payload: { title: 'two' },
-        optimisticValue: { id: 0, title: 'two' },
       },
       { flush: false },
     );
@@ -1006,7 +991,7 @@ describe('OfflineSyncService', () => {
       { userId: 1, scopeId: '10' },
       { userId: 1, scopeId: '10' },
     ]);
-    expect(commands).toEqual([]);
+    expectAwaitingPull(2);
   });
 
   it('送信ACK後のpullが完了するまでflushを完了せずauthoritative projectionを公開する', async () => {
@@ -1039,7 +1024,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'snap-back' },
         operation: 'documents.create',
         payload: { title: 'optimistic projection' },
-        optimisticValue: { id: 0, title: 'optimistic projection' },
       },
       { flush: false },
     );
@@ -1047,17 +1031,16 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.flush();
 
-    expect(commandCountsAtPull).toEqual([1, 0]);
+    expect(commandCountsAtPull).toEqual([1, 1]);
     expect(rows).toContainEqual(
       expect.objectContaining({
         identity: expect.objectContaining({ localId: 'snap-back', remoteId: 55 }),
         values: { id: 55, title: 'authoritative projection' },
         confirmedValues: { id: 55, title: 'authoritative projection' },
         serverRevision: 3,
-        syncState: 'confirmed',
       }),
     );
-    expect(service.pendingCount()).toBe(0);
+    expectAwaitingPull(1);
   });
 
   it('送信後pull失敗ではcommit済みcommandを再送せず次flushのpre-pullで回収する', async () => {
@@ -1070,20 +1053,19 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'post-pull-failure' },
         operation: 'documents.create',
         payload: { title: 'one' },
-        optimisticValue: { id: 0, title: 'one' },
       },
       { flush: false },
     );
 
     connected.set(true);
     await expect(service.flush()).rejects.toBe(postPullError);
-    expect(commands).toEqual([]);
+    expectAwaitingPull(1);
     expect(execute).toHaveBeenCalledOnce();
 
     await service.flush();
     expect(execute).toHaveBeenCalledOnce();
     expect(pull).toHaveBeenCalledTimes(3);
-    expect(service.pendingCount()).toBe(0);
+    expectAwaitingPull(1);
   });
 
   it('partial flushのACK後pull失敗scopeをOutbox削除後もreconnectで再pullする', async () => {
@@ -1107,14 +1089,13 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'partial-post-pull-failure' },
         operation: 'documents.create',
         payload: { title: 'one' },
-        optimisticValue: { id: 0, title: 'one' },
       },
       { flush: false },
     );
 
     connected.set(true);
     await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(postPullError));
-    expect(commands).toEqual([]);
+    expectAwaitingPull(1);
     expect(execute).toHaveBeenCalledOnce();
 
     connected.set(false);
@@ -1144,14 +1125,13 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'durable-post-pull-failure' },
         operation: 'documents.create',
         payload: { title: 'one' },
-        optimisticValue: { id: 0, title: 'one' },
       },
       { flush: false },
     );
 
     connected.set(true);
     await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(postPullError));
-    expect(commands).toEqual([]);
+    expectAwaitingPull(1);
     expect(reconciliationScopes).toEqual([{ userId: 1, scopeId: '20' }]);
 
     connected.set(false);
@@ -1183,7 +1163,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-a' },
         operation: 'documents.create',
         payload: { title: 'a' },
-        optimisticValue: { id: 0, title: 'a' },
       },
       { flush: false },
     );
@@ -1194,7 +1173,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-b' },
         operation: 'documents.create',
         payload: { title: 'b' },
-        optimisticValue: { id: 0, title: 'b' },
       },
       { flush: false },
     );
@@ -1206,7 +1184,13 @@ describe('OfflineSyncService', () => {
     expect(execute.mock.calls.map(([command]) => (command as OfflineCommand).identity)).toEqual([
       expect.objectContaining({ localId: 'scope-b' }),
     ]);
-    expect(commands.map((command) => command.identity)).toEqual([expect.objectContaining({ localId: 'scope-a' })]);
+    expect(commands.map((command) => command.identity)).toEqual([
+      expect.objectContaining({ localId: 'scope-a' }),
+      expect.objectContaining({ localId: 'scope-b' }),
+    ]);
+    expect(commands.find((command) => command.identity.kind === 'generated' && command.identity.localId === 'scope-b')?.state).toBe(
+      'awaiting_pull',
+    );
   });
 
   it('pre-pull: 同一scopeのpull失敗ではそのscopeのcommandを送らない', async () => {
@@ -1219,7 +1203,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'blocked-by-pull' },
         operation: 'documents.create',
         payload: { title: 'blocked' },
-        optimisticValue: { id: 0, title: 'blocked' },
       },
       { flush: false },
     );
@@ -1262,7 +1245,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-a-wait' },
         operation: 'documents.create',
         payload: { title: 'a' },
-        optimisticValue: { id: 0, title: 'a' },
       },
       { flush: false },
     );
@@ -1273,7 +1255,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-b-wait' },
         operation: 'documents.create',
         payload: { title: 'b' },
-        optimisticValue: { id: 0, title: 'b' },
       },
       { flush: false },
     );
@@ -1286,7 +1267,13 @@ describe('OfflineSyncService', () => {
     releaseSend?.();
     await flushRejected;
     expect(execute).toHaveBeenCalledOnce();
-    expect(commands.map((command) => command.identity)).toEqual([expect.objectContaining({ localId: 'scope-a-wait' })]);
+    expect(commands.map((command) => command.identity)).toEqual([
+      expect.objectContaining({ localId: 'scope-a-wait' }),
+      expect.objectContaining({ localId: 'scope-b-wait' }),
+    ]);
+    expect(commands.find((command) => command.identity.kind === 'generated' && command.identity.localId === 'scope-b-wait')?.state).toBe(
+      'awaiting_pull',
+    );
   });
 
   it('status無しworker失敗でも他workerのACK完了までflushをrejectしない', async () => {
@@ -1321,7 +1308,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'fail-early' },
         operation: 'documents.create',
         payload: { title: 'fail' },
-        optimisticValue: { id: 0, title: 'fail' },
       },
       { flush: false },
     );
@@ -1332,7 +1318,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'succeed-deferred' },
         operation: 'documents.create',
         payload: { title: 'ok' },
-        optimisticValue: { id: 0, title: 'ok' },
       },
       { flush: false },
     );
@@ -1344,8 +1329,12 @@ describe('OfflineSyncService', () => {
     expect(commands.some((command) => command.identity.kind === 'generated' && command.identity.localId === 'succeed-deferred')).toBe(true);
     releaseSuccess();
     await flushRejected;
-    expect(commands.map((command) => command.identity)).toEqual([expect.objectContaining({ localId: 'fail-early' })]);
+    expect(commands.map((command) => command.identity)).toEqual([
+      expect.objectContaining({ localId: 'fail-early' }),
+      expect.objectContaining({ localId: 'succeed-deferred' }),
+    ]);
     expect(commands[0]).toMatchObject({ state: 'retry_wait', serverCommitUnknown: true });
+    expect(commands[1]).toMatchObject({ state: 'awaiting_pull' });
     expect(service.syncState()).toBe('attention');
     expect(pull.mock.calls.some((call) => call[0]?.scopeId === '20')).toBe(true);
   });
@@ -1369,7 +1358,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-b-fatal' },
         operation: 'documents.create',
         payload: { title: 'b' },
-        optimisticValue: { id: 0, title: 'b' },
       },
       { flush: false },
     );
@@ -1468,6 +1456,7 @@ describe('OfflineSyncService', () => {
             withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
           },
         },
+        { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
         { provide: OFFLINE_RETRY_RANDOM, useValue: () => 0.5 },
       ],
     });
@@ -1500,7 +1489,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'pending-after-schema' },
         operation: 'documents.create',
         payload: { title: 'pending' },
-        optimisticValue: { id: 0, title: 'pending' },
       },
       { flush: false },
     );
@@ -1514,10 +1502,10 @@ describe('OfflineSyncService', () => {
     pull.mockImplementation(async () => undefined);
     await service.flush();
     expect(execute).toHaveBeenCalledOnce();
-    expect(commands).toEqual([]);
+    expectAwaitingPull(1);
     expect(service.pullAttentions()).toEqual([]);
     expect(pullAttentions).toEqual([]);
-    expect(service.syncState()).toBe('idle');
+    expect(service.syncState()).toBe('pending');
   });
 
   it('pre-pull HTTP 403はfailing scopeだけにauthorization attentionを付ける', async () => {
@@ -1539,7 +1527,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-b-403' },
         operation: 'documents.create',
         payload: { title: 'b' },
-        optimisticValue: { id: 0, title: 'b' },
       },
       { flush: false },
     );
@@ -1655,7 +1642,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-b-http-409' },
         operation: 'documents.create',
         payload: { title: 'b' },
-        optimisticValue: { id: 0, title: 'b' },
       },
       { flush: false },
     );
@@ -1698,14 +1684,13 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: `fatal-skip-post-${_label.replace(/\s+/g, '-')}` },
           operation: 'documents.create',
           payload: { title: 'seed' },
-          optimisticValue: { id: 0, title: 'seed' },
         },
         { flush: false },
       );
       connected.set(true);
       await expect(service.flush()).rejects.toBe(postPullError);
       expect(execute).toHaveBeenCalledOnce();
-      expect(commands).toEqual([]);
+      expectAwaitingPull(1);
       // Drop the transient post-pull retry so this case only asserts fatal does not arm a new one.
       vi.clearAllTimers();
 
@@ -1757,7 +1742,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: `post-fatal-a-${_label.replace(/\s+/g, '-')}` },
           operation: 'documents.create',
           payload: { title: 'a' },
-          optimisticValue: { id: 0, title: 'a' },
         },
         { flush: false },
       );
@@ -1768,7 +1752,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: `post-fatal-b-${_label.replace(/\s+/g, '-')}` },
           operation: 'documents.create',
           payload: { title: 'b' },
-          optimisticValue: { id: 0, title: 'b' },
         },
         { flush: false },
       );
@@ -1777,10 +1760,9 @@ describe('OfflineSyncService', () => {
       connected.set(true);
       await expect(service.flush()).rejects.toBe(fatalError);
 
-      // Both commands ACKed (removed); no resend path.
+      // Both commands transported; retained until pull acknowledges commandId.
       expect(execute).toHaveBeenCalledTimes(2);
-      expect(commands).toEqual([]);
-      expect(service.pendingCount()).toBe(0);
+      expectAwaitingPull(2);
       // Two pending post-pull scopes: first fatal stops the second immediately.
       expect(pullsByScope.get('10')).toBeGreaterThanOrEqual(1);
       expect(pullsByScope.get('20')).toBeGreaterThanOrEqual(1);
@@ -1846,7 +1828,6 @@ describe('OfflineSyncService', () => {
             identity: { kind: 'generated', localId },
             operation: 'documents.create',
             payload: { title: localId },
-            optimisticValue: { id: 0, title: localId },
           },
           { flush: false },
         );
@@ -1856,7 +1837,7 @@ describe('OfflineSyncService', () => {
       connected.set(true);
       await expect(service.flush()).rejects.toBe(fatal);
       expect(execute).toHaveBeenCalledTimes(3);
-      expect(commands).toEqual([]);
+      expectAwaitingPull(3);
       expect(postPullAttempts).toBe(2);
       expect([...pullsByScope.values()].filter((count) => count >= 2)).toHaveLength(2);
       expect([...pullsByScope.values()].filter((count) => count === 1)).toHaveLength(1);
@@ -1905,7 +1886,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'stale-fatal-a' },
           operation: 'documents.create',
           payload: { title: 'a' },
-          optimisticValue: { id: 0, title: 'a' },
         },
         { flush: false },
       );
@@ -1931,7 +1911,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'stale-fatal-b' },
           operation: 'documents.create',
           payload: { title: 'b' },
-          optimisticValue: { id: 0, title: 'b' },
         },
         { flush: false },
       );
@@ -1957,8 +1936,12 @@ describe('OfflineSyncService', () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(execute.mock.calls.length).toBeGreaterThan(executesBeforeRetry);
-      expect(service.pendingCount()).toBe(0);
-      expect(commands.some((command) => command.identity.kind === 'generated' && command.identity.localId === 'stale-fatal-b')).toBe(false);
+      expect(
+        commands.some(
+          (command) =>
+            command.identity.kind === 'generated' && command.identity.localId === 'stale-fatal-b' && command.state !== 'awaiting_pull',
+        ),
+      ).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -1986,7 +1969,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'transient-isolated' },
           operation: 'documents.create',
           payload: { title: 'b' },
-          optimisticValue: { id: 0, title: 'b' },
         },
         { flush: false },
       );
@@ -2028,7 +2010,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'prefer-fatal' },
         operation: 'documents.create',
         payload: { title: 'c' },
-        optimisticValue: { id: 0, title: 'c' },
       },
       { flush: false },
     );
@@ -2058,7 +2039,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'scope-b-lookalike' },
         operation: 'documents.create',
         payload: { title: 'b' },
-        optimisticValue: { id: 0, title: 'b' },
       },
       { flush: false },
     );
@@ -2095,7 +2075,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'documents.create',
         payload: { name: 'draft' },
-        optimisticValue: { name: 'draft' },
       },
       { flush: false },
     );
@@ -2109,9 +2088,10 @@ describe('OfflineSyncService', () => {
     expect(rows[0]).toMatchObject({
       identity: { kind: 'generated', localId: '019d-aaaa', remoteId: 38142 },
       serverRevision: 1,
-      syncState: 'confirmed',
-      confirmedValues: { name: 'draft' },
+      syncState: 'pending',
+      confirmedValues: null,
     });
+    expectAwaitingPull(1);
     expect(commands.every((command) => !('remoteId' in command))).toBe(true);
 
     execute.mockResolvedValueOnce({
@@ -2126,7 +2106,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'documents.update',
         payload: { name: 'edited', revision: 1 },
-        optimisticValue: { name: 'edited' },
         baseRevision: 1,
       },
       { flush: false },
@@ -2136,8 +2115,10 @@ describe('OfflineSyncService', () => {
     expect(rows[0]).toMatchObject({
       identity: { kind: 'generated', localId: '019d-aaaa', remoteId: 38142 },
       serverRevision: 2,
-      confirmedValues: { name: 'edited' },
+      confirmedValues: null,
+      syncState: 'pending',
     });
+    expectAwaitingPull(2);
     expect(commands.every((command) => !('remoteId' in command))).toBe(true);
   });
 
@@ -2163,7 +2144,6 @@ describe('OfflineSyncService', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'documents.create',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'sending',
@@ -2200,7 +2180,6 @@ describe('OfflineSyncService', () => {
       identity: { kind: 'generated', localId: '019d-restart-unknown' },
       operation: 'documents.create',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'sending',
@@ -2232,7 +2211,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-new' },
         operation: 'documents.create',
         payload: { name: 'draft' },
-        optimisticValue: { name: 'draft' },
       },
       { flush: false },
     );
@@ -2260,12 +2238,11 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-existing' },
         operation: 'documents.update',
         payload: { name: 'draft', revision: 4 },
-        optimisticValue: { name: 'draft' },
         baseRevision: 4,
       },
       { flush: false },
     );
-    expect(rows[0]?.values).toEqual({ name: 'draft' });
+    expect(rows[0]?.values).toEqual({ id: 38142, name: 'draft', revision: 4 });
     await service.discard(commandId, { flush: false });
     expect(rows[0]).toMatchObject({
       values: { name: 'confirmed' },
@@ -2294,7 +2271,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-failure' },
         operation: 'documents.update',
         payload: { title: 'local conflict' },
-        optimisticValue: { id: 12, title: 'local conflict' },
         baseRevision: 3,
       },
       { flush: false },
@@ -2331,7 +2307,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-success' },
         operation: 'documents.update',
         payload: { title: 'old local' },
-        optimisticValue: { id: 13, title: 'old local' },
         baseRevision: 4,
       },
       { flush: false },
@@ -2348,7 +2323,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'replace-success' },
           operation: 'documents.update',
           payload: { title: 'new local' },
-          optimisticValue: { id: 13, title: 'new local' },
           baseRevision: 4,
         },
       }),
@@ -2369,7 +2343,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-ordered' },
         operation: 'documents.update',
         payload: { title: 'first' },
-        optimisticValue: { id: 14, title: 'first' },
       },
       { flush: false },
     );
@@ -2380,7 +2353,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-ordered' },
         operation: 'documents.update',
         payload: { title: 'second' },
-        optimisticValue: { id: 14, title: 'second' },
       },
       { flush: false },
     );
@@ -2392,7 +2364,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated' as const, localId: 'replace-ordered' },
         operation: 'documents.update',
         payload: { title: 'replacement' },
-        optimisticValue: { id: 14, title: 'replacement' },
       },
     }));
 
@@ -2401,7 +2372,7 @@ describe('OfflineSyncService', () => {
     expect(prepare).not.toHaveBeenCalled();
     expect(commands.map((command) => command.commandId)).toHaveLength(2);
     expect(rows.find((row) => row.identity.kind === 'generated' && row.identity.localId === 'replace-ordered')?.values).toEqual({
-      id: 14,
+      id: 0,
       title: 'second',
     });
   });
@@ -2414,7 +2385,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-chain' },
         operation: 'documents.update',
         payload: { title: 'stocktake' },
-        optimisticValue: { id: 15, title: 'stocktake' },
         baseRevision: 1,
       },
       { flush: false },
@@ -2426,7 +2396,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-chain' },
         operation: 'documents.update',
         payload: { title: 'later delta' },
-        optimisticValue: { id: 15, title: 'later delta' },
         baseRevision: 1,
       },
       { flush: false },
@@ -2444,8 +2413,7 @@ describe('OfflineSyncService', () => {
             aggregateType: command.aggregateType,
             identity: command.identity,
             operation: command.operation,
-            payload: command.payload,
-            optimisticValue: { id: 15, title: index === 0 ? 'new stocktake' : 'new stocktake plus delta' },
+            payload: { title: index === 0 ? 'new stocktake' : 'new stocktake plus delta' },
             baseRevision: 2,
           },
         })),
@@ -2458,7 +2426,7 @@ describe('OfflineSyncService', () => {
     expect(commands.map((command) => command.state)).toEqual(['pending', 'pending']);
     expect(commands.map((command) => command.createdAt)).toEqual(originalCreatedAt);
     expect(rows.find((row) => row.identity.kind === 'generated' && row.identity.localId === 'replace-chain')?.values).toEqual({
-      id: 15,
+      id: 0,
       title: 'new stocktake plus delta',
     });
   });
@@ -2471,7 +2439,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-chain-failure' },
         operation: 'documents.update',
         payload: { title: 'first' },
-        optimisticValue: { id: 16, title: 'first' },
       },
       { flush: false },
     );
@@ -2482,7 +2449,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'replace-chain-failure' },
         operation: 'documents.update',
         payload: { title: 'second' },
-        optimisticValue: { id: 16, title: 'second' },
       },
       { flush: false },
     );
@@ -2500,7 +2466,7 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual(beforeRows);
   });
 
-  it('companionの対象集合を変えるreplacementを元commandと楽観値を残して拒否する', async () => {
+  it('replacement must preserve the declared localOnly footprint', async () => {
     const companion: OfflineReplicaRow = {
       userId: 1,
       scopeId: '10',
@@ -2521,10 +2487,7 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'replace-companion' },
           operation: 'documents.update',
           payload: { title: 'old local' },
-          optimisticValue: { id: 15, title: 'old local' },
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'old optimistic' }, syncState: 'pending' }],
+          localOnlyFootprint: [companion],
         },
       }),
       { flush: false },
@@ -2541,75 +2504,18 @@ describe('OfflineSyncService', () => {
             identity: { kind: 'generated', localId: 'replace-companion' },
             operation: 'documents.update',
             payload: { title: 'new local' },
-            optimisticValue: { id: 15, title: 'new local' },
           },
         }),
         { flush: false },
       ),
-    ).rejects.toThrow('preserve the optimistic companion footprint');
+    ).rejects.toThrow('preserve the localOnly footprint');
 
     expect(commands).toHaveLength(1);
     expect(commands[0]?.commandId).toBe(oldCommandId);
-    expect(rows.find((row) => row.sourceKey === 'document_views')?.values).toEqual({ title: 'old optimistic' });
+    expect(rows.find((row) => row.sourceKey === 'document_views')?.values).toEqual({ title: 'old local' });
   });
 
-  it('replacement companionは元commandのbefore-imageを継承して破棄時に確定値へ戻す', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'replace-remove-view' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    const oldCommandId = await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'replace-remove' },
-          operation: 'documents.update',
-          payload: { title: 'old local' },
-          optimisticValue: { id: 16, title: 'old local' },
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'old optimistic' }, syncState: 'pending' }],
-        },
-      }),
-      { flush: false },
-    );
-    commands[0] = { ...commands[0]!, state: 'conflict' };
-
-    const newCommandId = await service.replacePrepared(
-      oldCommandId,
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'replace-remove' },
-          operation: 'documents.update',
-          payload: { title: 'remove companion' },
-          optimisticValue: { id: 16, title: 'remove companion' },
-        },
-        replicaTransaction: { removeRows: [companion] },
-      }),
-      { flush: false },
-    );
-
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
-    await service.discard(newCommandId);
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      syncState: 'confirmed',
-    });
-  });
-
-  it('productが渡した楽観confirmedValuesを採用せずput replacement破棄時に確定値へ戻す', async () => {
+  it('replacement rematerializes remaining intents and discard restores confirmed localOnly values', async () => {
     const companion: OfflineReplicaRow = {
       userId: 1,
       scopeId: '10',
@@ -2630,17 +2536,7 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'replace-put' },
           operation: 'documents.update',
           payload: { title: 'old local' },
-          optimisticValue: { id: 17, title: 'old local' },
-        },
-        replicaTransaction: {
-          putRows: [
-            {
-              ...companion,
-              values: { title: 'old optimistic' },
-              confirmedValues: { title: 'old optimistic' },
-              syncState: 'pending',
-            },
-          ],
+          localOnlyFootprint: [companion],
         },
       }),
       { flush: false },
@@ -2656,24 +2552,14 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'replace-put' },
           operation: 'documents.update',
           payload: { title: 'new local' },
-          optimisticValue: { id: 17, title: 'new local' },
-        },
-        replicaTransaction: {
-          putRows: [
-            {
-              ...companion,
-              values: { title: 'new optimistic' },
-              confirmedValues: { title: 'new optimistic' },
-              syncState: 'pending',
-            },
-          ],
+          localOnlyFootprint: [companion],
         },
       }),
       { flush: false },
     );
 
     expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'new optimistic' },
+      values: { title: 'new local' },
       confirmedValues: { title: 'baseline' },
     });
     await service.discard(newCommandId);
@@ -2684,7 +2570,7 @@ describe('OfflineSyncService', () => {
     });
   });
 
-  it('conflict pull後の最新confirmedValuesをreplacementと破棄で維持する', async () => {
+  it('replacement keeps the latest confirmedValues after a conflict pull', async () => {
     const companion: OfflineReplicaRow = {
       userId: 1,
       scopeId: '10',
@@ -2705,10 +2591,7 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'replace-pulled' },
           operation: 'documents.update',
           payload: { title: 'old local' },
-          optimisticValue: { id: 18, title: 'old local' },
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'old optimistic' }, syncState: 'pending' }],
+          localOnlyFootprint: [companion],
         },
       }),
       { flush: false },
@@ -2717,7 +2600,7 @@ describe('OfflineSyncService', () => {
     const companionIndex = rows.findIndex((row) => row.sourceKey === 'document_views');
     rows[companionIndex] = {
       ...rows[companionIndex]!,
-      values: { title: 'old optimistic' },
+      values: { title: 'old local' },
       confirmedValues: { title: 'latest server' },
       serverRevision: 2,
       syncState: 'conflict',
@@ -2732,25 +2615,14 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'replace-pulled' },
           operation: 'documents.update',
           payload: { title: 'new local' },
-          optimisticValue: { id: 18, title: 'new local' },
-        },
-        replicaTransaction: {
-          putRows: [
-            {
-              ...companion,
-              values: { title: 'new optimistic' },
-              confirmedValues: { title: 'new optimistic' },
-              serverRevision: 2,
-              syncState: 'pending',
-            },
-          ],
+          localOnlyFootprint: [companion],
         },
       }),
       { flush: false },
     );
 
     expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'new optimistic' },
+      values: { title: 'new local' },
       confirmedValues: { title: 'latest server' },
       serverRevision: 2,
     });
@@ -2763,7 +2635,7 @@ describe('OfflineSyncService', () => {
     });
   });
 
-  it('baselineのないcompanionを連続更新しても全command破棄後にrowを残さない', async () => {
+  it('discards a create-only localOnly row when no remaining command owns it', async () => {
     const companion: OfflineReplicaRow = {
       userId: 1,
       scopeId: '10',
@@ -2783,9 +2655,8 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'new-companion' },
           operation: 'documents.update',
           payload: { title: 'first' },
-          optimisticValue: { id: 19, title: 'first' },
+          localOnlyFootprint: [companion],
         },
-        replicaTransaction: { putRows: [{ ...companion, values: { title: 'first optimistic' } }] },
       }),
       { flush: false },
     );
@@ -2797,526 +2668,23 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'new-companion' },
           operation: 'documents.update',
           payload: { title: 'second' },
-          optimisticValue: { id: 19, title: 'second' },
+          localOnlyFootprint: [companion],
         },
-        replicaTransaction: { putRows: [{ ...companion, values: { title: 'second optimistic' } }] },
       }),
       { flush: false },
     );
 
     expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'second optimistic' },
+      values: { title: 'second' },
       confirmedValues: null,
     });
     await service.discard(secondCommandId);
     expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'first optimistic' },
+      values: { title: 'first' },
       confirmedValues: null,
     });
     await service.discard(firstCommandId);
     expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
-  });
-
-  it('confirmedCompanions putはACK・command削除・reconciliation markerと同一transactReplicaで確定する', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'confirmed-put-view' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'confirmed-put' },
-          operation: 'documents.update',
-          payload: { title: 'optimistic' },
-          optimisticValue: { id: 20, title: 'optimistic' },
-          baseRevision: 1,
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'optimistic view' }, syncState: 'pending' }],
-        },
-      }),
-      { flush: false },
-    );
-    const repository = TestBed.inject(OFFLINE_REPOSITORY);
-    const transactReplica = vi.mocked(repository.transactReplica);
-    const callsBeforeFlush = transactReplica.mock.calls.length;
-    execute.mockResolvedValueOnce({
-      serverRevision: 2,
-      confirmedValues: { id: 20, title: 'server' },
-      confirmedCompanions: [
-        {
-          key: companion,
-          reduce: () => ({ title: 'server view' }),
-        },
-      ],
-      response: null,
-    });
-
-    connected.set(true);
-    await service.flush();
-
-    const ackCalls = transactReplica.mock.calls.slice(callsBeforeFlush).filter(([transaction]) =>
-      (transaction.putReconciliationScopes ?? []).some((scope) => scope.userId === 1 && scope.scopeId === '10'),
-    );
-    expect(ackCalls).toHaveLength(1);
-    expect(ackCalls[0]?.[0]).toMatchObject({
-      putRows: expect.arrayContaining([
-        expect.objectContaining({
-          sourceKey: 'documents',
-          values: { id: 20, title: 'server' },
-          confirmedValues: { id: 20, title: 'server' },
-          syncState: 'confirmed',
-        }),
-        expect.objectContaining({
-          sourceKey: 'document_views',
-          values: { title: 'server view' },
-          confirmedValues: { title: 'server view' },
-          syncState: 'confirmed',
-          visibility: 'present',
-        }),
-      ]),
-      removeCommandIds: [expect.any(String)],
-      putReconciliationScopes: [{ userId: 1, scopeId: '10' }],
-    });
-    expect(commands).toEqual([]);
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'server view' },
-      confirmedValues: { title: 'server view' },
-      syncState: 'confirmed',
-      visibility: 'present',
-    });
-  });
-
-  it('confirmedCompanions removeはACKと同一transactionでcompanionを除く', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'confirmed-remove-view' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'confirmed-remove' },
-          operation: 'documents.update',
-          payload: { title: 'drop view' },
-          optimisticValue: { id: 21, title: 'drop view' },
-          baseRevision: 1,
-        },
-        replicaTransaction: { removeRows: [companion] },
-      }),
-      { flush: false },
-    );
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
-    execute.mockResolvedValueOnce({
-      serverRevision: 2,
-      confirmedValues: { id: 21, title: 'drop view' },
-      confirmedCompanions: [
-        {
-          key: companion,
-          reduce: () => null,
-        },
-      ],
-      response: null,
-    });
-
-    connected.set(true);
-    await service.flush();
-
-    expect(commands).toEqual([]);
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
-    expect(rows.find((row) => row.sourceKey === 'documents')).toMatchObject({
-      values: { id: 21, title: 'drop view' },
-      confirmedValues: { id: 21, title: 'drop view' },
-      syncState: 'confirmed',
-    });
-  });
-
-  it('後続optimistic companionはconfirmedCompanionsの上にoverlayしconfirmedValuesはサーバ確定値を残す', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'confirmed-overlay-view' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'confirmed-overlay' },
-          operation: 'documents.update',
-          payload: { title: 'first' },
-          optimisticValue: { id: 22, title: 'first' },
-          baseRevision: 1,
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'first optimistic' }, syncState: 'pending' }],
-        },
-      }),
-      { flush: false },
-    );
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'confirmed-overlay' },
-          operation: 'documents.update',
-          payload: { title: 'second' },
-          optimisticValue: { id: 22, title: 'second' },
-          baseRevision: 1,
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'second optimistic' }, syncState: 'pending' }],
-        },
-      }),
-      { flush: false },
-    );
-    const firstCommandId = commands[0]!.commandId;
-    const secondCommandId = commands[1]!.commandId;
-    execute
-      .mockResolvedValueOnce({
-        serverRevision: 2,
-        confirmedValues: { id: 22, title: 'first server' },
-        confirmedCompanions: [
-          {
-            key: companion,
-            reduce: () => ({ title: 'server companion' }),
-          },
-        ],
-        response: null,
-      })
-      .mockRejectedValueOnce(Object.assign(new Error('hold later command'), { status: 0 }));
-
-    connected.set(true);
-    await service.flush();
-
-    expect(commands).toHaveLength(1);
-    expect(commands[0]?.commandId).toBe(secondCommandId);
-    expect(commands[0]?.commandId).not.toBe(firstCommandId);
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'second optimistic' },
-      confirmedValues: { title: 'server companion' },
-      syncState: 'pending',
-    });
-    expect(rows.find((row) => row.sourceKey === 'documents')).toMatchObject({
-      values: { id: 22, title: 'second' },
-      confirmedValues: { id: 22, title: 'first server' },
-    });
-  });
-
-  it('footprint外のconfirmedCompanionsはACKせずtransaction mutationを起こさない', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'declared-view' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'undeclared-companion' },
-          operation: 'documents.update',
-          payload: { title: 'optimistic' },
-          optimisticValue: { id: 23, title: 'optimistic' },
-          baseRevision: 1,
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'optimistic view' }, syncState: 'pending' }],
-        },
-      }),
-      { flush: false },
-    );
-    const beforeCommandId = commands[0]!.commandId;
-    const beforeReconciliation = structuredClone(reconciliationScopes);
-    const repository = TestBed.inject(OFFLINE_REPOSITORY);
-    const transactReplica = vi.mocked(repository.transactReplica);
-    const callsBeforeFlush = transactReplica.mock.calls.length;
-    execute.mockResolvedValueOnce({
-      serverRevision: 2,
-      confirmedValues: { id: 23, title: 'server' },
-      confirmedCompanions: [
-        {
-          key: { ...companion, identity: { kind: 'local', localId: 'undeclared-view' } },
-          reduce: () => ({ title: 'smuggled' }),
-        },
-      ],
-      response: null,
-    });
-
-    connected.set(true);
-    await expect(service.flush()).rejects.toThrow('undeclared companion');
-
-    const ackMutations = transactReplica.mock.calls.slice(callsBeforeFlush).filter(
-      ([transaction]) =>
-        (transaction.removeCommandIds ?? []).length > 0 ||
-        (transaction.putReconciliationScopes ?? []).length > 0 ||
-        (transaction.putRows ?? []).some(
-          (row) =>
-            row.sourceKey === 'document_views' &&
-            (row.values as { title?: string } | null)?.title === 'smuggled',
-        ),
-    );
-    expect(ackMutations).toEqual([]);
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      commandId: beforeCommandId,
-      serverCommitUnknown: true,
-    });
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      identity: { kind: 'local', localId: 'declared-view' },
-      values: { title: 'optimistic view' },
-      confirmedValues: { title: 'baseline' },
-    });
-    expect(rows.find((row) => row.sourceKey === 'documents')?.confirmedValues).toBeNull();
-    expect(reconciliationScopes).toEqual(beforeReconciliation);
-  });
-
-  it('confirmedCompanionsはfootprintをすべて覆う必要がある', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'exact-coverage' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'exact-coverage-command' },
-          operation: 'documents.update',
-          payload: { title: 'optimistic' },
-          optimisticValue: { id: 24, title: 'optimistic' },
-          baseRevision: 1,
-        },
-        replicaTransaction: { putRows: [{ ...companion, syncState: 'pending' }] },
-      }),
-      { flush: false },
-    );
-    const commandId = commands[0]!.commandId;
-    execute.mockResolvedValueOnce({
-      confirmedCompanions: [],
-      response: null,
-    });
-
-    connected.set(true);
-    await expect(service.flush()).rejects.toThrow('must cover every optimistic companion exactly once');
-    expect(commands).toContainEqual(expect.objectContaining({ commandId }));
-
-  });
-
-  it('confirmedCompanions reducerは最新のconfirmedValuesを使う', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'latest-confirmed' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'latest-confirmed-command' },
-          operation: 'documents.update',
-          payload: { title: 'optimistic' },
-          optimisticValue: { id: 25, title: 'optimistic' },
-          baseRevision: 1,
-        },
-        replicaTransaction: {
-          putRows: [{ ...companion, values: { title: 'optimistic view' }, syncState: 'pending' }],
-        },
-      }),
-      { flush: false },
-    );
-    const current = rows.find((row) => row.sourceKey === 'document_views')!;
-    current.confirmedValues = { title: 'mutated confirmed' };
-    const seen: unknown[] = [];
-    execute.mockResolvedValueOnce({
-      serverRevision: 2,
-      confirmedValues: { id: 25, title: 'server' },
-      confirmedCompanions: [
-        {
-          key: companion,
-          reduce: (latestConfirmedValues) => {
-            seen.push(latestConfirmedValues);
-            return { title: 'reduced', from: (latestConfirmedValues as { title: string }).title };
-          },
-        },
-      ],
-      response: null,
-    });
-
-    connected.set(true);
-    await service.flush();
-
-    expect(seen).toEqual([{ title: 'mutated confirmed' }]);
-    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
-      values: { title: 'reduced', from: 'mutated confirmed' },
-      confirmedValues: { title: 'reduced', from: 'mutated confirmed' },
-      syncState: 'confirmed',
-      visibility: 'present',
-    });
-  });
-
-  it('current companionの明示的なconfirmed absenceを旧beforeへfallbackしない', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'confirmed-absence' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'confirmed-absence-command' },
-          operation: 'documents.update',
-          payload: {},
-          optimisticValue: { id: 27 },
-        },
-        replicaTransaction: { putRows: [{ ...companion, syncState: 'pending' }] },
-      }),
-      { flush: false },
-    );
-    rows.find((row) => row.sourceKey === 'document_views')!.confirmedValues = null;
-    const seen: unknown[] = [];
-    execute.mockResolvedValueOnce({
-      confirmedCompanions: [
-        {
-          key: companion,
-          reduce: (latest) => {
-            seen.push(latest);
-            throw new Error('authoritative companion is absent');
-          },
-        },
-      ],
-    });
-
-    connected.set(true);
-    await expect(service.flush()).rejects.toThrow('authoritative companion is absent');
-    expect(seen).toEqual([null]);
-    expect(commands).toHaveLength(1);
-  });
-
-  it('confirmedCompanions putはcanonicalなconfirmed syncStateとpresent visibilityを書く', async () => {
-    const companion: OfflineReplicaRow = {
-      userId: 1,
-      scopeId: '10',
-      sourceKey: 'document_views',
-      identity: { kind: 'local', localId: 'canonical-visibility' },
-      values: { title: 'baseline' },
-      confirmedValues: { title: 'baseline' },
-      serverRevision: null,
-      fetchedAt: 1,
-      syncState: 'confirmed',
-      visibility: 'pending_delete',
-    };
-    rows.push(companion);
-    await service.enqueuePrepared(
-      async () => ({
-        request: {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'canonical-visibility-command' },
-          operation: 'documents.update',
-          payload: { title: 'optimistic' },
-          optimisticValue: { id: 26, title: 'optimistic' },
-          baseRevision: 1,
-        },
-        replicaTransaction: {
-          putRows: [
-            {
-              ...companion,
-              values: { title: 'optimistic view' },
-              syncState: 'pending',
-              visibility: 'pending_delete',
-            },
-          ],
-        },
-      }),
-      { flush: false },
-    );
-    const repository = TestBed.inject(OFFLINE_REPOSITORY);
-    const transactReplica = vi.mocked(repository.transactReplica);
-    const callsBeforeFlush = transactReplica.mock.calls.length;
-    execute.mockResolvedValueOnce({
-      serverRevision: 2,
-      confirmedValues: { id: 26, title: 'server' },
-      confirmedCompanions: [{ key: companion, reduce: () => ({ title: 'canonical' }) }],
-      response: null,
-    });
-
-    connected.set(true);
-    await service.flush();
-
-    const ackCalls = transactReplica.mock.calls.slice(callsBeforeFlush).filter(([transaction]) =>
-      (transaction.putReconciliationScopes ?? []).some((scope) => scope.userId === 1 && scope.scopeId === '10'),
-    );
-    expect(ackCalls[0]?.[0]?.putRows).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          sourceKey: 'document_views',
-          values: { title: 'canonical' },
-          confirmedValues: { title: 'canonical' },
-          syncState: 'confirmed',
-          visibility: 'present',
-        }),
-      ]),
-    );
   });
 
   it('同一ミリ秒のDate.nowでもcreatedAtは単調増加で保存する', async () => {
@@ -3328,7 +2696,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
-        optimisticValue: { seq: 1 },
       },
       { flush: false },
     );
@@ -3339,7 +2706,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '2' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
-        optimisticValue: { seq: 2 },
       },
       { flush: false },
     );
@@ -3357,7 +2723,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { あ: 3, z: 1, ä: 2 },
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3368,7 +2733,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '2' },
         operation: 'documents.upsert',
         payload: { ä: 2, あ: 3, z: 1 },
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3384,7 +2748,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '1' },
           operation: 'documents.upsert',
           payload: { value: undefined },
-          optimisticValue: {},
         },
         { flush: false },
       ),
@@ -3405,7 +2768,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3424,7 +2786,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'ambiguous-retry' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3442,7 +2803,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'pending-unknown' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3461,7 +2821,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'safe-retry' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3577,6 +2936,7 @@ describe('OfflineSyncService', () => {
             withServerRevision: (command: OfflineCommand) => command,
           },
         },
+        { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
       ],
     });
     service = TestBed.inject(OfflineSyncService);
@@ -3587,7 +2947,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'jitter' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3615,7 +2974,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'manual-retry' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3626,7 +2984,7 @@ describe('OfflineSyncService', () => {
     await service.retryNow(commandId);
 
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(service.pendingCommands()).toEqual([]);
+    expectAwaitingPull(1);
   });
 
   it('retryNowは再認証後のblocked_authを解除して選択したcommandを再送する', async () => {
@@ -3638,7 +2996,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'reauth-retry' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3649,7 +3006,7 @@ describe('OfflineSyncService', () => {
     await service.retryNow(commandId);
 
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(service.pendingCommands()).toEqual([]);
+    expectAwaitingPull(1);
   });
 
   it('retryNow待機中にACK削除されたcommandを古いsnapshotから復活させない', async () => {
@@ -3661,7 +3018,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'retry-ack-race' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3708,7 +3064,6 @@ describe('OfflineSyncService', () => {
         identity: generatedCommandIdentity(`delete-${status}`),
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: { name: 'confirmed' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -3729,7 +3084,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
-        optimisticValue: { seq: 1 },
       },
       { flush: false },
     );
@@ -3740,7 +3094,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
-        optimisticValue: { seq: 2 },
       },
       { flush: false },
     );
@@ -3752,8 +3105,7 @@ describe('OfflineSyncService', () => {
     resolveExecute({ response: null, serverRevision: 2 });
     await flush;
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(commands).toEqual([]);
-    expect(service.pendingCount()).toBe(0);
+    expectAwaitingPull(2);
   });
 
   it('executor送信中のsingle discardを拒否してoptimistic rowとcommandを保持する', async () => {
@@ -3765,8 +3117,7 @@ describe('OfflineSyncService', () => {
         aggregateType: 'documents',
         identity: { kind: 'generated', localId: 'discard-in-flight' },
         operation: 'documents.upsert',
-        payload: {},
-        optimisticValue: { title: 'pending' },
+        payload: { title: 'pending' },
       },
       { flush: false },
     );
@@ -3776,7 +3127,7 @@ describe('OfflineSyncService', () => {
 
     await expect(service.discard(commandId, { flush: false })).rejects.toBeInstanceOf(OfflineCommandInFlightError);
     expect(commands).toEqual([expect.objectContaining({ commandId, state: 'sending' })]);
-    expect(rows).toEqual([expect.objectContaining({ values: { title: 'pending' } })]);
+    expect(rows).toEqual([expect.objectContaining({ values: { id: 0, title: 'pending' } })]);
 
     resolveExecute({ response: null });
     await flush;
@@ -3791,7 +3142,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'discard-response-loss' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: { title: 'pending' },
       },
       { flush: false },
     );
@@ -3825,7 +3175,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: `ambiguous-${status}` },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3844,7 +3193,7 @@ describe('OfflineSyncService', () => {
 
     expect(execute).toHaveBeenCalledTimes(3);
     expect(execute.mock.calls.map(([command]) => command.commandId)).toEqual([commandId, commandId, commandId]);
-    expect(service.pendingCommands()).toEqual([]);
+    expectAwaitingPull(1);
   });
 
   it('executorが同じkeyの未commitを証明した競合はambiguityを解除して通常解決へ渡す', async () => {
@@ -3857,7 +3206,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'authoritative-no-commit' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -3883,7 +3231,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
-        optimisticValue: { seq: 1 },
       },
       { flush: false },
     );
@@ -3894,7 +3241,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 2 },
-        optimisticValue: { seq: 2 },
       },
       { flush: false },
     );
@@ -3923,7 +3269,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
-        optimisticValue: { seq: 1 },
       },
       { flush: false },
     );
@@ -3940,7 +3285,7 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.flush();
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(service.pendingCount()).toBe(0);
+    expectAwaitingPull(1);
   });
 
   it('background flush failureはErrorHandlerへ渡し、await flushはrejectする', async () => {
@@ -3969,7 +3314,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: { seq: 1 },
-        optimisticValue: { seq: 1 },
       },
       { flush: false },
     );
@@ -3988,7 +3332,7 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.flush();
     expect(execute).toHaveBeenCalledOnce();
-    expect(service.pendingCount()).toBe(0);
+    expectAwaitingPull(1);
   });
 
   it('local replica row lookup rejectionでもsendingに残さずretry_waitへ戻す', async () => {
@@ -4000,7 +3344,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4035,7 +3378,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'pretransport-discard-all' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4062,7 +3404,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'discard-hook-failure' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4083,7 +3424,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'discard-all-hook-failure' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4102,7 +3442,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'claim-race' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4144,7 +3483,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'cancel-before-claim' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4172,7 +3510,7 @@ describe('OfflineSyncService', () => {
     const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository;
     const originalTransact = vi.mocked(repository.transactReplica).getMockImplementation()!;
     vi.mocked(repository.transactReplica).mockImplementation(async (transaction) => {
-      if ((transaction.removeCommandIds?.length ?? 0) > 0) {
+      if (transaction.putCommands?.some((command) => command.state === 'awaiting_pull')) {
         throw new Error('transaction failed');
       }
       return originalTransact(transaction);
@@ -4184,7 +3522,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4206,7 +3543,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4224,7 +3560,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4242,7 +3577,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-invalid-id' },
         operation: 'documents.create',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4264,8 +3598,7 @@ describe('OfflineSyncService', () => {
         aggregateType: 'natural_documents',
         identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '42' } },
         operation: 'natural_documents.create',
-        payload: {},
-        optimisticValue: { favFrom: 7, favTo: '42', title: 'local' },
+        payload: { favTo: '42', title: 'local' },
       },
       { flush: false },
     );
@@ -4284,32 +3617,11 @@ describe('OfflineSyncService', () => {
           aggregateType: 'natural_documents',
           identity: { kind: 'generated', localId: 'immutable-uuid', remoteIdHint: 99 },
           operation: 'natural_documents.create',
-          payload: {},
-          optimisticValue: { favFrom: 7, favTo: '42', title: 'local' },
+          payload: { favTo: '42', title: 'local' },
         },
         { flush: false },
       ),
     ).rejects.toThrow('Offline replica source "natural_documents" requires natural identity.');
-  });
-
-  it('natural identityとoptimistic valueのkey不一致を永続化前に拒否する', async () => {
-    options.replicaSchema = naturalReplicaSchema;
-
-    await expect(
-      service.enqueue(
-        {
-          scopeId: '10',
-          aggregateType: 'natural_documents',
-          identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '22' } },
-          operation: 'natural_documents.create',
-          payload: {},
-          optimisticValue: { favFrom: 7, favTo: '21', title: 'local' },
-        },
-        { flush: false },
-      ),
-    ).rejects.toThrow('Offline command naturalKey must match optimistic values for "natural_documents".');
-    expect(commands).toEqual([]);
-    expect(rows).toEqual([]);
   });
 
   it('empty generated localIdを永続化前に拒否する', async () => {
@@ -4320,8 +3632,7 @@ describe('OfflineSyncService', () => {
           aggregateType: 'documents',
           identity: { kind: 'generated', localId: '' },
           operation: 'documents.create',
-          payload: {},
-          optimisticValue: { id: 0, title: 'local' },
+          payload: { title: 'local' },
         },
         { flush: false },
       ),
@@ -4350,7 +3661,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-existing' },
         operation: 'documents.update',
         payload: {},
-        optimisticValue: {},
         baseRevision: 1,
       },
       { flush: false },
@@ -4367,7 +3677,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'adopted' },
-        optimisticValue: { name: 'adopted' },
       },
       { flush: false },
     );
@@ -4386,7 +3695,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -4417,7 +3725,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-delete' },
         operation: 'documents.delete',
         payload: { id: 38142 },
-        optimisticValue: { name: 'confirmed' },
         baseRevision: 4,
         replicaMutation: 'delete',
       },
@@ -4434,8 +3741,8 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValueOnce({ removeReplica: true, response: null });
     connected.set(true);
     await service.flush();
-    expect(rows).toEqual([]);
-    expect(commands).toEqual([]);
+    expect(rows[0]).toMatchObject({ visibility: 'pending_delete', confirmedValues: { name: 'confirmed' } });
+    expectAwaitingPull(1);
   });
 
   it('delete intentはexecutorがremoveReplicaを省略しても成功ACKでphysical removeする', async () => {
@@ -4458,7 +3765,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-delete-without-projection' },
         operation: 'documents.delete',
         payload: { id: 38142 },
-        optimisticValue: { name: 'confirmed' },
         baseRevision: 4,
         replicaMutation: 'delete',
       },
@@ -4469,8 +3775,8 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await service.flush();
 
-    expect(rows).toEqual([]);
-    expect(commands).toEqual([]);
+    expect(rows[0]).toMatchObject({ visibility: 'pending_delete' });
+    expectAwaitingPull(1);
   });
 
   it('delete後のqueued recreateはlocalIdを維持してremoteIdを再割当できる', async () => {
@@ -4493,7 +3799,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'stable-local-id' },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: rows[0]!.values,
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4504,13 +3809,10 @@ describe('OfflineSyncService', () => {
         aggregateType: 'documents',
         identity: { kind: 'generated', localId: 'stable-local-id' },
         operation: 'documents.create',
-        payload: {},
-        optimisticValue: { name: 'recreated', presentation: 'pending' },
+        payload: { name: 'recreated', presentation: null },
       },
       { flush: false },
     );
-    // A feed/cache integration may patch local-only values while delete is in flight.
-    rows[0] = { ...rows[0]!, values: { name: 'recreated', presentation: null } };
 
     execute.mockResolvedValueOnce({ removeReplica: true, clearRemoteId: true, response: null }).mockImplementationOnce(async () => {
       expect(rows[0]).toMatchObject({
@@ -4519,7 +3821,6 @@ describe('OfflineSyncService', () => {
       });
       return {
         remoteId: 43,
-        confirmedValues: { name: 'recreated', presentation: null },
         response: null,
       };
     });
@@ -4534,12 +3835,11 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([
       expect.objectContaining({
         identity: { kind: 'generated', localId: 'stable-local-id', remoteId: 43 },
-        serverRevision: null,
-        values: { name: 'recreated', presentation: null },
-        syncState: 'confirmed',
+        values: expect.objectContaining({ name: 'recreated', presentation: null }),
+        syncState: 'pending',
       }),
     ]);
-    expect(commands).toEqual([]);
+    expectAwaitingPull(2);
   });
 
   it('delete送信中にenqueueされたrecreateをACK完了時に保持する', async () => {
@@ -4566,7 +3866,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'race-local-id' },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: { name: 'confirmed' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4582,7 +3881,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'race-local-id' },
         operation: 'documents.create',
         payload: {},
-        optimisticValue: { name: 'recreated' },
       },
       { flush: false },
     );
@@ -4596,11 +3894,11 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([
       expect.objectContaining({
         identity: { kind: 'generated', localId: 'race-local-id', remoteId: 43 },
-        values: { name: 'recreated' },
-        syncState: 'confirmed',
+        values: expect.objectContaining({ name: 'confirmed' }),
+        syncState: 'pending',
       }),
     ]);
-    expect(commands).toEqual([]);
+    expectAwaitingPull(2);
   });
 
   it('serialized cache projectionはACK current read中に割り込まず解放後のrowを読む', async () => {
@@ -4629,8 +3927,7 @@ describe('OfflineSyncService', () => {
         aggregateType: 'documents',
         identity: { kind: 'generated', localId: 'serialized-cache-local-id' },
         operation: 'documents.delete',
-        payload: {},
-        optimisticValue: { name: 'confirmed', presentation: 'pending' },
+        payload: { presentation: 'pending' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4644,8 +3941,7 @@ describe('OfflineSyncService', () => {
         aggregateType: 'documents',
         identity: { kind: 'generated', localId: 'serialized-cache-local-id' },
         operation: 'documents.create',
-        payload: {},
-        optimisticValue: { name: 'recreated', presentation: 'pending' },
+        payload: { presentation: 'pending' },
       },
       { flush: false },
     );
@@ -4663,7 +3959,7 @@ describe('OfflineSyncService', () => {
       });
       expect(current).toMatchObject({
         identity: { kind: 'generated', remoteId: null },
-        values: { name: 'recreated', presentation: 'pending' },
+        values: { name: 'confirmed', presentation: 'pending' },
       });
       await repository.transactReplica({
         putRows: [{ ...current!, values: { name: 'recreated', presentation: null } }],
@@ -4675,9 +3971,11 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([
       expect.objectContaining({
         identity: { kind: 'generated', localId: 'serialized-cache-local-id', remoteId: 43 },
-        values: { name: 'recreated', presentation: null },
+        values: expect.objectContaining({ name: 'confirmed', presentation: 'pending' }),
+        syncState: 'pending',
       }),
     ]);
+    expectAwaitingPull(2);
   });
 
   it('delete ACK後のstale remoteIdHintは採用せずrecreateをremoteId nullから開始する', async () => {
@@ -4703,14 +4001,17 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'complete-first-local-id' },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: { name: 'confirmed' },
         replicaMutation: 'delete',
       },
       { flush: false },
     );
     connected.set(true);
     await service.flush();
-    expect(rows).toEqual([]);
+    expect(rows[0]).toMatchObject({
+      identity: { kind: 'generated', localId: 'complete-first-local-id', remoteId: null },
+      visibility: 'pending_delete',
+    });
+    expectAwaitingPull(1);
 
     await service.enqueue(
       {
@@ -4719,7 +4020,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'complete-first-local-id', remoteIdHint: 42 },
         operation: 'documents.create',
         payload: {},
-        optimisticValue: { name: 'recreated' },
       },
       { flush: false },
     );
@@ -4732,9 +4032,11 @@ describe('OfflineSyncService', () => {
     expect(rows).toEqual([
       expect.objectContaining({
         identity: { kind: 'generated', localId: 'complete-first-local-id', remoteId: 43 },
-        values: { name: 'recreated' },
+        values: expect.objectContaining({ name: 'confirmed' }),
+        syncState: 'pending',
       }),
     ]);
+    expectAwaitingPull(2);
   });
 
   it('TEXT remoteIdのdelete ACK後recreateを同じlocalId・remoteId nullで送り新UUIDへ収束する', async () => {
@@ -4760,8 +4062,7 @@ describe('OfflineSyncService', () => {
         aggregateType: 'text_documents',
         identity: { kind: 'generated', localId },
         operation: 'text_documents.delete',
-        payload: {},
-        optimisticValue: { id: oldRemoteId, title: 'old' },
+        payload: { title: 'old' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4773,7 +4074,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId },
         operation: 'text_documents.create',
         payload: { title: 'new' },
-        optimisticValue: { id: '', title: 'new' },
       },
       { flush: false },
     );
@@ -4794,8 +4094,10 @@ describe('OfflineSyncService', () => {
       expect.objectContaining({
         identity: { kind: 'generated', localId, remoteId: newRemoteId },
         values: { id: newRemoteId, title: 'new' },
+        syncState: 'pending',
       }),
     ]);
+    expectAwaitingPull(2);
   });
 
   it('clearRemoteIdはconfirmed delete以外では拒否する', async () => {
@@ -4818,7 +4120,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'invalid-clear' },
         operation: 'documents.update',
         payload: {},
-        optimisticValue: { name: 'updated' },
       },
       { flush: false },
     );
@@ -4847,7 +4148,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'invalid-clear-revision' },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: rows[0]!.values,
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4859,7 +4159,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'invalid-clear-revision' },
         operation: 'documents.create',
         payload: {},
-        optimisticValue: { name: 'recreated' },
       },
       { flush: false },
     );
@@ -4898,7 +4197,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-delete-discard' },
         operation: 'documents.delete',
         payload: { id: 38142 },
-        optimisticValue: { name: 'confirmed' },
         baseRevision: 4,
         replicaMutation: 'delete',
       },
@@ -4938,7 +4236,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'delete-server-id' },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: { name: 'confirmed' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4969,8 +4266,7 @@ describe('OfflineSyncService', () => {
         aggregateType: 'natural_documents',
         identity: { kind: 'natural', naturalKey: { favFrom: 7, favTo: '42' } },
         operation: 'natural_documents.delete',
-        payload: {},
-        optimisticValue: { favFrom: 7, favTo: '42', title: 'confirmed' },
+        payload: { favTo: '42', title: 'confirmed' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -4999,7 +4295,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'delete-then-upsert' },
         operation: 'documents.delete',
         payload: {},
-        optimisticValue: { name: 'confirmed' },
         replicaMutation: 'delete',
       },
       { flush: false },
@@ -5011,7 +4306,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: 'delete-then-upsert' },
         operation: 'documents.update',
         payload: {},
-        optimisticValue: { name: 'later optimistic' },
       },
       { flush: false },
     );
@@ -5019,10 +4313,17 @@ describe('OfflineSyncService', () => {
     execute.mockRejectedValueOnce({ status: 422 });
     connected.set(true);
     await service.flush();
-    expect(rows[0]).toMatchObject({ confirmedValues: null, visibility: 'present' });
+    expect(rows[0]).toMatchObject({
+      confirmedValues: { name: 'old confirmed baseline' },
+      visibility: 'present',
+    });
 
     await service.discard(followingId, { flush: false });
-    expect(rows).toEqual([]);
+    expect(rows[0]).toMatchObject({
+      confirmedValues: { name: 'old confirmed baseline' },
+      visibility: 'pending_delete',
+    });
+    expect(commands).toEqual([expect.objectContaining({ replicaMutation: 'delete', state: 'awaiting_pull' })]);
   });
 
   it('tombstone read APIを持たないcustom repositoryではdelete enqueueを明示rejectする', async () => {
@@ -5038,7 +4339,6 @@ describe('OfflineSyncService', () => {
             identity: { kind: 'generated', localId: 'missing-tombstone-api' },
             operation: 'documents.delete',
             payload: {},
-            optimisticValue: {},
             replicaMutation: 'delete',
           },
           { flush: false },
@@ -5060,7 +4360,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-invalid', remoteId },
           operation: 'documents.update',
           payload: {},
-          optimisticValue: {},
         },
         { flush: false },
       ),
@@ -5089,7 +4388,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-new', remoteId: 38142 },
           operation: 'documents.update',
           payload: {},
-          optimisticValue: {},
         },
         { flush: false },
       ),
@@ -5116,7 +4414,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-same', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'draft' },
-        optimisticValue: { name: 'draft' },
         baseRevision: 1,
       },
       { flush: false },
@@ -5133,7 +4430,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'adopted' },
-        optimisticValue: { name: 'adopted' },
       },
       { flush: false },
     );
@@ -5150,7 +4446,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '019d-adopted', remoteId: 38142 },
         operation: 'documents.update',
         payload: { name: 'adopted' },
-        optimisticValue: { name: 'adopted' },
       },
       { flush: false },
     );
@@ -5168,7 +4463,6 @@ describe('OfflineSyncService', () => {
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
         payload: {},
-        optimisticValue: {},
       },
       { flush: false },
     );
@@ -5377,6 +4671,7 @@ describe('OfflineSyncService', () => {
               }),
             },
           },
+          { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
           { provide: OFFLINE_RETRY_RANDOM, useValue: () => 0.5 },
         ],
       });
@@ -5407,7 +4702,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G10 edit' },
-          optimisticValue: { id: 42, title: 'G10 edit' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5419,7 +4713,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G11 edit' },
-          optimisticValue: { id: 42, title: 'G11 edit' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5432,7 +4725,6 @@ describe('OfflineSyncService', () => {
       expect(execute.mock.calls[1]?.[0]).toMatchObject({
         commandId: secondId,
         baseRevision: 2,
-        optimisticValue: { id: 42, title: 'G11 edit' },
       });
       expect(
         findReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', {
@@ -5441,7 +4733,7 @@ describe('OfflineSyncService', () => {
         }),
       ).toMatchObject({
         values: { title: 'G11 edit' },
-        confirmedValues: { title: 'G10 edit' },
+        confirmedValues: { title: 'Baseline' },
         serverRevision: 2,
         syncState: 'pending',
       });
@@ -5451,7 +4743,7 @@ describe('OfflineSyncService', () => {
         { title: 'G10 edit' },
         { title: 'G11 edit' },
       ]);
-      expect(service.pendingCount()).toBe(0);
+      expectAwaitingPull(2);
     });
 
     it('pre-pull: head scope成功/後続scope失敗の同一user-scoped aggregateは成功prefixだけ送る', async () => {
@@ -5466,7 +4758,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'A' },
-          optimisticValue: { id: 42, title: 'A' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5478,7 +4769,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'B' },
-          optimisticValue: { id: 42, title: 'B' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5489,8 +4779,10 @@ describe('OfflineSyncService', () => {
 
       expect(execute).toHaveBeenCalledOnce();
       expect(execute.mock.calls[0]?.[0]).toMatchObject({ scopeId: '10', payload: { title: 'A' } });
-      expect(commands).toHaveLength(1);
-      expect(commands[0]).toMatchObject({ scopeId: '11', optimisticValue: { title: 'B' }, state: 'pending' });
+      expect(commands).toHaveLength(2);
+      expect(commands[0]).toMatchObject({ scopeId: '10', state: 'awaiting_pull' });
+      expect(commands[1]).toMatchObject({ scopeId: '11', state: 'pending' });
+      expect(rows.find((row) => row.sourceKey === 'test_items')?.values).toEqual(expect.objectContaining({ title: 'B' }));
     });
 
     it('pre-pull: head scope失敗/後続scope成功の同一user-scoped aggregateは一切送らない', async () => {
@@ -5505,7 +4797,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'A' },
-          optimisticValue: { id: 42, title: 'A' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5517,7 +4808,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'B' },
-          optimisticValue: { id: 42, title: 'B' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5542,7 +4832,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'A' },
-          optimisticValue: { id: 42, title: 'A' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5554,7 +4843,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'B' },
-          optimisticValue: { id: 42, title: 'B' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5563,8 +4851,9 @@ describe('OfflineSyncService', () => {
       connected.set(true);
       await expect(service.flush()).rejects.toBe(scope11Error);
       expect(execute).toHaveBeenCalledOnce();
-      expect(commands).toHaveLength(1);
-      expect(commands[0]).toMatchObject({ scopeId: '11', payload: { title: 'B' } });
+      expect(commands).toHaveLength(2);
+      expect(commands.find((command) => command.scopeId === '10')).toMatchObject({ state: 'awaiting_pull' });
+      expect(commands.find((command) => command.scopeId === '11')).toMatchObject({ state: 'pending', payload: { title: 'B' } });
 
       pull.mockResolvedValue(undefined);
       execute.mockClear();
@@ -5572,7 +4861,7 @@ describe('OfflineSyncService', () => {
 
       expect(execute).toHaveBeenCalledOnce();
       expect(execute.mock.calls[0]?.[0]).toMatchObject({ scopeId: '11', payload: { title: 'B' } });
-      expect(service.pendingCount()).toBe(0);
+      expectAwaitingPull(2);
     });
 
     it('pre-pull: user-scoped aggregateでもfatalは成功scopeを送らず残りscopeを止める', async () => {
@@ -5587,7 +4876,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'B' },
-          optimisticValue: { id: 42, title: 'B' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5607,7 +4895,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G10 edit' },
-          optimisticValue: { id: 42, title: 'G10 edit' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5619,14 +4906,13 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-user-item' },
           operation: 'test_items.update',
           payload: { title: 'G11 edit' },
-          optimisticValue: { id: 42, title: 'G11 edit' },
           baseRevision: 1,
         },
         { flush: false },
       );
       await service.discard(firstId, { flush: false });
       expect(commands).toHaveLength(1);
-      expect(commands[0]).toMatchObject({ scopeId: '11', optimisticValue: { id: 42, title: 'G11 edit' } });
+      expect(commands[0]).toMatchObject({ scopeId: '11' });
       expect(
         findReplicaRow({ userId: 1, scopeId: '11' }, 'test_items', {
           kind: 'generated',
@@ -5663,10 +4949,9 @@ describe('OfflineSyncService', () => {
                 aggregateType: 'test_items',
                 identity: { kind: 'generated', localId: 'batch-scope-10' },
                 operation: 'test_items.create',
-                payload: {},
-                optimisticValue: { id: 0, title: 'A' },
+                payload: { title: 'A' },
+                localOnlyFootprint: [companion('10', 'A')],
               },
-              replicaTransaction: { putRows: [companion('10', 'A')] },
             },
             {
               request: {
@@ -5674,10 +4959,9 @@ describe('OfflineSyncService', () => {
                 aggregateType: 'test_items',
                 identity: { kind: 'generated', localId: 'batch-scope-11' },
                 operation: 'test_items.create',
-                payload: {},
-                optimisticValue: { id: 0, title: 'B' },
+                payload: { title: 'B' },
+                localOnlyFootprint: [companion('11', 'B')],
               },
-              replicaTransaction: { putRows: [companion('11', 'B')] },
             },
           ],
           { flush: false },
@@ -5708,10 +4992,9 @@ describe('OfflineSyncService', () => {
             aggregateType: 'test_items',
             identity: { kind: 'generated', localId: 'scope-10-item' },
             operation: 'test_items.create',
-            payload: {},
-            optimisticValue: { id: 0, title: 'A' },
+            payload: { title: 'A' },
+            localOnlyFootprint: [companion('10', 'A')],
           },
-          replicaTransaction: { putRows: [companion('10', 'A')] },
         }),
         { flush: false },
       );
@@ -5724,10 +5007,9 @@ describe('OfflineSyncService', () => {
               aggregateType: 'test_items',
               identity: { kind: 'generated', localId: 'scope-11-item' },
               operation: 'test_items.create',
-              payload: {},
-              optimisticValue: { id: 0, title: 'B' },
+              payload: { title: 'B' },
+              localOnlyFootprint: [companion('11', 'B')],
             },
-            replicaTransaction: { putRows: [companion('11', 'B')] },
           }),
           { flush: false },
         ),
@@ -5772,7 +5054,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-group-same' },
           operation: 'test_group_items.update',
           payload: { name: 'G10 name' },
-          optimisticValue: { id: 56, name: 'G10 name' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5784,7 +5065,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: '019d-group-same' },
           operation: 'test_group_items.update',
           payload: { name: 'G11 name' },
-          optimisticValue: { id: 55, name: 'G11 name' },
           baseRevision: 1,
         },
         { flush: false },
@@ -5795,7 +5075,7 @@ describe('OfflineSyncService', () => {
       resolveFirst({ serverRevision: 2, confirmedValues: { id: 56, name: 'G10 name' }, response: null });
       await flush;
       expect(execute.mock.calls.map(([command]) => command.scopeId).sort()).toEqual(['10', '11']);
-      expect(service.pendingCount()).toBe(0);
+      expectAwaitingPull(2);
     });
   });
 
@@ -5829,7 +5109,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'outbox-scope' },
           operation: 'documents.create',
           payload: { title: 'queued' },
-          optimisticValue: { id: 0, title: 'queued' },
         },
         { flush: false },
       );
@@ -5968,7 +5247,6 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'retry-foreground-policy' },
           operation: 'documents.create',
           payload: { title: 'queued' },
-          optimisticValue: { id: 0, title: 'queued' },
         },
         { flush: false },
       );
@@ -5991,6 +5269,10 @@ describe('OfflineSyncService', () => {
     });
 
     it('discard preserves foreground policy so reconnect automatic flush stays partial', async () => {
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      pull.mockClear();
+
       const commandId = await service.enqueue(
         {
           scopeId: '10',
@@ -5998,15 +5280,9 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'discard-foreground-policy' },
           operation: 'documents.create',
           payload: { title: 'queued' },
-          optimisticValue: { id: 0, title: 'queued' },
         },
         { flush: false },
       );
-
-      await service.refreshSession(['10']);
-      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
-      pull.mockClear();
-
       await service.discard(commandId, { flush: false });
       pull.mockClear();
 
@@ -6019,6 +5295,10 @@ describe('OfflineSyncService', () => {
     });
 
     it('discardAllPending preserves foreground policy so reconnect automatic flush stays partial', async () => {
+      await service.refreshSession(['10']);
+      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
+      pull.mockClear();
+
       await service.enqueue(
         {
           scopeId: '10',
@@ -6026,15 +5306,9 @@ describe('OfflineSyncService', () => {
           identity: { kind: 'generated', localId: 'discard-all-foreground-policy' },
           operation: 'documents.create',
           payload: { title: 'queued' },
-          optimisticValue: { id: 0, title: 'queued' },
         },
         { flush: false },
       );
-
-      await service.refreshSession(['10']);
-      await vi.waitFor(() => expect(pull).toHaveBeenCalledWith({ userId: 1, scopeId: '10' }));
-      pull.mockClear();
-
       await service.discardAllPending();
       pull.mockClear();
 

@@ -12,7 +12,8 @@ import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './offline-replica-pull.service';
-import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
+import { isOfflineAggregateIntentConflict, offlineAggregateIntentMutations } from './offline-aggregate-intent-projector';
+import { commandFootprintKeys, OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import type {
   OfflineCommand,
   OfflinePullAttention,
@@ -21,7 +22,6 @@ import type {
   OfflineReplicaRow,
   OfflineReplicaRowKey,
   OfflineReplicaTransaction,
-  OfflineOptimisticReplicaCompanion,
   OfflineRepository,
   OfflineScope,
 } from './offline-repository';
@@ -32,7 +32,6 @@ import {
   commandIdentityFromReplicaIdentity,
   commandIdentityMatchesReplicaRow,
   offlineGeneratedReplicaIdentity,
-  offlineNaturalReplicaIdentity,
   type OfflineCommandIdentity,
   type OfflinePrincipalId,
 } from './offline-identity';
@@ -47,31 +46,30 @@ import {
 /** Aggregate synchronization state exposed to application UI. */
 export type OfflineSyncState = 'idle' | 'pending' | 'syncing' | 'attention';
 
-/** Mutation and optimistic entity materialization appended atomically to the outbox. */
+/** Mutation appended atomically to the outbox; Kit rematerializes optimistic replica state. */
 export interface EnqueueOfflineCommand<T = unknown> {
   scopeId: string;
   aggregateType: string;
   identity: EnqueueOfflineCommandIdentity;
   operation: string;
   payload: T;
-  /** Full local entity value committed to the replica before the command is exposed to the UI. */
-  optimisticValue: unknown;
   /**
    * Optimistically hides an existing DB row while retaining its identity and
    * confirmed baseline for durable replay, conflict handling, and discard.
    */
   replicaMutation?: 'upsert' | 'delete';
   baseRevision?: string | number | null;
+  /** Declared localOnly projection rows this intent may create, update, or remove. */
+  localOnlyFootprint?: readonly OfflineReplicaRowKey[];
 }
 
 /**
  * A command prepared from replica reads while enqueue/ACK projection is
- * serialized. Only product-owned row changes are accepted here; the sync
- * service owns Outbox and cursor changes.
+ * serialized. Kit rematerializes the aggregate; the prepare callback must not
+ * supply replica row images as independent truth.
  */
 export interface PreparedOfflineCommand<T = unknown> {
   request: EnqueueOfflineCommand<T>;
-  replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>;
 }
 
 export interface PreparedOfflineBatchOptions {
@@ -80,11 +78,11 @@ export interface PreparedOfflineBatchOptions {
   assertCurrent?: () => void;
 }
 
-/** Validated optimistic projection ready for a single Outbox commit. */
+/** Validated Outbox command ready for a rematerialized replica commit. */
 interface MaterializedOfflineEnqueue {
   command: OfflineCommand;
-  optimisticRow: OfflineReplicaRow;
-  optimisticCompanions: readonly OfflineOptimisticReplicaCompanion[];
+  /** Identity-bearing base row used when the aggregate does not yet exist locally. */
+  seedBaseRow?: OfflineReplicaRow | null;
 }
 
 /** Raised before persistence when an outbox payload is not losslessly JSON serializable. */
@@ -273,8 +271,8 @@ export class OfflineSyncService {
   }
 
   /**
-   * Reads, derives, and commits the base optimistic row, product companion
-   * rows, and Outbox command as one serialized replica transaction.
+   * Reads, derives, and commits one Outbox command, then rematerializes its
+   * aggregate from confirmed replica values plus remaining FIFO intents.
    */
   enqueuePrepared<T>(
     prepare: (repository: OfflineRepository) => Promise<PreparedOfflineCommand<T>>,
@@ -285,7 +283,7 @@ export class OfflineSyncService {
       await this.initialize();
       if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared enqueue.');
       const prepared = await prepare(this.#repository);
-      return this.#enqueue(prepared.request, options, generation, prepared.replicaTransaction);
+      return this.#enqueue(prepared.request, options, generation);
     });
   }
 
@@ -336,7 +334,7 @@ export class OfflineSyncService {
         throw new Error('Offline replacement requires the command to be the only pending intent for its aggregate.');
       }
       const prepared = await prepare(this.#repository);
-      return this.#enqueue(prepared.request, options, generation, prepared.replicaTransaction, replaced);
+      return this.#enqueue(prepared.request, options, generation, replaced);
     });
   }
 
@@ -370,7 +368,7 @@ export class OfflineSyncService {
       const materializations: MaterializedOfflineEnqueue[] = [];
       for (const [index, entry] of prepared.entries()) {
         this.#assertEnqueueScope(session, entry.request.scopeId);
-        materializations.push(await this.#materializeEnqueue(session.userId, entry.request, entry.replicaTransaction, replaced[index]));
+        materializations.push(await this.#materializeEnqueue(session.userId, entry.request, replaced[index]));
       }
       const retained = knownCommands.filter((command) => !replaced.some((item) => item.commandId === command.commandId));
       this.#assertDistinctBatchFootprints(materializations, retained, true);
@@ -426,12 +424,11 @@ export class OfflineSyncService {
     request: EnqueueOfflineCommand<T>,
     options: { flush?: boolean },
     generation: number,
-    replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
     replaced?: OfflineCommand,
   ): Promise<string> {
     const session = await this.#beginEnqueueSession(generation);
     this.#assertEnqueueScope(session, request.scopeId);
-    const materialization = await this.#materializeEnqueue(session.userId, request, replicaTransaction, replaced);
+    const materialization = await this.#materializeEnqueue(session.userId, request, replaced);
     const currentCommands = await this.#commandsForUser(session.userId);
     const retainedCommands = replaced ? currentCommands.filter((command) => command.commandId !== replaced.commandId) : currentCommands;
     this.#assertDistinctBatchFootprints([materialization], retainedCommands);
@@ -461,9 +458,7 @@ export class OfflineSyncService {
     const materializations: MaterializedOfflineEnqueue[] = [];
     for (const [index, entry] of prepared.entries()) {
       this.#assertEnqueueScope(session, entry.request.scopeId);
-      materializations.push(
-        await this.#materializeEnqueue(session.userId, entry.request, entry.replicaTransaction, undefined, firstCreatedAt + index),
-      );
+      materializations.push(await this.#materializeEnqueue(session.userId, entry.request, undefined, firstCreatedAt + index));
     }
     this.#assertDistinctBatchFootprints(materializations, currentCommands);
     await this.#assertOutboxCapacity(
@@ -502,7 +497,6 @@ export class OfflineSyncService {
   async #materializeEnqueue<T>(
     userId: OfflinePrincipalId,
     request: EnqueueOfflineCommand<T>,
-    replicaTransaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
     replaced?: OfflineCommand,
     createdAt?: number,
   ): Promise<MaterializedOfflineEnqueue> {
@@ -510,9 +504,10 @@ export class OfflineSyncService {
     this.noteScope(scope);
     const commandIdentity = offlineCommandLookupIdentity(request.identity);
     const normalized = await this.#normalizeEnqueueRequest(scope, request, commandIdentity);
-    const optimisticValue = request.optimisticValue;
     const commandId = crypto.randomUUID();
     const sourceKey = this.#hooks.entityType(request);
+    const localOnlyFootprint = this.#normalizedLocalOnlyFootprint(scope, request.localOnlyFootprint);
+    if (replaced) this.#assertReplacementFootprint(replaced, localOnlyFootprint);
     let command: OfflineCommand = {
       ...scope,
       commandId,
@@ -521,7 +516,6 @@ export class OfflineSyncService {
       identity: commandIdentity,
       operation: request.operation,
       payload: normalized.payload,
-      optimisticValue,
       replicaMutation: request.replicaMutation ?? 'upsert',
       payloadHash: await this.#payloadHash(normalized.payload),
       baseRevision: normalized.baseRevision,
@@ -531,6 +525,7 @@ export class OfflineSyncService {
       createdAt: replaced?.createdAt ?? createdAt ?? (await this.#nextCommandCreatedAt(userId)),
       lastErrorCode: null,
     };
+    if (localOnlyFootprint.length > 0) command = { ...command, localOnlyFootprint };
     if (
       replaced &&
       (replaced.userId !== command.userId ||
@@ -567,13 +562,19 @@ export class OfflineSyncService {
       existing?.identity.kind === 'generated' ? existing.identity.remoteId : null,
       generatedIdentity?.remoteIdHint,
     );
-    const naturalKey = offlineNaturalKeyFromValues(schema, optimisticValue);
+    const naturalKey =
+      schema.identity.kind === 'naturalKey' && request.identity.kind === 'natural'
+        ? request.identity.naturalKey
+        : existing
+          ? offlineNaturalKeyFromValues(schema, existing.values)
+          : null;
     if (
       schema.identity.kind === 'naturalKey' &&
-      canonicalOfflineRemoteIdentity(schema, { naturalKey: request.identity.kind === 'natural' ? request.identity.naturalKey : {} }) !==
+      request.identity.kind === 'natural' &&
+      canonicalOfflineRemoteIdentity(schema, { naturalKey: request.identity.naturalKey }) !==
         canonicalOfflineRemoteIdentity(schema, { naturalKey: naturalKey! })
     ) {
-      throw new Error(`Offline command naturalKey must match optimistic values for "${entityType}".`);
+      throw new Error(`Offline command naturalKey must match replica identity for "${entityType}".`);
     }
     const remoteIdentity =
       schema.identity.kind === 'generated'
@@ -592,7 +593,7 @@ export class OfflineSyncService {
             existing.identity.kind === 'natural' ? existing.identity.naturalKey : offlineNaturalKeyFromValues(schema, existing.values)!,
         }) !== canonicalValuesKey
       ) {
-        throw new Error(`Offline replica naturalKey is immutable and must match optimistic values for "${entityType}".`);
+        throw new Error(`Offline replica naturalKey is immutable and must match command identity for "${entityType}".`);
       }
     }
     if (remoteIdentity !== null) {
@@ -604,26 +605,33 @@ export class OfflineSyncService {
         throw new Error(`Offline replica remote identity is already mapped to another row.`);
       }
     }
-    const rowIdentity: import('./offline-identity').OfflineReplicaIdentity =
-      schema.identity.kind === 'naturalKey'
-        ? offlineNaturalReplicaIdentity(schema, optimisticValue)
-        : offlineGeneratedReplicaIdentity(generatedIdentity!.localId, initialRemoteId);
-    const optimisticRow: OfflineReplicaRow = {
-      ...scope,
-      sourceKey: entityType,
-      identity: rowIdentity,
-      values: optimisticValue,
-      confirmedValues: existing?.confirmedValues ?? existing?.values ?? null,
-      serverRevision: existing?.serverRevision ?? normalized.baseRevision,
-      fetchedAt: Date.now(),
-      syncState: 'pending',
-      visibility: request.replicaMutation === 'delete' ? 'pending_delete' : 'present',
-    };
-    const preparedCompanions = await this.#prepareOptimisticCompanions(scope, optimisticRow, replicaTransaction);
-    const optimisticCompanions = replaced ? this.#replacementCompanions(replaced, preparedCompanions) : preparedCompanions;
-    if (replicaTransaction) this.#canonicalJson(replicaTransaction);
-    if (optimisticCompanions.length > 0) command = { ...command, optimisticCompanions };
-    return { command, optimisticRow, optimisticCompanions };
+    this.#canonicalJson(normalized.payload);
+    const seedBaseRow = existing
+      ? undefined
+      : request.identity.kind === 'generated'
+        ? {
+            ...scope,
+            sourceKey,
+            identity: { kind: 'generated' as const, localId: request.identity.localId, remoteId: initialRemoteId },
+            values: {},
+            confirmedValues: null,
+            serverRevision: null,
+            fetchedAt: Date.now(),
+            syncState: 'pending' as const,
+          }
+        : request.identity.kind === 'natural'
+          ? {
+              ...scope,
+              sourceKey,
+              identity: { kind: 'natural' as const, naturalKey: request.identity.naturalKey },
+              values: { ...request.identity.naturalKey },
+              confirmedValues: null,
+              serverRevision: null,
+              fetchedAt: Date.now(),
+              syncState: 'pending' as const,
+            }
+          : null;
+    return { command, seedBaseRow };
   }
 
   #assertDistinctBatchFootprints(
@@ -644,10 +652,7 @@ export class OfflineSyncService {
         throw new Error('Prepared offline batch contains overlapping aggregate intents.');
       }
       aggregates.add(aggregate);
-      for (const key of [
-        this.#replicaRowKey(entry.optimisticRow),
-        ...entry.optimisticCompanions.map((companion) => this.#replicaRowKey(companion.key)),
-      ]) {
+      for (const key of this.#commandFootprintKeys(entry.command)) {
         if (replicaKeys.has(key) && !allowOneAggregate) {
           throw new Error('Prepared offline batch contains overlapping replica footprints.');
         }
@@ -665,10 +670,7 @@ export class OfflineSyncService {
       command.identity.kind === 'generated'
         ? offlineGeneratedReplicaIdentity(command.identity.localId, null)
         : ({ kind: 'natural', naturalKey: command.identity.naturalKey } as const);
-    return [
-      this.#replicaRowKey({ ...command, identity }),
-      ...(command.optimisticCompanions ?? []).map((companion) => this.#replicaRowKey(companion.key)),
-    ];
+    return [this.#replicaRowKey({ ...command, identity }), ...commandFootprintKeys(command).map((key) => this.#replicaRowKey(key))];
   }
 
   async #commitMaterializedEnqueues(
@@ -680,12 +682,21 @@ export class OfflineSyncService {
     if (generation !== this.#generation) {
       throw new Error('Offline session changed before the command could be persisted');
     }
+    const known = await this.#readKnownCommands();
+    const remaining = [
+      ...known.filter((command) => !(removeCommandIds ?? []).includes(command.commandId)),
+      ...entries.map((entry) => entry.command),
+    ].sort(compareOfflineCommands);
+    const affected = new Map<string, OfflineCommand>();
+    const seeds = new Map<string, OfflineReplicaRow | null>();
+    for (const entry of entries) {
+      affected.set(this.#aggregateKey(entry.command), entry.command);
+      if (entry.seedBaseRow !== undefined) seeds.set(this.#aggregateKey(entry.command), entry.seedBaseRow);
+    }
+    const rematerialized = await this.#rematerializeAffectedAggregates(affected, remaining, seeds);
     await this.#repository.transactReplica({
-      putRows: entries.flatMap((entry) => [
-        entry.optimisticRow,
-        ...entry.optimisticCompanions.flatMap((companion) => (companion.after ? [companion.after] : [])),
-      ]),
-      removeRows: entries.flatMap((entry) => entry.optimisticCompanions.flatMap((companion) => (companion.after ? [] : [companion.key]))),
+      putRows: rematerialized.putRows,
+      removeRows: rematerialized.removeRows,
       putCommands: entries.map((entry) => entry.command),
       removeCommandIds,
     });
@@ -693,87 +704,39 @@ export class OfflineSyncService {
     if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
-  async #prepareOptimisticCompanions(
+  #normalizedLocalOnlyFootprint(
     scope: OfflineScope,
-    optimisticRow: OfflineReplicaRow,
-    transaction?: Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>,
-  ): Promise<OfflineOptimisticReplicaCompanion[]> {
-    if (!transaction) return [];
-    const runtimeTransaction = transaction as OfflineReplicaTransaction;
-    const unsupported = Object.keys(runtimeTransaction).filter((key) => key !== 'putRows' && key !== 'removeRows');
-    if (unsupported.length > 0) {
-      throw new Error(`Prepared offline enqueue cannot mutate ${unsupported.join(', ')}.`);
-    }
-    const putRows = transaction.putRows ?? [];
-    const removeRows = transaction.removeRows ?? [];
-    const baseKey = this.#replicaRowKey(optimisticRow);
-    const seen = new Set<string>([baseKey]);
-    const mutations: { key: OfflineReplicaRowKey; after: OfflineReplicaRow | null }[] = [];
-    for (const row of putRows) {
-      this.#assertCompanionScope(scope, row);
-      const key = this.#replicaRowKey(row);
-      if (seen.has(key)) throw new Error(`Prepared offline enqueue contains duplicate replica row ${key}.`);
-      seen.add(key);
-      mutations.push({ key: this.#minimalReplicaRowKey(row), after: row });
-    }
-    for (const row of removeRows) {
-      this.#assertCompanionScope(scope, row);
-      const key = this.#replicaRowKey(row);
-      if (seen.has(key)) throw new Error(`Prepared offline enqueue contains duplicate replica row ${key}.`);
-      seen.add(key);
-      mutations.push({ key: this.#minimalReplicaRowKey(row), after: null });
-    }
-    return Promise.all(
-      mutations.map(async ({ key, after }) => {
-        const before =
-          (await this.#repository.getReplicaRowIncludingPendingDelete?.(scope, key.sourceKey, key.identity)) ??
-          (await this.#repository.getReplicaRow(scope, key.sourceKey, key.identity));
-        return { key, before, after: this.#optimisticCompanionAfter(after, before) };
-      }),
-    );
-  }
-
-  #assertCompanionScope(scope: OfflineScope, key: OfflineReplicaRowKey): void {
-    if (key.userId !== scope.userId || key.scopeId !== scope.scopeId) {
-      throw new Error('Prepared offline enqueue companion rows must use the command scope.');
-    }
-  }
-
-  #replacementCompanions(
-    replaced: OfflineCommand,
-    optimisticCompanions: readonly OfflineOptimisticReplicaCompanion[],
-  ): OfflineOptimisticReplicaCompanion[] {
-    const previousByKey = new Map(
-      (replaced.optimisticCompanions ?? []).map((companion) => [this.#replicaRowKey(companion.key), companion]),
-    );
-    const previousKeys = new Set(previousByKey.keys());
-    const replacementKeys = new Set(optimisticCompanions.map((companion) => this.#replicaRowKey(companion.key)));
-    if (previousKeys.size !== replacementKeys.size || [...previousKeys].some((key) => !replacementKeys.has(key))) {
-      throw new Error('Offline replacement must preserve the optimistic companion footprint.');
-    }
-    return optimisticCompanions.map((companion) => {
-      const previousBefore = previousByKey.get(this.#replicaRowKey(companion.key))!.before;
-      const before = this.#replacementCompanionBefore(companion.before, previousBefore);
-      return { ...companion, before, after: this.#optimisticCompanionAfter(companion.after, before) };
+    footprint: readonly OfflineReplicaRowKey[] | undefined,
+  ): readonly OfflineReplicaRowKey[] {
+    if (!footprint || footprint.length === 0) return [];
+    const seen = new Set<string>();
+    return footprint.map((key) => {
+      this.#assertLocalOnlyFootprintKey(scope, key);
+      const canonical = this.#replicaRowKey(key);
+      if (seen.has(canonical)) throw new Error(`Prepared offline enqueue contains duplicate replica row ${canonical}.`);
+      seen.add(canonical);
+      return this.#minimalReplicaRowKey(key);
     });
   }
 
-  #replacementCompanionBefore(current: OfflineReplicaRow | null, historical: OfflineReplicaRow | null): OfflineReplicaRow | null {
-    const confirmedValues = current ? current.confirmedValues : (historical?.confirmedValues ?? null);
-    if (confirmedValues === null) return null;
-    const source = current ?? historical!;
-    return {
-      ...source,
-      values: confirmedValues,
-      confirmedValues,
-      syncState: 'confirmed',
-      visibility: 'present',
-    };
+  #assertLocalOnlyFootprintKey(scope: OfflineScope, key: OfflineReplicaRowKey): void {
+    if (key.userId !== scope.userId || key.scopeId !== scope.scopeId) {
+      throw new Error('Prepared offline enqueue localOnly footprint must use the command scope.');
+    }
+    if (this.#entitySchema(key.sourceKey).identity.kind !== 'localOnly') {
+      throw new Error(`Prepared offline enqueue footprint may only declare localOnly source "${key.sourceKey}".`);
+    }
+    if (key.identity.kind !== 'local') {
+      throw new Error('Prepared offline enqueue footprint must use local identity.');
+    }
   }
 
-  #optimisticCompanionAfter(after: OfflineReplicaRow | null, before: OfflineReplicaRow | null): OfflineReplicaRow | null {
-    if (!after) return null;
-    return { ...after, confirmedValues: before?.confirmedValues ?? null };
+  #assertReplacementFootprint(replaced: OfflineCommand, next: readonly OfflineReplicaRowKey[]): void {
+    const previous = new Set(commandFootprintKeys(replaced).map((key) => this.#replicaRowKey(key)));
+    const incoming = new Set(next.map((key) => this.#replicaRowKey(key)));
+    if (previous.size !== incoming.size || [...previous].some((key) => !incoming.has(key))) {
+      throw new Error('Offline replacement must preserve the localOnly footprint.');
+    }
   }
 
   #minimalReplicaRowKey(key: OfflineReplicaRowKey): OfflineReplicaRowKey {
@@ -886,7 +849,9 @@ export class OfflineSyncService {
   }
 
   #assertDiscardable(commands: readonly OfflineCommand[]): void {
-    const ambiguous = commands.filter((command) => command.state === 'sending' || command.serverCommitUnknown === true);
+    const ambiguous = commands.filter(
+      (command) => command.state === 'sending' || command.state === 'awaiting_pull' || command.serverCommitUnknown === true,
+    );
     if (ambiguous.length > 0) {
       throw new OfflineCommandInFlightError(ambiguous.map((command) => command.commandId));
     }
@@ -975,12 +940,17 @@ export class OfflineSyncService {
     const dirtyScopes = new Map<string, OfflineScope>();
     const sendWorkerFailures: unknown[] = [];
     while (this.#network.connected() && this.#isCurrent(generation) && fatalPullFailure === null) {
-      const groups = this.#eligibleAggregateGroups(await this.#readKnownCommands()).filter((group) => {
-        const head = group[0];
-        return head !== undefined && pulledScopeKeys.has(this.#scopeKey(head));
-      });
+      const known = await this.#readKnownCommands();
+      const groups = this.#eligibleAggregateGroups(known).filter((group) =>
+        group.some(
+          (command) =>
+            (command.state === 'pending' || command.state === 'retry_wait') &&
+            pulledScopeKeys.has(this.#scopeKey({ userId: command.userId, scopeId: command.scopeId })),
+        ),
+      );
       if (!this.#isCurrent(generation)) return;
       if (groups.length === 0) break;
+      const pendingBefore = known.filter((command) => command.state === 'pending' || command.state === 'retry_wait').length;
       let cursor = 0;
       const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
         while (cursor < groups.length) {
@@ -994,6 +964,10 @@ export class OfflineSyncService {
         if (result.status === 'rejected') sendWorkerFailures.push(result.reason);
       }
       if (sendWorkerFailures.length > 0) break;
+      const pendingAfter = (await this.#readKnownCommands()).filter(
+        (command) => command.state === 'pending' || command.state === 'retry_wait',
+      ).length;
+      if (pendingAfter >= pendingBefore) break;
     }
     for (const scope of dirtyScopes.values()) {
       this.#pendingPullScopes.set(this.#scopeKey(scope), scope);
@@ -1040,6 +1014,13 @@ export class OfflineSyncService {
       throw failures[0];
     }
     if (this.#isCurrent(generation)) this.#coldReconciliationRequired = false;
+    if (this.#isCurrent(generation)) {
+      for (const command of await this.#readKnownCommands()) {
+        if (command.state !== 'awaiting_pull') continue;
+        const scope = { userId: command.userId, scopeId: command.scopeId };
+        this.#pendingPullScopes.set(this.#scopeKey(scope), scope);
+      }
+    }
   }
 
   #isFatalPullFailure(error: unknown): boolean {
@@ -1120,10 +1101,9 @@ export class OfflineSyncService {
       group.push(command);
       groups.set(key, group);
     }
-    return [...groups.values()].filter((group) => {
-      const head = group[0];
-      return head?.state === 'pending' || (head?.state === 'retry_wait' && (head.retryAt ?? 0) <= now);
-    });
+    return [...groups.values()].filter((group) =>
+      group.some((command) => command.state === 'pending' || (command.state === 'retry_wait' && (command.retryAt ?? 0) <= now)),
+    );
   }
 
   async #sendAggregate(
@@ -1134,6 +1114,7 @@ export class OfflineSyncService {
   ): Promise<void> {
     for (const command of commands) {
       if (!this.#isCurrent(generation)) return;
+      if (command.state === 'awaiting_pull') continue;
       if (command.state === 'retry_wait' && (command.retryAt ?? 0) > Date.now()) break;
       if (!['pending', 'retry_wait'].includes(command.state)) break;
       // User-scoped aggregates ignore scopeId in the FIFO key, so later commands may
@@ -1184,7 +1165,6 @@ export class OfflineSyncService {
         throw error;
       }
       if (this.#isCurrent(generation)) {
-        await this.#hooks.onCommandRemoved?.(sending).catch((error) => this.#reportError(error));
         const scope = { userId: sending.userId, scopeId: sending.scopeId };
         dirtyScopes.set(this.#scopeKey(scope), scope);
       }
@@ -1202,7 +1182,23 @@ export class OfflineSyncService {
     const row = await this.#getReplicaRowForSync(scope, sourceKey, commandIdentity);
     if (row?.serverRevision != null && row.serverRevision !== baseRevision) {
       const rebased = this.#executor.withServerRevision(
-        { ...scope, ...request, sourceKey, identity: commandIdentity, payload, baseRevision } as OfflineCommand,
+        {
+          ...scope,
+          commandId: '',
+          aggregateType: request.aggregateType,
+          sourceKey,
+          identity: commandIdentity,
+          operation: request.operation,
+          payload,
+          replicaMutation: request.replicaMutation ?? 'upsert',
+          payloadHash: '',
+          baseRevision,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 0,
+          lastErrorCode: null,
+        },
         row.serverRevision,
       );
       baseRevision = row.serverRevision;
@@ -1232,9 +1228,6 @@ export class OfflineSyncService {
     if (result.clearRemoteId === true && result.serverRevision !== undefined) {
       throw new Error('Offline command cannot return serverRevision and clearRemoteId together.');
     }
-    // An enqueue may have completed while transport was in flight. Re-read the
-    // aggregate immediately before the atomic acknowledgement transaction so a
-    // delete ACK cannot remove a row that has already been re-added locally.
     const latestCommands = (await this.#readKnownCommands()).filter(
       (candidate) => this.#aggregateKey(candidate) === this.#aggregateKey(command),
     );
@@ -1253,7 +1246,6 @@ export class OfflineSyncService {
         : revision === undefined
           ? following
           : following.map((item) => this.#executor.withServerRevision(item, revision));
-    latestCommands.splice(latestIndex + 1, rebased.length, ...rebased);
     const current = await this.#rowForCommand(command);
     if (!this.#isCurrent(generation)) return;
     if (!current) {
@@ -1264,14 +1256,28 @@ export class OfflineSyncService {
     if (result.clearRemoteId === true && !removesReplica) {
       throw new Error('Offline command can clear remoteId only for a confirmed replica removal.');
     }
-    const confirmedValues = removesReplica ? null : (result.confirmedValues ?? command.optimisticValue);
     const schema = this.#entitySchema(current.sourceKey);
     this.#assertCommandResultIdentity(schema, current, result);
     const resolvedRemoteId = this.#resolvedRemoteId(current, result);
-    const row = {
+    const reconciliationIdentity =
+      current.identity.kind === 'generated'
+        ? resolvedRemoteId === null
+          ? undefined
+          : { remoteId: resolvedRemoteId }
+        : current.identity.kind === 'natural'
+          ? { naturalKey: current.identity.naturalKey }
+          : undefined;
+    const awaitingPull: OfflineCommand = {
+      ...command,
+      state: 'awaiting_pull',
+      retryAt: null,
+      lastErrorCode: null,
+      serverCommitUnknown: false,
+      ...(reconciliationIdentity ? { reconciliationIdentity } : {}),
+    };
+    latestCommands.splice(latestIndex, 1 + rebased.length, awaitingPull, ...rebased);
+    const identityUpdatedBase: OfflineReplicaRow = {
       ...current,
-      values: rebased.length > 0 ? current.values : confirmedValues,
-      confirmedValues,
       identity:
         current.identity.kind === 'generated'
           ? {
@@ -1281,22 +1287,13 @@ export class OfflineSyncService {
           : current.identity,
       serverRevision: result.clearRemoteId === true ? null : (revision ?? current.serverRevision),
       fetchedAt: Date.now(),
-      syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
-      visibility: rebased.at(-1)?.replicaMutation === 'delete' ? ('pending_delete' as const) : ('present' as const),
     };
-    const companionTransaction = await this.#companionTransactionAfterAcknowledgement(
-      command,
-      rebased,
-      result.confirmedCompanions,
-    );
+    const rematerialized = await this.#rematerializeAggregate(awaitingPull, latestCommands, identityUpdatedBase);
     if (!this.#isCurrent(generation)) return;
     await this.#repository.transactReplica({
-      putRows: [...(removesReplica && rebased.length === 0 ? [] : [row]), ...(companionTransaction.putRows ?? [])],
+      putRows: rematerialized.putRows,
       releaseRemoteIds:
-        result.clearRemoteId === true &&
-        current.identity.kind === 'generated' &&
-        current.identity.remoteId !== null &&
-        !(removesReplica && rebased.length === 0)
+        result.clearRemoteId === true && current.identity.kind === 'generated' && current.identity.remoteId !== null
           ? [
               {
                 userId: current.userId,
@@ -1307,9 +1304,8 @@ export class OfflineSyncService {
               },
             ]
           : undefined,
-      removeRows: [...(removesReplica && rebased.length === 0 ? [current] : []), ...(companionTransaction.removeRows ?? [])],
-      putCommands: rebased,
-      removeCommandIds: [command.commandId],
+      removeRows: rematerialized.removeRows,
+      putCommands: [awaitingPull, ...rebased],
       putReconciliationScopes: [{ userId: command.userId, scopeId: command.scopeId }],
     });
     const scope = { userId: command.userId, scopeId: command.scopeId };
@@ -1350,179 +1346,73 @@ export class OfflineSyncService {
     const discardedIds = new Set(discarded.map((command) => command.commandId));
     const affected = new Map<string, OfflineCommand>();
     for (const command of discarded) affected.set(this.#aggregateKey(command), command);
-    const putRows: OfflineReplicaRow[] = [];
-    const removeRows: OfflineReplicaRowKey[] = [];
-    const companionRows = new Map<string, OfflineReplicaRow>();
-    const companionRemovals = new Map<string, OfflineReplicaRowKey>();
-    for (const [key, command] of affected) {
-      const row = await this.#rowForCommand(command);
-      const remaining = all.filter((item) => !discardedIds.has(item.commandId) && this.#aggregateKey(item) === key);
-      if (row) {
-        if (remaining.length === 0 && row.confirmedValues === null) {
-          removeRows.push(row);
-        } else {
-          putRows.push({
-            ...row,
-            values: remaining.length > 0 ? remaining.at(-1)!.optimisticValue : row.confirmedValues,
-            syncState: remaining.length > 0 ? 'pending' : 'confirmed',
-            visibility: remaining.at(-1)?.replicaMutation === 'delete' ? 'pending_delete' : 'present',
-          });
-        }
-      }
-      const aggregateCommands = all.filter((item) => this.#aggregateKey(item) === key);
-      const remainingAggregateCommands = aggregateCommands.filter((item) => !discardedIds.has(item.commandId));
-      for (const companion of this.#companionsAfterDiscard(aggregateCommands, remainingAggregateCommands)) {
-        const companionKey = this.#replicaRowKey(companion.key);
-        const hasRemaining = remainingAggregateCommands.some((remainingCommand) =>
-          (remainingCommand.optimisticCompanions ?? []).some((candidate) => this.#replicaRowKey(candidate.key) === companionKey),
-        );
-        const current = await this.#getCompanionRow(companion.key);
-        const after = hasRemaining
-          ? companion.after && current
-            ? { ...companion.after, confirmedValues: current.confirmedValues }
-            : companion.after
-          : current
-            ? current.confirmedValues === null
-              ? null
-              : {
-                  ...current,
-                  values: current.confirmedValues,
-                  syncState: 'confirmed' as const,
-                  visibility: 'present' as const,
-                }
-            : companion.after;
-        if (after) {
-          companionRows.set(companionKey, after);
-          companionRemovals.delete(companionKey);
-        } else {
-          companionRows.delete(companionKey);
-          companionRemovals.set(companionKey, companion.key);
-        }
-      }
-    }
+    const remaining = all.filter((item) => !discardedIds.has(item.commandId));
+    const rematerialized = await this.#rematerializeAffectedAggregates(affected, remaining);
     await this.#repository.transactReplica({
-      putRows: [...putRows, ...companionRows.values()],
-      removeRows: [...removeRows, ...companionRemovals.values()],
+      putRows: rematerialized.putRows,
+      removeRows: rematerialized.removeRows,
       removeCommandIds: [...discardedIds],
     });
   }
 
-  #getCompanionRow(key: OfflineReplicaRowKey): Promise<OfflineReplicaRow | null> {
+  async #rematerializeAffectedAggregates(
+    affected: ReadonlyMap<string, OfflineCommand>,
+    remaining: readonly OfflineCommand[],
+    seeds: ReadonlyMap<string, OfflineReplicaRow | null> = new Map(),
+  ): Promise<Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>> {
+    const putRows: OfflineReplicaRow[] = [];
+    const removeRows: OfflineReplicaRowKey[] = [];
+    for (const [key, command] of affected) {
+      const remainingForAggregate = remaining.filter((item) => this.#aggregateKey(item) === key);
+      const footprintCommands = [...remainingForAggregate, ...[...affected.values()].filter((item) => this.#aggregateKey(item) === key)];
+      const rematerialized = await this.#rematerializeAggregate(
+        command,
+        remainingForAggregate,
+        seeds.has(key) ? seeds.get(key) : undefined,
+        footprintCommands,
+      );
+      putRows.push(...(rematerialized.putRows ?? []));
+      removeRows.push(...(rematerialized.removeRows ?? []));
+    }
+    return { putRows, removeRows };
+  }
+
+  async #rematerializeAggregate(
+    command: OfflineCommand,
+    remaining: readonly OfflineCommand[],
+    baseRow = undefined as OfflineReplicaRow | null | undefined,
+    footprintCommands = remaining,
+  ): Promise<Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>> {
+    const current = baseRow === undefined ? await this.#rowForCommand(command) : baseRow;
+    const projection = this.#replicaMutations.projectAggregateIntent({
+      baseRow: current,
+      localOnlyRows: await this.#localOnlyRowsForCommands(footprintCommands),
+      commands: remaining,
+      trigger: 'local',
+    });
+    if (isOfflineAggregateIntentConflict(projection)) {
+      throw new Error('Offline aggregate intent projector cannot return conflict outside pull reconciliation.');
+    }
+    return offlineAggregateIntentMutations(projection, current);
+  }
+
+  async #localOnlyRowsForCommands(commands: readonly OfflineCommand[]): Promise<OfflineReplicaRow[]> {
+    const keys = new Map<string, OfflineReplicaRowKey>();
+    for (const command of commands) {
+      for (const key of commandFootprintKeys(command)) {
+        keys.set(this.#replicaRowKey(key), key);
+      }
+    }
+    const rows = await Promise.all([...keys.values()].map((key) => this.#getLocalOnlyRow(key)));
+    return rows.filter((row): row is OfflineReplicaRow => row !== null);
+  }
+
+  #getLocalOnlyRow(key: OfflineReplicaRowKey): Promise<OfflineReplicaRow | null> {
     const scope = { userId: key.userId, scopeId: key.scopeId };
     return (
       this.#repository.getReplicaRowIncludingPendingDelete?.(scope, key.sourceKey, key.identity) ??
       this.#repository.getReplicaRow(scope, key.sourceKey, key.identity)
     );
-  }
-
-  async #companionTransactionAfterAcknowledgement(
-    acknowledged: OfflineCommand,
-    following: readonly OfflineCommand[],
-    confirmed: OfflineCommandResult['confirmedCompanions'],
-  ): Promise<Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>> {
-    const latest = new Map<string, OfflineOptimisticReplicaCompanion>();
-    for (const command of following) {
-      for (const companion of command.optimisticCompanions ?? []) {
-        latest.set(this.#replicaRowKey(companion.key), companion);
-      }
-    }
-    // Exact legacy path: absent confirmedCompanions only reapplies later overlays as stored.
-    if (confirmed === undefined) {
-      return {
-        putRows: [...latest.values()].flatMap((companion) => (companion.after ? [companion.after] : [])),
-        removeRows: [...latest.values()].flatMap((companion) => (companion.after ? [] : [companion.key])),
-      };
-    }
-    const footprint = new Set(
-      (acknowledged.optimisticCompanions ?? []).map((companion) => this.#replicaRowKey(companion.key)),
-    );
-    const confirmedRows = new Map<string, OfflineReplicaRow>();
-    const confirmedRemovals = new Map<string, OfflineReplicaRowKey>();
-    const acknowledgedCompanions = new Map(
-      (acknowledged.optimisticCompanions ?? []).map((companion) => [this.#replicaRowKey(companion.key), companion]),
-    );
-    for (const mutation of confirmed) {
-      const key = this.#replicaRowKey(mutation.key);
-      this.#assertConfirmedCompanionKey(footprint, key);
-      if (confirmedRows.has(key) || confirmedRemovals.has(key)) {
-        throw new Error(`Offline command result contains duplicate companion mutation ${key}.`);
-      }
-      const declared = acknowledgedCompanions.get(key)!;
-      const current = await this.#getCompanionRow(mutation.key);
-      const row = current ?? declared.before ?? declared.after;
-      if (!row) {
-        throw new Error(`Offline command result cannot resolve companion ${key}.`);
-      }
-      const latestConfirmed = current ? current.confirmedValues : (declared.before?.confirmedValues ?? null);
-      const reduced = mutation.reduce(latestConfirmed);
-      if (reduced === null) {
-        confirmedRemovals.set(key, mutation.key);
-      } else {
-        confirmedRows.set(key, {
-          ...row,
-          values: reduced,
-          confirmedValues: reduced,
-          syncState: 'confirmed',
-          visibility: 'present',
-        });
-      }
-    }
-    if (confirmedRows.size + confirmedRemovals.size !== footprint.size) {
-      throw new Error('Offline command result must cover every optimistic companion exactly once.');
-    }
-    const keys = new Set([...confirmedRows.keys(), ...confirmedRemovals.keys(), ...latest.keys()]);
-    const putRows: OfflineReplicaRow[] = [];
-    const removeRows: OfflineReplicaRowKey[] = [];
-    for (const key of keys) {
-      const overlay = latest.get(key);
-      const confirmedRow = confirmedRows.get(key);
-      if (overlay) {
-        if (overlay.after) {
-          if (confirmedRow) {
-            putRows.push({ ...overlay.after, confirmedValues: confirmedRow.confirmedValues });
-          } else if (confirmedRemovals.has(key)) {
-            putRows.push({ ...overlay.after, confirmedValues: null });
-          } else {
-            putRows.push(overlay.after);
-          }
-        } else {
-          removeRows.push(overlay.key);
-        }
-      } else if (confirmedRow) {
-        putRows.push(confirmedRow);
-      } else {
-        removeRows.push(confirmedRemovals.get(key)!);
-      }
-    }
-    return { putRows, removeRows };
-  }
-
-  #assertConfirmedCompanionKey(footprint: ReadonlySet<string>, key: string): void {
-    if (!footprint.has(key)) {
-      throw new Error(`Offline command result changed undeclared companion ${key}.`);
-    }
-  }
-
-  #companionsAfterDiscard(all: readonly OfflineCommand[], remaining: readonly OfflineCommand[]): OfflineOptimisticReplicaCompanion[] {
-    const keys = new Map<string, OfflineOptimisticReplicaCompanion>();
-    for (const command of all) {
-      for (const companion of command.optimisticCompanions ?? []) {
-        const key = this.#replicaRowKey(companion.key);
-        const previous = keys.get(key);
-        keys.set(key, previous ? { ...companion, before: previous.before } : companion);
-      }
-    }
-    for (const command of remaining) {
-      for (const companion of command.optimisticCompanions ?? []) {
-        const key = this.#replicaRowKey(companion.key);
-        const original = keys.get(key);
-        keys.set(key, { ...companion, before: original?.before ?? companion.before });
-      }
-    }
-    const remainingKeys = new Set(
-      remaining.flatMap((command) => (command.optimisticCompanions ?? []).map((item) => this.#replicaRowKey(item.key))),
-    );
-    return [...keys.entries()].map(([key, companion]) => (remainingKeys.has(key) ? companion : { ...companion, after: companion.before }));
   }
 
   #aggregateKey(command: OfflineCommand): string {
@@ -1659,11 +1549,10 @@ export class OfflineSyncService {
     if (schema.identity.kind !== 'generated' && result.remoteId !== undefined) {
       throw new Error(`Offline command returned generated remote id for source "${schema.sourceKey}" without generated identity.`);
     }
-    if (schema.identity.kind === 'naturalKey') {
-      const confirmedValues = result.confirmedValues ?? current.values;
+    if (schema.identity.kind === 'naturalKey' && result.confirmedValues !== undefined) {
       const currentKey =
         current.identity.kind === 'natural' ? current.identity.naturalKey : offlineNaturalKeyFromValues(schema, current.values)!;
-      const confirmedKey = offlineNaturalKeyFromValues(schema, confirmedValues)!;
+      const confirmedKey = offlineNaturalKeyFromValues(schema, result.confirmedValues)!;
       if (
         canonicalOfflineRemoteIdentity(schema, { naturalKey: currentKey }) !==
         canonicalOfflineRemoteIdentity(schema, { naturalKey: confirmedKey })
