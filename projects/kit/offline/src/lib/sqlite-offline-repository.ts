@@ -161,8 +161,7 @@ const SCHEMA = [
   identity_json TEXT NOT NULL,
   operation TEXT NOT NULL,
   payload_json TEXT NOT NULL,
-  optimistic_value_json TEXT NOT NULL,
-  optimistic_companions_json TEXT,
+  local_only_footprint_json TEXT,
   replica_mutation TEXT NOT NULL DEFAULT 'upsert',
   payload_hash TEXT NOT NULL,
   base_revision_json TEXT,
@@ -171,7 +170,8 @@ const SCHEMA = [
   retry_at INTEGER,
   created_at INTEGER NOT NULL,
   last_error_code TEXT,
-  server_commit_unknown INTEGER NOT NULL DEFAULT 0
+  server_commit_unknown INTEGER NOT NULL DEFAULT 0,
+  reconciliation_identity_json TEXT
 )`,
   `CREATE INDEX IF NOT EXISTS offline_sync_commands_scope_created
   ON offline_sync_commands (user_id, scope_id, created_at)`,
@@ -448,10 +448,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
   async #open(): Promise<void> {
     try {
       if (!this.#sqlite) {
-        throw new OfflineStorageUnavailableError(
-          'storage_unavailable',
-          'Native offline storage requires a community SQLite connection',
-        );
+        throw new OfflineStorageUnavailableError('storage_unavailable', 'Native offline storage requires a community SQLite connection');
       }
       const { databaseId } = await this.#sqlite.open({
         databaseName: this.#options.databaseName,
@@ -459,19 +456,6 @@ export class SqliteOfflineRepository implements OfflineRepository {
       });
       this.#databaseId = databaseId;
       for (const statement of SCHEMA) await this.#execute(databaseId, statement);
-      const commandColumns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_sync_commands)');
-      if (!commandColumns.some((row) => row['name'] === 'optimistic_companions_json')) {
-        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT');
-      }
-      if (!commandColumns.some((row) => row['name'] === 'server_commit_unknown')) {
-        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN server_commit_unknown INTEGER NOT NULL DEFAULT 0');
-        await this.#execute(
-          databaseId,
-          `UPDATE offline_sync_commands SET server_commit_unknown = 1
-         WHERE state IN ('sending', 'retry_wait')
-            OR (attempts >= 2 AND state IN ('blocked_auth', 'conflict', 'rejected'))`,
-        );
-      }
       const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
       if (metadata.length === 0) {
         await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [
@@ -545,9 +529,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     });
   }
 
-  #wrapCreateEncryptionKey(
-    createEncryptionKey: (() => Promise<string>) | undefined,
-  ): (() => Promise<string>) | undefined {
+  #wrapCreateEncryptionKey(createEncryptionKey: (() => Promise<string>) | undefined): (() => Promise<string>) | undefined {
     if (!createEncryptionKey) return undefined;
     return async () => {
       try {
@@ -833,10 +815,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       identity: parseOfflineCommandIdentity(this.#parse(row['identity_json'])),
       operation: this.#string(row['operation']),
       payload: this.#parse(row['payload_json']),
-      optimisticValue: this.#parse(row['optimistic_value_json']),
-      ...(row['optimistic_companions_json'] === null || row['optimistic_companions_json'] === undefined
+      ...(row['local_only_footprint_json'] === null || row['local_only_footprint_json'] === undefined
         ? {}
-        : { optimisticCompanions: this.#parse(row['optimistic_companions_json']) }),
+        : { localOnlyFootprint: this.#parse(row['local_only_footprint_json']) }),
       replicaMutation: this.#string(row['replica_mutation']) as 'upsert' | 'delete',
       payloadHash: this.#string(row['payload_hash']),
       baseRevision: this.#parseNullable(row['base_revision_json']),
@@ -846,6 +827,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       createdAt: this.#number(row['created_at']),
       lastErrorCode: this.#stringOrNull(row['last_error_code']),
       serverCommitUnknown: this.#numberOrNull(row['server_commit_unknown']) === 1,
+      ...(row['reconciliation_identity_json'] === null || row['reconciliation_identity_json'] === undefined
+        ? {}
+        : { reconciliationIdentity: this.#parse(row['reconciliation_identity_json']) as OfflineCommand['reconciliationIdentity'] }),
     };
   }
 
@@ -853,20 +837,21 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#execute(
       databaseId,
       `INSERT INTO offline_sync_commands
-        (command_id, user_id, scope_id, aggregate_type, source_key, identity_json, operation, payload_json, optimistic_value_json,
-         optimistic_companions_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code,
-         server_commit_unknown)
+        (command_id, user_id, scope_id, aggregate_type, source_key, identity_json, operation, payload_json,
+         local_only_footprint_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code,
+         server_commit_unknown, reconciliation_identity_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
         user_id = excluded.user_id, scope_id = excluded.scope_id, aggregate_type = excluded.aggregate_type,
         source_key = excluded.source_key,
         identity_json = excluded.identity_json, operation = excluded.operation, payload_json = excluded.payload_json,
-        optimistic_value_json = excluded.optimistic_value_json, optimistic_companions_json = excluded.optimistic_companions_json,
+        local_only_footprint_json = excluded.local_only_footprint_json,
         replica_mutation = excluded.replica_mutation,
         payload_hash = excluded.payload_hash,
         base_revision_json = excluded.base_revision_json, state = excluded.state, attempts = excluded.attempts,
         retry_at = excluded.retry_at, created_at = excluded.created_at, last_error_code = excluded.last_error_code,
-        server_commit_unknown = excluded.server_commit_unknown`,
+        server_commit_unknown = excluded.server_commit_unknown,
+        reconciliation_identity_json = excluded.reconciliation_identity_json`,
       [
         command.commandId,
         canonicalOfflinePrincipalId(command.userId),
@@ -876,8 +861,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         serializeOfflineCommandIdentity(command.identity),
         command.operation,
         JSON.stringify(command.payload),
-        JSON.stringify(command.optimisticValue),
-        command.optimisticCompanions === undefined ? null : JSON.stringify(command.optimisticCompanions),
+        command.localOnlyFootprint === undefined ? null : JSON.stringify(command.localOnlyFootprint),
         command.replicaMutation ?? 'upsert',
         command.payloadHash,
         this.#stringifyNullable(command.baseRevision),
@@ -887,6 +871,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         command.createdAt,
         command.lastErrorCode,
         command.serverCommitUnknown === true ? 1 : 0,
+        command.reconciliationIdentity === undefined ? null : JSON.stringify(command.reconciliationIdentity),
       ],
     );
   }

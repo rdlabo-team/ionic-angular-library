@@ -570,15 +570,22 @@ through unchanged: values that the server considers equal must first be canonica
 `OfflineScope.userId` accepts `number | string`. A type-tagged TEXT codec keeps numeric `7` and text `"7"` in
 different metadata, manifest, cursor, Outbox, and entity boundaries.
 
-The write lifecycle is: update the replica immediately → append an outbox command in the same transaction → render
-the optimistic value → replay in the background → validate the server revision → store the confirmed value and
-revision. The server remains authoritative; SQLite is the durable local working database, not an HTTP response cache.
+The write lifecycle is: persist the immutable Outbox command → rematerialize the aggregate from confirmed
+base/localOnly values plus remaining FIFO intents → render that optimistic projection → replay in the background →
+keep the transported command until pull acknowledges `commandId` → rematerialize again from the new confirmed
+baseline. The server remains authoritative; SQLite is the durable local working database, not an HTTP response cache.
+
+Synchronized mode requires `aggregateIntentProjector`. Kit calls it inside `OfflineReplicaMutationCoordinator` after
+enqueue, batch enqueue, replacement, discard, transport success, and pull acknowledgement. The adapter must derive
+only from authoritative confirmed values plus the complete remaining intent chain. Do not call it from product code.
+Commands persist payload/metadata and declared `localOnlyFootprint` keys only; optimistic snapshots and companion
+before/after images are not durable truth.
 
 When an API response is assembled from a base replica row plus product-owned local-only view rows, use
 `enqueuePrepared()`. Its callback runs inside the shared replica mutation lane, so every read used to derive the
-optimistic projection happens after earlier enqueue/ACK/pull applies. The base optimistic row, companion rows, and
-Outbox command are then committed by one `transactReplica()` call. Preparation failure, invalid cross-scope rows,
-duplicate row keys, non-JSON values, or an attempt to mutate commands/cursors leaves durable state unchanged.
+payload happens after earlier enqueue/ACK/pull applies. Kit then rematerializes the aggregate and commits the
+Outbox command with that projection in one `transactReplica()` call. Preparation failure, invalid footprint keys,
+non-JSON values, or an attempt to mutate commands/cursors leaves durable state unchanged.
 
 ```ts
 await offlineSync.enqueuePrepared(async (repository) => {
@@ -590,9 +597,8 @@ await offlineSync.enqueuePrepared(async (repository) => {
       identity: { kind: 'generated', localId: row.identity.localId },
       operation: 'items.rename',
       payload: { title },
-      optimisticValue: { ...row.values, title },
+      localOnlyFootprint: [viewKey(scope, view)],
     },
-    replicaTransaction: { putRows: [buildProductViewRow(scope, { ...view, title })] },
   };
 });
 ```
@@ -624,7 +630,6 @@ await offlineSync.enqueue({
   },
   operation: 'favorite.delete',
   payload: { favTo: favorite.values.favTo },
-  optimisticValue: favorite.values,
   baseRevision: favorite.serverRevision,
   replicaMutation: 'delete',
 });
@@ -654,7 +659,6 @@ await offlineSync.enqueue({
   identity: { kind: 'generated', localId, remoteId: existingApiItem.id },
   operation: 'items.delete',
   payload: { method: 'DELETE' },
-  optimisticValue: existingApiItem,
 });
 ```
 
@@ -765,6 +769,7 @@ provideOffline({
   replicaSchema,
   replicaPuller: ProductReplicaPuller,
   commandExecutor: ProductCommandExecutor,
+  aggregateIntentProjector: ProductAggregateIntentProjector,
   // ...request policies, databaseName, createEncryptionKey
 });
 

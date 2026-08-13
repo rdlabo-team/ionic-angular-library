@@ -267,18 +267,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     });
   });
 
-  it('legacy SQLite outboxの送信中と複数回試行済みの最終失敗をcolumn追加時にcommit不明へbackfillする', async () => {
-    const repository = createRepository();
-
-    await repository.initialize();
-
-    expect(plugin.execute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        statement: expect.stringContaining("OR (attempts >= 2 AND state IN ('blocked_auth', 'conflict', 'rejected'))"),
-      }),
-    );
-  });
-
   it('暗号鍵の生成関数をcommunity driverへ渡す', async () => {
     const createEncryptionKey = vi.fn(async () => 'first-install-secret');
     const repository = createRepository(createEncryptionKey);
@@ -382,7 +370,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.update',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
@@ -400,7 +387,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.update',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
@@ -439,7 +425,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: 'delete-uuid' },
       operation: 'test_items.delete',
       payload: { id: 42 },
-      optimisticValue: { title: 'confirmed' },
       payloadHash: 'hash',
       baseRevision: 4,
       replicaMutation: 'delete',
@@ -457,28 +442,14 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(insert?.values).toContain('delete');
   });
 
-  it('persists and restores prepared companion metadata while old rows remain readable', async () => {
+  it('persists and restores declared localOnly footprint keys', async () => {
     const repository = createRepository();
     await repository.initialize();
     const companion = {
-      key: {
-        userId: 1,
-        scopeId: '10',
-        sourceKey: 'local_projections',
-        identity: { kind: 'local' as const, localId: 'view-1' },
-      },
-      before: null,
-      after: {
-        userId: 1,
-        scopeId: '10',
-        sourceKey: 'local_projections',
-        identity: { kind: 'local' as const, localId: 'view-1' },
-        values: { feedKey: 'optimistic' },
-        confirmedValues: null,
-        serverRevision: null,
-        fetchedAt: 1,
-        syncState: 'confirmed' as const,
-      },
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'local_projections',
+      identity: { kind: 'local' as const, localId: 'view-1' },
     };
     const command: OfflineCommand = {
       userId: 1,
@@ -489,8 +460,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: 'prepared-local' },
       operation: 'test_items.update',
       payload: { title: 'Optimistic' },
-      optimisticValue: { id: 42, title: 'Optimistic' },
-      optimisticCompanions: [companion],
+      localOnlyFootprint: [companion],
       payloadHash: 'hash',
       baseRevision: 1,
       state: 'pending',
@@ -498,13 +468,16 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       retryAt: null,
       createdAt: 1,
       lastErrorCode: null,
+      reconciliationIdentity: { remoteId: 42 },
     };
     await repository.putCommand(command);
     const insert = plugin.execute.mock.calls
       .map(([options]) => options as { statement: string; values?: unknown[] })
       .find(({ statement }) => statement.startsWith('INSERT INTO offline_sync_commands'));
-    expect(insert?.statement).toContain('optimistic_companions_json');
+    expect(insert?.statement).toContain('local_only_footprint_json');
     expect(insert?.values).toContain(JSON.stringify([companion]));
+    expect(insert?.statement).toContain('reconciliation_identity_json');
+    expect(insert?.values).toContain(JSON.stringify(command.reconciliationIdentity));
 
     const sqliteRow = {
       command_id: command.commandId,
@@ -515,8 +488,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity_json: JSON.stringify(command.identity),
       operation: command.operation,
       payload_json: JSON.stringify(command.payload),
-      optimistic_value_json: JSON.stringify(command.optimisticValue),
-      optimistic_companions_json: JSON.stringify([companion]),
+      local_only_footprint_json: JSON.stringify([companion]),
       replica_mutation: 'upsert',
       payload_hash: command.payloadHash,
       base_revision_json: JSON.stringify(command.baseRevision),
@@ -525,25 +497,20 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       retry_at: command.retryAt,
       created_at: command.createdAt,
       last_error_code: command.lastErrorCode,
+      server_commit_unknown: 0,
+      reconciliation_identity_json: JSON.stringify(command.reconciliationIdentity),
     };
     plugin.query.mockResolvedValueOnce({ rows: [sqliteRow] });
     await expect(repository.getCommands({ userId: 1, scopeId: '10' })).resolves.toEqual([
-      expect.objectContaining({ optimisticCompanions: [companion] }),
-    ]);
-    plugin.query.mockResolvedValueOnce({ rows: [{ ...sqliteRow, optimistic_companions_json: null }] });
-    await expect(repository.getCommands({ userId: 1, scopeId: '10' })).resolves.toEqual([
-      expect.not.objectContaining({ optimisticCompanions: expect.anything() }),
-    ]);
-  });
-
-  it('adds the nullable companion column to an existing version-1 native database', async () => {
-    const repository = createRepository();
-    await repository.initialize();
-    expect(plugin.execute).toHaveBeenCalledWith(
       expect.objectContaining({
-        statement: 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT',
+        localOnlyFootprint: [companion],
+        reconciliationIdentity: { remoteId: 42 },
       }),
-    );
+    ]);
+    plugin.query.mockResolvedValueOnce({ rows: [{ ...sqliteRow, local_only_footprint_json: null }] });
+    await expect(repository.getCommands({ userId: 1, scopeId: '10' })).resolves.toEqual([
+      expect.not.objectContaining({ localOnlyFootprint: expect.anything() }),
+    ]);
   });
 
   it('replicaとoutboxを単一transactionで更新する', async () => {
@@ -1142,7 +1109,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-bbbb' },
           operation: 'test_items.create',
           payload: { title: 'Local item' },
-          optimisticValue: { id: 0, title: 'Local item' },
           payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
@@ -1566,7 +1532,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-lease-read' },
           operation: 'test_items.update',
           payload: {},
-          optimisticValue: {},
           payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
@@ -2009,7 +1974,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-aaaa' },
           operation: 'test_items.update',
           payload: {},
-          optimisticValue: {},
           payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
@@ -2128,7 +2092,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-aaaa' },
           operation: 'test_items.update',
           payload: {},
-          optimisticValue: {},
           payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',

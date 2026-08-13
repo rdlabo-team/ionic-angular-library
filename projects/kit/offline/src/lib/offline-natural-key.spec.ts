@@ -24,7 +24,8 @@ import {
   type OfflineRepository,
   type OfflineScope,
 } from './offline-repository';
-import { naturalCommandIdentity, naturalReplicaIdentity } from './offline-test-helpers';
+import { OFFLINE_AGGREGATE_INTENT_PROJECTOR } from './offline-aggregate-intent-projector';
+import { naturalCommandIdentity, naturalReplicaIdentity, rematerializeTestAggregate } from './offline-test-helpers';
 
 class MemoryStorage {
   readonly values = new Map<string, unknown>();
@@ -293,6 +294,7 @@ describe('natural-key pull reconciliation', () => {
             withServerRevision: (command: OfflineCommand, revision: string | number) => ({ ...command, baseRevision: revision }),
           },
         },
+        { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
       ],
     });
     const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository;
@@ -308,8 +310,7 @@ describe('natural-key pull reconciliation', () => {
           sourceKey: 'natural_favorites',
           identity: naturalCommandIdentity(key42),
           operation: 'create',
-          payload: {},
-          optimisticValue: { favFrom: 7, favTo: '42', label: 'optimistic' },
+          payload: { favTo: '42', label: 'optimistic' },
           payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
@@ -348,8 +349,7 @@ describe('natural-key pull reconciliation', () => {
           sourceKey: 'natural_favorites',
           identity: naturalCommandIdentity(key42),
           operation: 'update',
-          payload: {},
-          optimisticValue: { favFrom: 7, favTo: '42', label: 'pending edit' },
+          payload: { favTo: '42', label: 'pending edit' },
           payloadHash: 'hash-2',
           baseRevision: 2,
           state: 'pending',

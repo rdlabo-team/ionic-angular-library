@@ -263,7 +263,7 @@ describe('OfflineCoordinatorService', () => {
   describe('storage initialization failure', () => {
     const storageError = new OfflineStorageUnavailableError(
       'core_schema_incompatible',
-      'Unsupported offline storage schema version 999; expected 1.',
+      'Unsupported offline storage schema version 999; expected 2.',
     );
 
     it('default fails closed and does not start session or sync', async () => {

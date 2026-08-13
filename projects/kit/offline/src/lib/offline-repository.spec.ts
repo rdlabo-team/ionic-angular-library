@@ -313,7 +313,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'test_items.update',
         payload: { title: 'Local item' },
-        optimisticValue: { id: 42, title: 'Local item' },
         payloadHash: 'hash',
         baseRevision: 7,
         state: 'pending',
@@ -367,7 +366,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-cccc' },
         operation: 'test_items.delete',
         payload: {},
-        optimisticValue: {},
         payloadHash: 'hash',
         baseRevision: null,
         state: 'pending',
@@ -408,7 +406,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'test_items.update',
         payload: {},
-        optimisticValue: {},
         payloadHash: 'hash',
         baseRevision: null,
         state: 'pending',
@@ -471,7 +468,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'test_items.update',
         payload: { title: 'Local item' },
-        optimisticValue: { id: 42, title: 'Local item' },
         payloadHash: 'hash',
         baseRevision: 7,
         state: 'pending',
@@ -827,7 +823,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.update',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending' as const,
@@ -852,7 +847,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: 'legacy' },
       operation: 'test_items.update',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
@@ -892,7 +886,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'documents.upsert',
       payload: {},
-      optimisticValue: {},
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending' as const,
@@ -948,7 +941,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.create',
       payload: { title: 'local' },
-      optimisticValue: { id: 0, title: 'local' },
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
@@ -1030,7 +1022,7 @@ describe('IonicOfflineRepository', () => {
     storage.values.set('offline:metadata', { schemaVersion: 999, lastUserId: 1 });
     storage.values.set('offline:outbox:commands', { stale: {} });
     storage.values.set('firebaseToken', { token: 'keep' });
-    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999; expected 1');
+    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999; expected 2');
     expect(storage.values.get('offline:outbox:commands')).toEqual({ stale: {} });
     expect(storage.values.get('offline:metadata')).toEqual({ schemaVersion: 999, lastUserId: 1 });
     expect(storage.values.get('firebaseToken')).toEqual({ token: 'keep' });
@@ -1062,7 +1054,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-bbbb' },
       operation: 'test_items.create',
       payload: { title: 'Local item' },
-      optimisticValue: { id: 0, title: 'Local item' },
       payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
@@ -1100,7 +1091,6 @@ describe('IonicOfflineRepository', () => {
       identity: generatedCommandIdentity('delete-uuid'),
       operation: 'test_items.delete',
       payload: { id: 42 },
-      optimisticValue: row.values,
       payloadHash: 'delete-hash',
       baseRevision: 7,
       replicaMutation: 'delete',
@@ -2066,7 +2056,6 @@ describe('IonicOfflineRepository', () => {
       identity: generatedCommandIdentity('019d-snap'),
       operation: 'test_items.update',
       payload: {},
-      optimisticValue: row.values,
       payloadHash: 'hash',
       baseRevision: 1,
       state: 'pending',

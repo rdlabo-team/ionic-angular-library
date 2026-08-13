@@ -8,28 +8,28 @@ import { offlineSessionManifestAllows } from './offline-session.service';
 describe('shared offline boundary contracts', () => {
   it('normalizes database serverId exactly once at the pull transport boundary', () => {
     const normalized = normalizeOfflineReplicaPullPage({
-        schemaVersion: 1,
-        schemaHash: 'hash',
-        changes: [
-          {
-            sourceKey: 'items',
-            serverId: 42,
-            serverRevision: 3,
-            values: { id: 42 },
-            deleted: false,
-          },
-          {
-            sourceKey: 'favorites',
-            naturalKey: { from: 7, to: 21 },
-            serverRevision: 4,
-            values: null,
-            deleted: true,
-          },
-        ],
-        nextCursor: '2',
-        hasMore: false,
-        rebaselineRequired: true,
-      });
+      schemaVersion: 1,
+      schemaHash: 'hash',
+      changes: [
+        {
+          sourceKey: 'items',
+          serverId: 42,
+          serverRevision: 3,
+          values: { id: 42 },
+          deleted: false,
+        },
+        {
+          sourceKey: 'favorites',
+          naturalKey: { from: 7, to: 21 },
+          serverRevision: 4,
+          values: null,
+          deleted: true,
+        },
+      ],
+      nextCursor: '2',
+      hasMore: false,
+      rebaselineRequired: true,
+    });
     expect(normalized.changes).toEqual([
       {
         sourceKey: 'items',
@@ -60,6 +60,32 @@ describe('shared offline boundary contracts', () => {
     expect(offlineSessionManifestAllows(manifest, 'uid-7', '10')).toBe(true);
     expect(offlineSessionManifestAllows(manifest, 'uid-7', '11')).toBe(false);
     expect(offlineSessionManifestAllows(manifest, 'uid-other', '10')).toBe(false);
+  });
+
+  it('requires an aggregate intent projector on the synchronized provider', () => {
+    const compileOnly = (): void => {
+      provideOffline({
+        databaseName: 'intent-projector',
+        createEncryptionKey: async () => 'native-key',
+        replicaSchema: defineOfflineReplicaSchema({ version: 1, entities: [], migrations: [] }),
+        requestPolicies: [],
+        commandExecutor: class {} as never,
+        replicaPuller: class {} as never,
+        aggregateIntentProjector: class {
+          project() {
+            return { baseRow: null };
+          }
+        },
+      });
+    };
+    void compileOnly;
+  });
+
+  it('keeps the aggregate intent projector off the read-cache provider', () => {
+    type Options = import('./offline-provider').ProvideReadCacheOfflineOptions;
+    type HasProjector = 'aggregateIntentProjector' extends keyof Options ? true : false;
+    const readCacheOmitsProjector: HasProjector = false;
+    expect(readCacheOmitsProjector).toBe(false);
   });
 
   it('supports a read cache without product dummy transport adapters', () => {

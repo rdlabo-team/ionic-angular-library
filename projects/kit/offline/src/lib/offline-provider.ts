@@ -16,6 +16,8 @@ import {
 } from './offline-repository';
 import type { OfflineMutationRequestPolicy, OfflineRequestPolicy } from './offline-request-policy';
 import { provideOfflineMutationRequestPolicy, provideOfflineRequestPolicy } from './offline-request-policy';
+import type { OfflineAggregateIntentProjector } from './offline-aggregate-intent-projector';
+import { OFFLINE_AGGREGATE_INTENT_PROJECTOR } from './offline-aggregate-intent-projector';
 import type { OfflineReplicaProjector, OfflineReplicaPuller } from './offline-replica-puller';
 import { OFFLINE_REPLICA_PROJECTOR, OFFLINE_REPLICA_PULLER } from './offline-replica-puller';
 import { OfflineSessionService } from './offline-session.service';
@@ -51,6 +53,15 @@ export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptions
   commandExecutor: Type<OfflineCommandExecutor>;
   /** Product transport for explicit cursor-based server delta pulls. */
   replicaPuller: Type<OfflineReplicaPuller>;
+  /**
+   * Required pure adapter that rematerializes one aggregate from its
+   * authoritative confirmed base/localOnly values and remaining Outbox intents.
+   *
+   * Kit calls it inside {@link OfflineReplicaMutationCoordinator} after enqueue,
+   * replacement, discard, transport success, and pull acknowledgement. Do not
+   * call the projector from product code.
+   */
+  aggregateIntentProjector: Type<OfflineAggregateIntentProjector>;
 }
 
 /** Server- or external-source read cache with no mutation transport or Outbox. */
@@ -128,6 +139,9 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
     ...(options.replicaProjector
       ? [options.replicaProjector, { provide: OFFLINE_REPLICA_PROJECTOR, useExisting: options.replicaProjector }]
       : []),
+    ...(synchronized && 'aggregateIntentProjector' in options && options.aggregateIntentProjector
+      ? [options.aggregateIntentProjector, { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useExisting: options.aggregateIntentProjector }]
+      : []),
     ...options.requestPolicies.flatMap((policy) => provideOfflineRequestPolicy(policy)),
     ...(options.mutationPolicies ?? []).flatMap((policy) => provideOfflineMutationRequestPolicy(policy)),
     ...(options.providers ?? []),
@@ -139,10 +153,7 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
 }
 
 /** Prevents unsupported multi-tab Web writes from silently losing Outbox state. */
-export function assertSupportedOfflineMode(
-  platform: string,
-  mode: 'synchronized' | 'readCacheOnly',
-): void {
+export function assertSupportedOfflineMode(platform: string, mode: 'synchronized' | 'readCacheOnly'): void {
   if (!supportsSynchronizedOfflineRepository(platform) && mode === 'synchronized') {
     throw new Error(
       'Offline synchronized mode is supported only by native repositories. Use readCacheOnly until the selected repository provides cross-context locking.',
