@@ -1284,7 +1284,11 @@ export class OfflineSyncService {
       syncState: rebased.length > 0 ? ('pending' as const) : ('confirmed' as const),
       visibility: rebased.at(-1)?.replicaMutation === 'delete' ? ('pending_delete' as const) : ('present' as const),
     };
-    const companionTransaction = this.#companionTransactionAfterAcknowledgement(rebased);
+    const companionTransaction = await this.#companionTransactionAfterAcknowledgement(
+      command,
+      rebased,
+      result.confirmedCompanions,
+    );
     if (!this.#isCurrent(generation)) return;
     await this.#repository.transactReplica({
       putRows: [...(removesReplica && rebased.length === 0 ? [] : [row]), ...(companionTransaction.putRows ?? [])],
@@ -1411,19 +1415,92 @@ export class OfflineSyncService {
     );
   }
 
-  #companionTransactionAfterAcknowledgement(
+  async #companionTransactionAfterAcknowledgement(
+    acknowledged: OfflineCommand,
     following: readonly OfflineCommand[],
-  ): Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'> {
+    confirmed: OfflineCommandResult['confirmedCompanions'],
+  ): Promise<Pick<OfflineReplicaTransaction, 'putRows' | 'removeRows'>> {
     const latest = new Map<string, OfflineOptimisticReplicaCompanion>();
     for (const command of following) {
       for (const companion of command.optimisticCompanions ?? []) {
         latest.set(this.#replicaRowKey(companion.key), companion);
       }
     }
-    return {
-      putRows: [...latest.values()].flatMap((companion) => (companion.after ? [companion.after] : [])),
-      removeRows: [...latest.values()].flatMap((companion) => (companion.after ? [] : [companion.key])),
-    };
+    // Exact legacy path: absent confirmedCompanions only reapplies later overlays as stored.
+    if (confirmed === undefined) {
+      return {
+        putRows: [...latest.values()].flatMap((companion) => (companion.after ? [companion.after] : [])),
+        removeRows: [...latest.values()].flatMap((companion) => (companion.after ? [] : [companion.key])),
+      };
+    }
+    const footprint = new Set(
+      (acknowledged.optimisticCompanions ?? []).map((companion) => this.#replicaRowKey(companion.key)),
+    );
+    const confirmedRows = new Map<string, OfflineReplicaRow>();
+    const confirmedRemovals = new Map<string, OfflineReplicaRowKey>();
+    const acknowledgedCompanions = new Map(
+      (acknowledged.optimisticCompanions ?? []).map((companion) => [this.#replicaRowKey(companion.key), companion]),
+    );
+    for (const mutation of confirmed) {
+      const key = this.#replicaRowKey(mutation.key);
+      this.#assertConfirmedCompanionKey(footprint, key);
+      if (confirmedRows.has(key) || confirmedRemovals.has(key)) {
+        throw new Error(`Offline command result contains duplicate companion mutation ${key}.`);
+      }
+      const declared = acknowledgedCompanions.get(key)!;
+      const current = await this.#getCompanionRow(mutation.key);
+      const row = current ?? declared.before ?? declared.after;
+      if (!row) {
+        throw new Error(`Offline command result cannot resolve companion ${key}.`);
+      }
+      const latestConfirmed = current ? current.confirmedValues : (declared.before?.confirmedValues ?? null);
+      const reduced = mutation.reduce(latestConfirmed);
+      if (reduced === null) {
+        confirmedRemovals.set(key, mutation.key);
+      } else {
+        confirmedRows.set(key, {
+          ...row,
+          values: reduced,
+          confirmedValues: reduced,
+          syncState: 'confirmed',
+          visibility: 'present',
+        });
+      }
+    }
+    if (confirmedRows.size + confirmedRemovals.size !== footprint.size) {
+      throw new Error('Offline command result must cover every optimistic companion exactly once.');
+    }
+    const keys = new Set([...confirmedRows.keys(), ...confirmedRemovals.keys(), ...latest.keys()]);
+    const putRows: OfflineReplicaRow[] = [];
+    const removeRows: OfflineReplicaRowKey[] = [];
+    for (const key of keys) {
+      const overlay = latest.get(key);
+      const confirmedRow = confirmedRows.get(key);
+      if (overlay) {
+        if (overlay.after) {
+          if (confirmedRow) {
+            putRows.push({ ...overlay.after, confirmedValues: confirmedRow.confirmedValues });
+          } else if (confirmedRemovals.has(key)) {
+            putRows.push({ ...overlay.after, confirmedValues: null });
+          } else {
+            putRows.push(overlay.after);
+          }
+        } else {
+          removeRows.push(overlay.key);
+        }
+      } else if (confirmedRow) {
+        putRows.push(confirmedRow);
+      } else {
+        removeRows.push(confirmedRemovals.get(key)!);
+      }
+    }
+    return { putRows, removeRows };
+  }
+
+  #assertConfirmedCompanionKey(footprint: ReadonlySet<string>, key: string): void {
+    if (!footprint.has(key)) {
+      throw new Error(`Offline command result changed undeclared companion ${key}.`);
+    }
   }
 
   #companionsAfterDiscard(all: readonly OfflineCommand[], remaining: readonly OfflineCommand[]): OfflineOptimisticReplicaCompanion[] {

@@ -1,9 +1,14 @@
-import { inject, Injectable } from '@angular/core';
+import { computed, inject, Injectable, signal } from '@angular/core';
 import type { OfflinePrincipalId } from './offline-identity';
+import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 import { OfflineSessionService } from './offline-session.service';
 import type { OfflineSessionManifest, OfflineSessionTransitionLease } from './offline-session.service';
+import {
+  OfflineStorageUnavailableError,
+  type OfflineStorageState,
+} from './offline-storage';
 import { OfflineSyncService } from './offline-sync.service';
 
 /** User choice when logout encounters unconfirmed local mutations. */
@@ -21,16 +26,51 @@ export class OfflineCoordinatorService {
   readonly #network = inject(OfflineNetworkService);
   readonly #sync = inject(OfflineSyncService);
   readonly #session = inject(OfflineSessionService);
+  readonly #options = inject(OFFLINE_KIT_OPTIONS);
+  readonly #storageState = signal<OfflineStorageState>({ status: 'initializing' });
   #transitionRevision = 0;
   #transitionTail: Promise<void> = Promise.resolve();
+
+  /**
+   * Local storage readiness after {@link initialize}.
+   *
+   * When `unavailable`, the product opted into online-only startup; replica/outbox APIs must not be used.
+   */
+  readonly storageState = this.#storageState.asReadonly();
+  /**
+   * Product-policy guard: `true` only when encrypted local storage finished initialization successfully.
+   *
+   * Use this (or {@link storageState}) to disable offline mutations and replica reads when storage is unavailable.
+   */
+  readonly isStorageReady = computed(() => this.#storageState().status === 'ready');
 
   readonly networkState = this.#network.state;
   readonly syncState = this.#sync.syncState;
   readonly pendingCount = this.#sync.pendingCount;
   readonly conflicts = this.#sync.conflicts;
 
+  /**
+   * Opens local storage, then session and sync.
+   *
+   * Repository failure without {@link OfflineKitOptions.onStorageUnavailable} throws
+   * {@link OfflineStorageUnavailableError}. When the callback is present and settles, this method
+   * resolves with {@link storageState} `unavailable` and skips session/sync initialization.
+   */
   async initialize(): Promise<void> {
-    await Promise.all([this.#repository.initialize(), this.#network.initialize()]);
+    const networkReady = this.#network.initialize();
+    try {
+      await this.#repository.initialize();
+    } catch (error) {
+      await networkReady;
+      const typed = this.#asStorageUnavailable(error);
+      this.#storageState.set({ status: 'unavailable', error: typed });
+      const onUnavailable = this.#options.onStorageUnavailable;
+      if (!onUnavailable) throw typed;
+      await onUnavailable(typed);
+      return;
+    }
+    await networkReady;
+    this.#storageState.set({ status: 'ready' });
     await this.#session.initialize();
     await this.#sync.initialize();
   }
@@ -47,6 +87,7 @@ export class OfflineCoordinatorService {
     authSubject: string | null,
     authLease?: OfflineSessionTransitionLease,
   ): Promise<boolean> {
+    if (this.#storageUnavailable()) return Promise.resolve(true);
     const revision = ++this.#transitionRevision;
     const lease = this.#lease(revision, authLease);
     return this.#enqueueTransition(async () => {
@@ -59,6 +100,7 @@ export class OfflineCoordinatorService {
 
   /** Starts pull and outbox replay after the caller has published remote access. */
   async resumeRemoteSession(options?: OfflineResumeRemoteSessionOptions): Promise<void> {
+    if (this.#storageUnavailable()) return;
     await this.#sync.refreshSession(options?.foregroundScopeIds);
   }
 
@@ -66,6 +108,7 @@ export class OfflineCoordinatorService {
    * Activates a restored identity for local replica/outbox use without enabling transport sync.
    */
   activateOfflineSession(authSubject?: string | null, authLease?: OfflineSessionTransitionLease): Promise<OfflineSessionManifest | null> {
+    if (this.#storageUnavailable()) return Promise.resolve(null);
     const revision = ++this.#transitionRevision;
     const lease = this.#lease(revision, authLease);
     return this.#enqueueTransition(async () => {
@@ -78,6 +121,7 @@ export class OfflineCoordinatorService {
   }
 
   clearActiveSession(): Promise<void> {
+    if (this.#storageUnavailable()) return Promise.resolve();
     this.#sync.revokeSession();
     this.#session.revokeAccess();
     ++this.#transitionRevision;
@@ -88,6 +132,7 @@ export class OfflineCoordinatorService {
   }
 
   async prepareLogout(action: OfflineLogoutAction): Promise<boolean> {
+    if (this.#storageUnavailable()) return action !== 'cancel';
     if (action === 'cancel') return false;
     if (action === 'discard') {
       await this.#sync.discardAllPending();
@@ -98,7 +143,20 @@ export class OfflineCoordinatorService {
   }
 
   flush(): Promise<void> {
+    if (this.#storageUnavailable()) return Promise.resolve();
     return this.#sync.flush();
+  }
+
+  #asStorageUnavailable(error: unknown): OfflineStorageUnavailableError {
+    if (error instanceof OfflineStorageUnavailableError) return error;
+    const message = error instanceof Error ? error.message : 'Offline storage is unavailable.';
+    return new OfflineStorageUnavailableError('storage_unavailable', message || 'Offline storage is unavailable.', {
+      cause: error,
+    });
+  }
+
+  #storageUnavailable(): boolean {
+    return this.#storageState().status === 'unavailable';
   }
 
   #lease(revision: number, authLease?: OfflineSessionTransitionLease): OfflineSessionTransitionLease {

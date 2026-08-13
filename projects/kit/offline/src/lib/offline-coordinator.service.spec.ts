@@ -1,20 +1,31 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
+import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
 import { OFFLINE_REPOSITORY, type OfflineScope } from './offline-repository';
 import { OfflineSessionService, type OfflineSessionManifest } from './offline-session.service';
+import { OfflineStorageUnavailableError } from './offline-storage';
 import { OfflineSyncService } from './offline-sync.service';
+import { defineOfflineReplicaSchema } from './offline-replica-schema';
 
 describe('OfflineCoordinatorService', () => {
   afterEach(() => TestBed.resetTestingModule());
 
-  function setup(manifest: OfflineSessionManifest | null = null) {
+  const emptyReplicaSchema = defineOfflineReplicaSchema({ version: 1, entities: [], migrations: [] });
+
+  function setup(
+    manifest: OfflineSessionManifest | null = null,
+    options: {
+      repositoryInitialize?: () => Promise<void>;
+      onStorageUnavailable?: (error: OfflineStorageUnavailableError) => void | Promise<void>;
+    } = {},
+  ) {
     const order: string[] = [];
     const sessionState: { userId: number | null } = { userId: null };
     const repository = {
-      initialize: vi.fn(async () => undefined),
+      initialize: vi.fn(options.repositoryInitialize ?? (async () => undefined)),
     };
     const network = {
       state: signal('connected'),
@@ -60,9 +71,25 @@ describe('OfflineCoordinatorService', () => {
         { provide: OfflineNetworkService, useValue: network },
         { provide: OfflineSessionService, useValue: session },
         { provide: OfflineSyncService, useValue: sync },
+        {
+          provide: OFFLINE_KIT_OPTIONS,
+          useValue: {
+            databaseName: 'test-offline',
+            replicaSchema: emptyReplicaSchema,
+            onStorageUnavailable: options.onStorageUnavailable,
+          },
+        },
       ],
     });
-    return { coordinator: TestBed.inject(OfflineCoordinatorService), order, session, sessionState, sync };
+    return {
+      coordinator: TestBed.inject(OfflineCoordinatorService),
+      order,
+      session,
+      sessionState,
+      sync,
+      network,
+      repository,
+    };
   }
 
   it('restores local visibility without starting remote synchronization', async () => {
@@ -207,6 +234,13 @@ describe('OfflineCoordinatorService', () => {
         { provide: OFFLINE_REPOSITORY, useValue: repository },
         { provide: OfflineNetworkService, useValue: network },
         { provide: OfflineSyncService, useValue: sync },
+        {
+          provide: OFFLINE_KIT_OPTIONS,
+          useValue: {
+            databaseName: 'test-offline',
+            replicaSchema: emptyReplicaSchema,
+          },
+        },
       ],
     });
     const coordinator = TestBed.inject(OfflineCoordinatorService);
@@ -224,5 +258,112 @@ describe('OfflineCoordinatorService', () => {
     await coordinator.resumeRemoteSession({ foregroundScopeIds: ['2', '9'] });
 
     expect(sync.refreshSession).toHaveBeenCalledWith(['2', '9']);
+  });
+
+  describe('storage initialization failure', () => {
+    const storageError = new OfflineStorageUnavailableError(
+      'core_schema_incompatible',
+      'Unsupported offline storage schema version 999; expected 1.',
+    );
+
+    it('default fails closed and does not start session or sync', async () => {
+      const { coordinator, session, sync, network } = setup(null, {
+        repositoryInitialize: async () => {
+          throw storageError;
+        },
+      });
+
+      await expect(coordinator.initialize()).rejects.toBe(storageError);
+
+      expect(network.initialize).toHaveBeenCalledOnce();
+      expect(session.initialize).not.toHaveBeenCalled();
+      expect(sync.initialize).not.toHaveBeenCalled();
+      expect(coordinator.storageState()).toEqual({ status: 'unavailable', error: storageError });
+      expect(coordinator.isStorageReady()).toBe(false);
+    });
+
+    it('opt-in onStorageUnavailable completes initializer in unavailable state without session/sync', async () => {
+      const onStorageUnavailable = vi.fn(async () => undefined);
+      const { coordinator, session, sync, network } = setup(null, {
+        repositoryInitialize: async () => {
+          throw storageError;
+        },
+        onStorageUnavailable,
+      });
+
+      await expect(coordinator.initialize()).resolves.toBeUndefined();
+
+      expect(onStorageUnavailable).toHaveBeenCalledExactlyOnceWith(storageError);
+      expect(network.initialize).toHaveBeenCalledOnce();
+      expect(session.initialize).not.toHaveBeenCalled();
+      expect(sync.initialize).not.toHaveBeenCalled();
+      expect(coordinator.storageState()).toEqual({ status: 'unavailable', error: storageError });
+      expect(coordinator.isStorageReady()).toBe(false);
+    });
+
+    it('short-circuits repository-backed public APIs after online-only degradation', async () => {
+      const { coordinator, session, sync } = setup(null, {
+        repositoryInitialize: async () => {
+          throw storageError;
+        },
+        onStorageUnavailable: async () => undefined,
+      });
+      await coordinator.initialize();
+
+      await expect(coordinator.prepareRemoteSession(7, ['10'], 'subject')).resolves.toBe(true);
+      await expect(coordinator.resumeRemoteSession({ foregroundScopeIds: ['10'] })).resolves.toBeUndefined();
+      await expect(coordinator.activateOfflineSession('subject')).resolves.toBeNull();
+      await expect(coordinator.flush()).resolves.toBeUndefined();
+      await expect(coordinator.prepareLogout('sync')).resolves.toBe(true);
+      await expect(coordinator.clearActiveSession()).resolves.toBeUndefined();
+
+      expect(session.activateSession).not.toHaveBeenCalled();
+      expect(session.activateOfflineSession).not.toHaveBeenCalled();
+      expect(session.clearActiveSession).not.toHaveBeenCalled();
+      expect(sync.resetSession).not.toHaveBeenCalled();
+      expect(sync.refreshSession).not.toHaveBeenCalled();
+      expect(sync.flush).not.toHaveBeenCalled();
+    });
+
+    it('callback failure still fails initialization', async () => {
+      const callbackError = new Error('telemetry rejected');
+      const onStorageUnavailable = vi.fn(async () => {
+        throw callbackError;
+      });
+      const { coordinator, session, sync } = setup(null, {
+        repositoryInitialize: async () => {
+          throw storageError;
+        },
+        onStorageUnavailable,
+      });
+
+      await expect(coordinator.initialize()).rejects.toBe(callbackError);
+
+      expect(onStorageUnavailable).toHaveBeenCalledExactlyOnceWith(storageError);
+      expect(session.initialize).not.toHaveBeenCalled();
+      expect(sync.initialize).not.toHaveBeenCalled();
+      expect(coordinator.isStorageReady()).toBe(false);
+    });
+
+    it('wraps non-typed repository failures as storage_unavailable preserving cause', async () => {
+      const cause = new Error('disk full');
+      const onStorageUnavailable = vi.fn(async () => undefined);
+      const { coordinator } = setup(null, {
+        repositoryInitialize: async () => {
+          throw cause;
+        },
+        onStorageUnavailable,
+      });
+
+      await coordinator.initialize();
+
+      const state = coordinator.storageState();
+      expect(state.status).toBe('unavailable');
+      if (state.status !== 'unavailable') return;
+      expect(state.error).toBeInstanceOf(OfflineStorageUnavailableError);
+      expect(state.error.reason).toBe('storage_unavailable');
+      expect(state.error.cause).toBe(cause);
+      expect(onStorageUnavailable).toHaveBeenCalledExactlyOnceWith(state.error);
+    });
   });
 });

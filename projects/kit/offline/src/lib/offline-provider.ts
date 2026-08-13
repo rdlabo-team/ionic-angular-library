@@ -89,6 +89,9 @@ const READ_CACHE_ONLY_REPLICA_PULLER: OfflineReplicaPuller = {
  * Web uses Ionic Storage. Native iOS/Android uses encrypted `@capacitor-community/sqlite`. The application owns
  * URL/DTO policy and command execution; the kit owns persistence, ordering, retries, and session
  * isolation.
+ *
+ * Optional {@link OfflineKitOptions.onStorageUnavailable} opts into online-only startup when
+ * local storage cannot be opened; without it, the app initializer still throws.
  */
 export function provideOffline(options: ProvideOfflineOptions): EnvironmentProviders {
   const synchronized = options.mode !== 'readCacheOnly';
@@ -101,7 +104,9 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
         databaseName: options.databaseName,
         createEncryptionKey: options.createEncryptionKey,
         replicaSchema: options.replicaSchema,
+        wireProtocol: options.wireProtocol,
         outboxLimits: options.outboxLimits,
+        onStorageUnavailable: options.onStorageUnavailable,
       },
     },
     {

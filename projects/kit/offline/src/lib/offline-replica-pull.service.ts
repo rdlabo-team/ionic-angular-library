@@ -75,7 +75,11 @@ export class OfflineReplicaPullService {
 
   async pull(scope: OfflineScope): Promise<void> {
     if (this.#options.mode === 'readCacheOnly') return;
-    const schemaHash = await (this.#schemaHash ??= sha256OfflineReplicaSchema(this.#options.replicaSchema));
+    const storageSchemaHash = await (this.#schemaHash ??= sha256OfflineReplicaSchema(this.#options.replicaSchema));
+    const wireProtocol = this.#options.wireProtocol ?? {
+      version: this.#options.replicaSchema.version,
+      hash: storageSchemaHash,
+    };
     let persistedCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
     let requestCursor = persistedCursor;
     let rebaselinePending = false;
@@ -84,11 +88,11 @@ export class OfflineReplicaPullService {
       const page = await this.#puller.pull({
         scope,
         cursor: requestCursor,
-        schemaVersion: this.#options.replicaSchema.version,
-        schemaHash,
+        schemaVersion: wireProtocol.version,
+        schemaHash: wireProtocol.hash,
       });
       this.#assertPullPage(page);
-      this.#assertHandshake(page.schemaVersion, page.schemaHash, schemaHash);
+      this.#assertHandshake(page.schemaVersion, page.schemaHash, wireProtocol);
       if (page.hasMore && page.nextCursor === requestCursor) {
         throw new Error(`Offline replica pull cursor did not advance for scope ${scope.userId}:${scope.scopeId}.`);
       }
@@ -476,9 +480,13 @@ export class OfflineReplicaPullService {
     }
   }
 
-  #assertHandshake(version: number, hash: string, expectedHash: string): void {
-    if (version !== this.#options.replicaSchema.version || hash !== expectedHash) {
-      throw new OfflineReplicaSchemaMismatchError(this.#options.replicaSchema.version, expectedHash, version, hash);
+  #assertHandshake(
+    version: number,
+    hash: string,
+    expected: { readonly version: number; readonly hash: string },
+  ): void {
+    if (version !== expected.version || hash !== expected.hash) {
+      throw new OfflineReplicaSchemaMismatchError(expected.version, expected.hash, version, hash);
     }
   }
 

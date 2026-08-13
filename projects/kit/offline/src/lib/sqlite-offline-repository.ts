@@ -45,6 +45,7 @@ import {
   type OfflineReplicaTransaction,
   type OfflineScope,
 } from './offline-repository';
+import { OfflineStorageUnavailableError } from './offline-storage';
 
 /** Minimal native SQLite driver surface required by the offline repository. */
 export interface CommunitySqliteDriver {
@@ -445,41 +446,51 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async #open(): Promise<void> {
-    if (!this.#sqlite) throw new Error('Native offline storage requires a community SQLite connection');
-    const { databaseId } = await this.#sqlite.open({
-      databaseName: this.#options.databaseName,
-      createEncryptionKey: this.#options.createEncryptionKey,
-    });
-    this.#databaseId = databaseId;
-    for (const statement of SCHEMA) await this.#execute(databaseId, statement);
-    const commandColumns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_sync_commands)');
-    if (!commandColumns.some((row) => row['name'] === 'optimistic_companions_json')) {
-      await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT');
-    }
-    if (!commandColumns.some((row) => row['name'] === 'server_commit_unknown')) {
-      await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN server_commit_unknown INTEGER NOT NULL DEFAULT 0');
-      await this.#execute(
-        databaseId,
-        `UPDATE offline_sync_commands SET server_commit_unknown = 1
-         WHERE state IN ('sending', 'retry_wait')
-            OR (attempts >= 2 AND state IN ('blocked_auth', 'conflict', 'rejected'))`,
-      );
-    }
-    const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
-    if (metadata.length === 0) {
-      await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [
-        OFFLINE_SCHEMA_VERSION,
-      ]);
-    } else {
-      const storedVersion = this.#number(metadata[0]!['schema_version']);
-      if (storedVersion !== OFFLINE_SCHEMA_VERSION) {
-        throw new Error(
-          `Unsupported offline storage schema version ${storedVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
-            'A lossless core schema migration is required before this database can be opened.',
+    try {
+      if (!this.#sqlite) {
+        throw new OfflineStorageUnavailableError(
+          'storage_unavailable',
+          'Native offline storage requires a community SQLite connection',
         );
       }
+      const { databaseId } = await this.#sqlite.open({
+        databaseName: this.#options.databaseName,
+        createEncryptionKey: this.#wrapCreateEncryptionKey(this.#options.createEncryptionKey),
+      });
+      this.#databaseId = databaseId;
+      for (const statement of SCHEMA) await this.#execute(databaseId, statement);
+      const commandColumns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_sync_commands)');
+      if (!commandColumns.some((row) => row['name'] === 'optimistic_companions_json')) {
+        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN optimistic_companions_json TEXT');
+      }
+      if (!commandColumns.some((row) => row['name'] === 'server_commit_unknown')) {
+        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN server_commit_unknown INTEGER NOT NULL DEFAULT 0');
+        await this.#execute(
+          databaseId,
+          `UPDATE offline_sync_commands SET server_commit_unknown = 1
+         WHERE state IN ('sending', 'retry_wait')
+            OR (attempts >= 2 AND state IN ('blocked_auth', 'conflict', 'rejected'))`,
+        );
+      }
+      const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
+      if (metadata.length === 0) {
+        await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [
+          OFFLINE_SCHEMA_VERSION,
+        ]);
+      } else {
+        const storedVersion = this.#number(metadata[0]!['schema_version']);
+        if (storedVersion !== OFFLINE_SCHEMA_VERSION) {
+          throw new OfflineStorageUnavailableError(
+            'core_schema_incompatible',
+            `Unsupported offline storage schema version ${storedVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
+              'A lossless core schema migration is required before this database can be opened.',
+          );
+        }
+      }
+      await this.#initializeReplicaSchema(databaseId);
+    } catch (error) {
+      throw this.#mapInitializationError(error);
     }
-    await this.#initializeReplicaSchema(databaseId);
   }
 
   async #initializeReplicaSchema(databaseId: string): Promise<void> {
@@ -503,13 +514,15 @@ export class SqliteOfflineRepository implements OfflineRepository {
     }
 
     if (storedVersion === targetVersion) {
-      throw new Error(
+      throw new OfflineStorageUnavailableError(
+        'replica_schema_mismatch',
         `Offline replica schema hash mismatch at version ${targetVersion}. Reinstall the application or bump replicaSchema.version after intentional schema changes.`,
       );
     }
 
     if (storedVersion > targetVersion) {
-      throw new Error(
+      throw new OfflineStorageUnavailableError(
+        'replica_schema_mismatch',
         `Offline replica schema version ${storedVersion} is newer than application version ${targetVersion}. Upgrade the application before opening this database.`,
       );
     }
@@ -518,7 +531,10 @@ export class SqliteOfflineRepository implements OfflineRepository {
       for (let version = storedVersion; version < targetVersion; version++) {
         const migration = bundle.migrations.find((candidate) => candidate.fromVersion === version);
         if (!migration) {
-          throw new Error(`Missing offline replica schema migration from version ${version} to ${version + 1}.`);
+          throw new OfflineStorageUnavailableError(
+            'migration_missing',
+            `Missing offline replica schema migration from version ${version} to ${version + 1}.`,
+          );
         }
         for (const statement of migration.statements) {
           await this.#execute(databaseId, statement);
@@ -526,6 +542,42 @@ export class SqliteOfflineRepository implements OfflineRepository {
       }
       await this.#executeReplicaCreateStatements(databaseId, bundle);
       await this.#upsertReplicaSchemaMetadata(databaseId, targetVersion, targetHash);
+    });
+  }
+
+  #wrapCreateEncryptionKey(
+    createEncryptionKey: (() => Promise<string>) | undefined,
+  ): (() => Promise<string>) | undefined {
+    if (!createEncryptionKey) return undefined;
+    return async () => {
+      try {
+        const encryptionKey = await createEncryptionKey();
+        if (!encryptionKey) {
+          throw new OfflineStorageUnavailableError(
+            'encryption_key_unavailable',
+            'Native offline storage requires a non-empty encryption key on first open',
+          );
+        }
+        return encryptionKey;
+      } catch (error) {
+        if (error instanceof OfflineStorageUnavailableError) throw error;
+        throw new OfflineStorageUnavailableError(
+          'encryption_key_unavailable',
+          error instanceof Error ? error.message : 'Offline encryption key is unavailable.',
+          { cause: error },
+        );
+      }
+    };
+  }
+
+  #mapInitializationError(error: unknown): OfflineStorageUnavailableError {
+    if (error instanceof OfflineStorageUnavailableError) return error;
+    const message = error instanceof Error ? error.message : 'Offline storage is unavailable.';
+    if (message.includes('non-empty encryption key on first open')) {
+      return new OfflineStorageUnavailableError('encryption_key_unavailable', message, { cause: error });
+    }
+    return new OfflineStorageUnavailableError('storage_unavailable', message || 'Offline storage is unavailable.', {
+      cause: error,
     });
   }
 
