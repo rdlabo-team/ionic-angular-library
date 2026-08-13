@@ -35,18 +35,23 @@ export type OfflineCommandTarget =
 export interface OfflineCommandExecutor {
   /** Sends the command using `command.commandId` as its durable server-side idempotency key. */
   execute(command: OfflineCommand, target: OfflineCommandTarget): Promise<OfflineCommandResult>;
-  withServerRevision(command: OfflineCommand, revision: string | number): OfflineCommand;
   /**
    * Whether this transport error authoritatively proves that this idempotency
    * key did not commit. Returning true may clear an ambiguity retained from an
    * earlier response-loss attempt and expose normal conflict resolution.
    */
   provesCommandNotCommitted?(error: unknown, command: OfflineCommand): boolean;
-  /**
-   * Removes the deleted remote row's revision from a queued recreate.
-   * Required only when `clearRemoteId` completes while later commands remain.
-   */
-  withoutServerRevision?(command: OfflineCommand): OfflineCommand;
+}
+
+/**
+ * Returns a command whose only changed field is `baseRevision`.
+ *
+ * Payload and every other field are copied unchanged. Kit uses this when a
+ * newer server revision is known, and passes `null` after a generated remote
+ * identity is released.
+ */
+export function offlineCommandWithBaseRevision(command: OfflineCommand, baseRevision: string | number | null): OfflineCommand {
+  return { ...command, baseRevision };
 }
 
 /** DI token for the product-specific command transport adapter. */

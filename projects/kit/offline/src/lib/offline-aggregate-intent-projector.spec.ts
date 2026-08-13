@@ -147,7 +147,6 @@ describe('OfflineAggregateIntentProjector', () => {
         identity: { kind: 'generated' as const, localId: 'item-1' },
         operation: 'items.absolute',
         payload: {},
-        payloadHash: 'hash',
         baseRevision: 1,
         state: 'pending' as const,
         attempts: 0,
@@ -268,7 +267,6 @@ describe('OfflineAggregateIntentProjector', () => {
             provide: OFFLINE_COMMAND_EXECUTOR,
             useValue: {
               execute: vi.fn(async () => ({ response: null })),
-              withServerRevision: (command: OfflineCommand) => command,
             },
           },
           {

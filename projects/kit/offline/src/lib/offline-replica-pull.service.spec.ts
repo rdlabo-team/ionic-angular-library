@@ -165,10 +165,6 @@ describe('OfflineReplicaPullService', () => {
           provide: OFFLINE_COMMAND_EXECUTOR,
           useValue: {
             execute: vi.fn(),
-            withServerRevision: (command: OfflineCommand, revision: string | number) => ({
-              ...command,
-              baseRevision: revision,
-            }),
           },
         },
         {
@@ -327,7 +323,6 @@ describe('OfflineReplicaPullService', () => {
           identity: { kind: 'generated', localId: 'shared' },
           operation: 'test_items.update',
           payload: { title: 'Optimistic' },
-          payloadHash: 'hash',
           baseRevision: 1,
           state: 'pending',
           attempts: 0,
@@ -469,7 +464,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: 'race-local' },
             operation: 'test_items.update',
             payload: { title: 'Optimistic edit' },
-            payloadHash: 'hash',
             baseRevision: 2,
             state: 'pending',
             attempts: 0,
@@ -848,7 +842,6 @@ describe('OfflineReplicaPullService', () => {
           identity: { kind: 'generated', localId: '019d-pending' },
           operation: 'test_items.update',
           payload: { title: 'Optimistic draft' },
-          payloadHash: 'hash',
           baseRevision: 2,
           state: 'pending',
           attempts: 0,
@@ -894,7 +887,6 @@ describe('OfflineReplicaPullService', () => {
           identity: { kind: 'generated', localId: '019d-conflict' },
           operation: 'test_items.update',
           payload: { title: 'Local edit' },
-          payloadHash: 'hash',
           baseRevision: 1,
           state: 'pending',
           attempts: 0,
@@ -958,7 +950,6 @@ describe('OfflineReplicaPullService', () => {
           operation: 'test_items.update',
           payload: { title: 'Local delta' },
           localOnlyFootprint: [view],
-          payloadHash: 'hash',
           baseRevision: 1,
           state: 'pending',
           attempts: 0,
@@ -996,6 +987,16 @@ describe('OfflineReplicaPullService', () => {
   });
 
   it('remote tombstone conflictはpending commandをremote_deleted conflictへ遷移する', async () => {
+    const derived: OfflineReplicaRow = {
+      ...scope,
+      sourceKey: 'test_views',
+      identity: { kind: 'local', localId: 'view-42' },
+      values: { title: 'Pending delete' },
+      confirmedValues: { title: 'Confirmed' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'pending',
+    };
     await repository.transactReplica({
       putRows: [
         {
@@ -1008,6 +1009,7 @@ describe('OfflineReplicaPullService', () => {
           fetchedAt: 1,
           syncState: 'pending',
         },
+        derived,
       ],
       putCommands: [
         {
@@ -1018,7 +1020,7 @@ describe('OfflineReplicaPullService', () => {
           identity: { kind: 'generated', localId: '019d-tombstone' },
           operation: 'test_items.delete',
           payload: { title: 'Pending delete' },
-          payloadHash: 'hash',
+          localOnlyFootprint: [derived],
           baseRevision: 1,
           state: 'pending',
           attempts: 0,
@@ -1028,6 +1030,7 @@ describe('OfflineReplicaPullService', () => {
         },
       ],
     });
+    projector.project.mockResolvedValueOnce({ removeRows: [derived] });
     pull.mockResolvedValueOnce(page([itemChange(42, 'Confirmed', { deleted: true, serverRevision: 2 })], { nextCursor: 'cursor-v1' }));
 
     await service.pull(scope);
@@ -1046,6 +1049,12 @@ describe('OfflineReplicaPullService', () => {
       }),
     ]);
     expect(await repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).not.toBeNull();
+    await expect(repository.getReplicaRow(scope, 'test_views', derived.identity)).resolves.toMatchObject({
+      values: { title: 'Pending delete' },
+      confirmedValues: null,
+      syncState: 'conflict',
+    });
+    await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-v1' });
   });
 
   describe('lost ACK correlation', () => {
@@ -1072,7 +1081,6 @@ describe('OfflineReplicaPullService', () => {
             identity: generatedCommandIdentity(localId),
             operation: 'test_items.create',
             payload: { title: 'Draft create' },
-            payloadHash: 'hash',
             baseRevision: null,
             state: 'pending',
             attempts: 0,
@@ -1162,7 +1170,6 @@ describe('OfflineReplicaPullService', () => {
             operation: 'test_items.delete',
             payload: {},
             replicaMutation: 'delete',
-            payloadHash: 'hash',
             baseRevision: 1,
             state: 'awaiting_pull',
             attempts: 1,
@@ -1217,7 +1224,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-update' },
             operation: 'test_items.update',
             payload: { title: 'First edit' },
-            payloadHash: 'hash-1',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1233,7 +1239,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-update' },
             operation: 'test_items.update',
             payload: { title: 'Follow-up edit' },
-            payloadHash: 'hash-2',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1286,7 +1291,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-delete-ack' },
             operation: 'test_items.delete',
             payload: { title: 'Pending delete' },
-            payloadHash: 'hash',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1307,6 +1311,56 @@ describe('OfflineReplicaPullService', () => {
       expect(await repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-delete-ack'))).toBeNull();
       expect(await repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).toBeNull();
       expect(await repository.getCommands(scope)).toEqual([]);
+    });
+
+    it('delete ACKは同じaggregateのfollowing commandをremote_deleted conflictへ遷移する', async () => {
+      const base: OfflineReplicaRow = {
+        ...scope,
+        sourceKey: 'test_items',
+        identity: { kind: 'generated', localId: '019d-delete-following', remoteId: 42 },
+        values: { id: 42, title: 'Following upsert' },
+        confirmedValues: { id: 42, title: 'Confirmed' },
+        serverRevision: 1,
+        fetchedAt: 1,
+        syncState: 'pending',
+      };
+      const command = (commandId: string, operation: string, createdAt: number): OfflineCommand => ({
+        ...scope,
+        commandId,
+        aggregateType: 'test_items',
+        sourceKey: 'test_items',
+        identity: { kind: 'generated', localId: '019d-delete-following' },
+        operation,
+        payload: { title: operation.endsWith('delete') ? 'Pending delete' : 'Following upsert' },
+        replicaMutation: operation.endsWith('delete') ? 'delete' : 'upsert',
+        baseRevision: 1,
+        state: 'pending',
+        attempts: 0,
+        retryAt: null,
+        createdAt,
+        lastErrorCode: null,
+      });
+      await repository.transactReplica({
+        putRows: [base],
+        putCommands: [command('cmd-delete-ack', 'test_items.delete', 1), command('cmd-following-upsert', 'test_items.update', 2)],
+      });
+      pull.mockResolvedValueOnce(
+        page([itemChange(42, 'Deleted', { deleted: true, serverRevision: 2, acknowledgedCommandIds: ['cmd-delete-ack'] })]),
+      );
+
+      await service.pull(scope);
+
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-delete-following'))).resolves.toMatchObject(
+        {
+          values: { title: 'Following upsert' },
+          confirmedValues: null,
+          serverRevision: 2,
+          syncState: 'conflict',
+        },
+      );
+      await expect(repository.getCommands(scope)).resolves.toEqual([
+        expect.objectContaining({ commandId: 'cmd-following-upsert', state: 'conflict', lastErrorCode: 'remote_deleted', retryAt: null }),
+      ]);
     });
 
     it('同一pageでdelete ACKの後にtombstoneが続く場合はfollowing commandをconflictにして旧baselineを残さない', async () => {
@@ -1333,7 +1387,6 @@ describe('OfflineReplicaPullService', () => {
             operation: 'test_items.delete',
             payload: { title: 'Pending delete' },
             replicaMutation: 'delete',
-            payloadHash: 'hash-delete',
             baseRevision: 1,
             state: 'pending',
             attempts: 1,
@@ -1350,7 +1403,6 @@ describe('OfflineReplicaPullService', () => {
             operation: 'test_items.update',
             payload: { title: 'Following upsert' },
             replicaMutation: 'upsert',
-            payloadHash: 'hash-following-upsert',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1407,7 +1459,6 @@ describe('OfflineReplicaPullService', () => {
             operation: 'test_items.delete',
             payload: { title: 'Pending delete' },
             replicaMutation: 'delete',
-            payloadHash: 'hash',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1475,7 +1526,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-lost-update' },
             operation: 'test_items.update',
             payload: { title: 'First edit' },
-            payloadHash: 'hash-1',
             baseRevision: 1,
             state: 'pending',
             attempts: 1,
@@ -1491,7 +1541,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-lost-update' },
             operation: 'test_items.update',
             payload: { title: 'Follow-up edit' },
-            payloadHash: 'hash-2',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1558,7 +1607,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-other-acks' },
             operation: 'test_items.update',
             payload: { title: 'Local edit' },
-            payloadHash: 'hash-local',
             baseRevision: 3,
             state: 'pending',
             attempts: 0,
@@ -1619,7 +1667,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-skip' },
             operation: 'test_items.update',
             payload: { title: 'First edit' },
-            payloadHash: 'hash-1',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1635,7 +1682,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-skip' },
             operation: 'test_items.update',
             payload: { title: 'Second edit' },
-            payloadHash: 'hash-2',
             baseRevision: 1,
             state: 'pending',
             attempts: 0,
@@ -1688,7 +1734,6 @@ describe('OfflineReplicaPullService', () => {
             identity: { kind: 'generated', localId: '019d-local-a' },
             operation: 'test_items.create',
             payload: { title: 'Pending create A' },
-            payloadHash: 'hash',
             baseRevision: null,
             state: 'pending',
             attempts: 0,
@@ -1781,7 +1826,6 @@ describe('OfflineReplicaPullService', () => {
           identity: { kind: 'generated', localId: '019d-sensitive' },
           operation: 'test_items.absolute',
           payload: { title: 'Pending absolute intent' },
-          payloadHash: 'hash',
           baseRevision: 1,
           state: 'pending',
           attempts: 0,
@@ -1881,10 +1925,6 @@ describe('OfflineReplicaPullService', () => {
           provide: OFFLINE_COMMAND_EXECUTOR,
           useValue: {
             execute: vi.fn(),
-            withServerRevision: (command: OfflineCommand, revision: string | number) => ({
-              ...command,
-              baseRevision: revision,
-            }),
           },
         },
         {

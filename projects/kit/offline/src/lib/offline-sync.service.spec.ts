@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   OFFLINE_COMMAND_EXECUTOR,
   OFFLINE_SYNC_CONTEXT,
+  offlineCommandWithBaseRevision,
   type OfflineCommandResult,
   type OfflineCommandTarget,
 } from './offline-command-executor';
@@ -93,6 +94,36 @@ const textReplicaSchema = defineOfflineReplicaSchema({
   migrations: [],
 });
 
+describe('offlineCommandWithBaseRevision', () => {
+  it('baseRevisionだけを差し替えpayloadは同一参照かつ同一JSONのまま残す', () => {
+    const payload = { title: 'unchanged', nested: { n: 1 } };
+    const command: OfflineCommand = {
+      userId: 1,
+      scopeId: '10',
+      commandId: 'cmd-1',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'local-1' },
+      operation: 'documents.update',
+      payload,
+      baseRevision: 1,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    };
+    const updated = offlineCommandWithBaseRevision(command, 9);
+    expect(updated.baseRevision).toBe(9);
+    expect(updated.payload).toBe(payload);
+    expect(JSON.stringify(updated.payload)).toBe(JSON.stringify(payload));
+    const cleared = offlineCommandWithBaseRevision(updated, null);
+    expect(cleared.baseRevision).toBeNull();
+    expect(cleared.payload).toBe(payload);
+    expect(JSON.stringify(cleared.payload)).toBe(JSON.stringify(payload));
+  });
+});
+
 describe('OfflineSyncService', () => {
   let service: OfflineSyncService;
   let commands: OfflineCommand[];
@@ -109,9 +140,9 @@ describe('OfflineSyncService', () => {
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
   let onCommandRemoved: ReturnType<typeof vi.fn<(command: OfflineCommand) => Promise<void>>>;
   let options: OfflineKitOptions;
-  const execute = vi.fn(
-    async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({ response: null }),
-  );
+  const execute = vi.fn(async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({
+    response: null,
+  }));
   const provesCommandNotCommitted = vi.fn((_error: unknown, _command: OfflineCommand) => false);
 
   function expectAwaitingPull(count = commands.length): void {
@@ -326,8 +357,6 @@ describe('OfflineSyncService', () => {
           useValue: {
             execute,
             provesCommandNotCommitted,
-            withServerRevision: (command: OfflineCommand) => command,
-            withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
           },
         },
         { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
@@ -1452,8 +1481,6 @@ describe('OfflineSyncService', () => {
           useValue: {
             execute,
             provesCommandNotCommitted,
-            withServerRevision: (command: OfflineCommand) => command,
-            withoutServerRevision: (command: OfflineCommand) => ({ ...command, baseRevision: null }),
           },
         },
         { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
@@ -2144,7 +2171,6 @@ describe('OfflineSyncService', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'documents.create',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'sending',
       attempts: 1,
@@ -2180,7 +2206,6 @@ describe('OfflineSyncService', () => {
       identity: { kind: 'generated', localId: '019d-restart-unknown' },
       operation: 'documents.create',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'sending',
       attempts: 1,
@@ -2715,14 +2740,44 @@ describe('OfflineSyncService', () => {
     nowSpy.mockRestore();
   });
 
-  it('locale非依存のkey順で同じJSON payloadを同一hashにする', async () => {
+  it('replicaのserverRevisionが進んでもenqueue payloadは構造的に不変でbaseRevisionだけ更新する', async () => {
+    rows.push({
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: '019d-rebase-payload', remoteId: 42 },
+      values: { name: 'confirmed' },
+      confirmedValues: { name: 'confirmed' },
+      serverRevision: 4,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    });
+    const payload = { name: 'draft', expectedRevision: 1 };
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: '019d-rebase-payload' },
+        operation: 'documents.update',
+        payload,
+        baseRevision: 1,
+      },
+      { flush: false },
+    );
+    expect(commands[0]).toMatchObject({ baseRevision: 4 });
+    expect(JSON.stringify(commands[0]?.payload)).toBe(JSON.stringify(payload));
+  });
+
+  it('JSON payloadのkey順を変えずに保持する', async () => {
+    const first = { あ: 3, z: 1, ä: 2 };
+    const second = { ä: 2, あ: 3, z: 1 };
     await service.enqueue(
       {
         scopeId: '10',
         aggregateType: 'documents',
         identity: { kind: 'generated', localId: '1' },
         operation: 'documents.upsert',
-        payload: { あ: 3, z: 1, ä: 2 },
+        payload: first,
       },
       { flush: false },
     );
@@ -2732,14 +2787,15 @@ describe('OfflineSyncService', () => {
         aggregateType: 'documents',
         identity: { kind: 'generated', localId: '2' },
         operation: 'documents.upsert',
-        payload: { ä: 2, あ: 3, z: 1 },
+        payload: second,
       },
       { flush: false },
     );
-    expect(service.pendingCommands()[0]?.payloadHash).toBe(service.pendingCommands()[1]?.payloadHash);
+    expect(JSON.stringify(service.pendingCommands()[0]?.payload)).toBe(JSON.stringify(first));
+    expect(JSON.stringify(service.pendingCommands()[1]?.payload)).toBe(JSON.stringify(second));
   });
 
-  it('JSON外payloadを衝突するhashへ変換せずrejectする', async () => {
+  it('JSON外payloadをrejectする', async () => {
     await expect(
       service.enqueue(
         {
@@ -2933,7 +2989,6 @@ describe('OfflineSyncService', () => {
           useValue: {
             execute,
             provesCommandNotCommitted: () => false,
-            withServerRevision: (command: OfflineCommand) => command,
           },
         },
         { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
@@ -3826,8 +3881,11 @@ describe('OfflineSyncService', () => {
     });
     connected.set(true);
 
+    const recreatePayload = { name: 'recreated', presentation: null };
     await service.flush();
 
+    expect(JSON.stringify((execute.mock.calls[1]?.[0] as OfflineCommand).payload)).toBe(JSON.stringify(recreatePayload));
+    expect((execute.mock.calls[1]?.[0] as OfflineCommand).baseRevision).toBeNull();
     expect(execute.mock.calls.map((call) => call[1])).toEqual([
       { kind: 'generated', localId: 'stable-local-id', remoteId: 42 },
       { kind: 'generated', localId: 'stable-local-id', remoteId: null },
@@ -4162,8 +4220,7 @@ describe('OfflineSyncService', () => {
       },
       { flush: false },
     );
-    const rebase = vi.spyOn(TestBed.inject(OFFLINE_COMMAND_EXECUTOR), 'withServerRevision');
-    rebase.mockClear();
+    const followingPayload = JSON.stringify(commands[1]?.payload);
     execute.mockResolvedValueOnce({
       removeReplica: true,
       clearRemoteId: true,
@@ -4173,8 +4230,8 @@ describe('OfflineSyncService', () => {
     connected.set(true);
 
     await expect(service.flush()).rejects.toThrow('Offline command cannot return serverRevision and clearRemoteId together.');
-    expect(rebase).not.toHaveBeenCalled();
     expect(commands[1]).toMatchObject({ baseRevision: 4 });
+    expect(JSON.stringify(commands[1]?.payload)).toBe(followingPayload);
   });
 
   it('pending deleteのdiscardはconfirmed baselineとpresent visibilityを復元する', async () => {
@@ -4665,10 +4722,6 @@ describe('OfflineSyncService', () => {
             provide: OFFLINE_COMMAND_EXECUTOR,
             useValue: {
               execute,
-              withServerRevision: (command: OfflineCommand, revision: string | number) => ({
-                ...command,
-                baseRevision: revision,
-              }),
             },
           },
           { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
@@ -4726,6 +4779,7 @@ describe('OfflineSyncService', () => {
         commandId: secondId,
         baseRevision: 2,
       });
+      expect(JSON.stringify((execute.mock.calls[1]?.[0] as OfflineCommand).payload)).toBe(JSON.stringify({ title: 'G11 edit' }));
       expect(
         findReplicaRow({ userId: 1, scopeId: '10' }, 'test_items', {
           kind: 'generated',

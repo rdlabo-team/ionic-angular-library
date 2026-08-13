@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
-import { OFFLINE_REPOSITORY, type OfflineScope } from './offline-repository';
+import { OFFLINE_REPOSITORY, OFFLINE_SCHEMA_VERSION, type OfflineScope } from './offline-repository';
 import { OfflineSessionService, type OfflineSessionManifest } from './offline-session.service';
 import { OfflineStorageUnavailableError } from './offline-storage';
 import { OfflineSyncService } from './offline-sync.service';
@@ -263,7 +263,7 @@ describe('OfflineCoordinatorService', () => {
   describe('storage initialization failure', () => {
     const storageError = new OfflineStorageUnavailableError(
       'core_schema_incompatible',
-      'Unsupported offline storage schema version 999; expected 2.',
+      `Unsupported offline storage schema version 999; expected ${OFFLINE_SCHEMA_VERSION}.`,
     );
 
     it('default fails closed and does not start session or sync', async () => {
