@@ -1426,16 +1426,18 @@ export class OfflineSyncService {
     serverCommitUnknown = true,
   ): Promise<void> {
     const failed = this.#failedCommand(command, error, serverCommitUnknown);
-    const current = row === undefined ? await this.#rowForCommand(command) : row;
-    if (!this.#isCurrent(generation)) return;
-    if (current) {
-      await this.#repository.transactReplica({
-        putRows: [{ ...current, syncState: this.#replicaState(failed.state) }],
-        putCommands: [failed],
-      });
-    } else {
-      await this.#repository.putCommand(failed);
-    }
+    await this.#serializeReplicaMutation(async () => {
+      const current = row === undefined ? await this.#rowForCommand(command) : row;
+      if (!this.#isCurrent(generation)) return;
+      if (current) {
+        await this.#repository.transactReplica({
+          putRows: [{ ...current, syncState: this.#replicaState(failed.state) }],
+          putCommands: [failed],
+        });
+      } else {
+        await this.#repository.putCommand(failed);
+      }
+    });
     if (!this.#isCurrent(generation)) return;
     if (failed.state === 'retry_wait') this.#scheduleRetry(failed.retryAt);
     await this.#refreshState(generation);
