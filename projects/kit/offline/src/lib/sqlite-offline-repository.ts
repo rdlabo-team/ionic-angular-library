@@ -45,6 +45,7 @@ import {
   type OfflineReplicaTransaction,
   type OfflineScope,
 } from './offline-repository';
+import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
 import { OfflineStorageUnavailableError } from './offline-storage';
 
 /** Minimal native SQLite driver surface required by the offline repository. */
@@ -211,6 +212,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   #activeReaders = 0;
   #readersIdle: Promise<void> = Promise.resolve();
   #resolveReadersIdle: (() => void) | null = null;
+  #atomicMutationRevision: number | null = null;
+  #atomicMutationCommitted = false;
+  #atomicOperations: Promise<void> = Promise.resolve();
 
   initialize(): Promise<void> {
     this.#initialization ??= this.#open();
@@ -288,10 +292,6 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#withCommittedRead(() => this.#readReplicaCursor(scope));
   }
 
-  async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
-    return this.#withCommittedRead(() => this.#readReconciliationScopes(userId));
-  }
-
   async getPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
     return this.#withCommittedRead(() => this.#readPullAttentions(userId));
   }
@@ -305,7 +305,34 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T> {
-    return this.#withCommittedRead(() => read(this.#reader()));
+    if (this.#atomicMutationRevision !== null) {
+      return this.#queueAtomicOperation(async () => this.#nativeTransaction(await this.#databaseConnection(), () => read(this.#reader())));
+    }
+    return this.#transaction(() => read(this.#reader()));
+  }
+
+  async [OFFLINE_REPOSITORY_ATOMIC_MUTATION]<T>(operation: () => Promise<T>): Promise<T> {
+    await this.initialize();
+    await this.#writes;
+    if (this.#atomicMutationRevision !== null) {
+      throw new Error('Nested offline replica atomic mutations are not supported.');
+    }
+    this.#beginReaders();
+    const databaseId = await this.#databaseConnection();
+    this.#atomicOperations = Promise.resolve();
+    this.#atomicMutationCommitted = false;
+    this.#atomicMutationRevision = await this.#nativeTransaction(databaseId, () => this.#dataVersion(databaseId));
+    try {
+      const result = await operation();
+      await this.#atomicOperations;
+      if (!this.#atomicMutationCommitted) {
+        await this.#queueAtomicOperation(() => this.#atomicTransaction(databaseId, async () => undefined, false));
+      }
+      return result;
+    } finally {
+      this.#atomicMutationRevision = null;
+      this.#endReaders();
+    }
   }
 
   async putCommand(command: OfflineCommand): Promise<void> {
@@ -381,68 +408,57 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async transactReplica(transaction: OfflineReplicaTransaction): Promise<void> {
     for (const row of transaction.putRows ?? []) this.#validateReplicaRow(row);
-    await this.#transaction(async (databaseId) => {
-      const releases = new Map<string, OfflineReplicaRemoteIdRelease>();
-      for (const release of transaction.releaseRemoteIds ?? []) {
-        this.#assertValidReleaseRemoteId(release.remoteId);
-        const key = this.#replicaRowKey(release);
-        if (releases.has(key)) {
-          throw new Error(
-            `Offline replica remoteId release is duplicated for ${release.sourceKey}/${canonicalOfflineReplicaIdentity(release.identity)}.`,
-          );
-        }
-        releases.set(key, release);
-      }
-      const consumedReleases = new Set<string>();
-      for (const row of transaction.putRows ?? []) {
-        const key = this.#replicaRowKey(row);
-        const release = releases.get(key);
-        await this.#putReplicaRow(databaseId, row, release);
-        if (release) consumedReleases.add(key);
-      }
-      if (consumedReleases.size !== releases.size) {
-        throw new Error('Offline replica remoteId release must match an existing row in putRows.');
-      }
-      for (const row of transaction.removeRows ?? []) await this.#removeReplicaRow(databaseId, row);
-      for (const command of transaction.putCommands ?? []) await this.#putCommand(databaseId, command);
-      for (const commandId of transaction.removeCommandIds ?? []) {
-        await this.#execute(databaseId, 'DELETE FROM offline_sync_commands WHERE command_id = ?', [commandId]);
-      }
-      for (const cursor of transaction.putCursors ?? []) await this.#putReplicaCursor(databaseId, cursor);
-      for (const scope of transaction.putReconciliationScopes ?? []) {
-        await this.#execute(
-          databaseId,
-          `INSERT INTO offline_reconciliation_scopes (user_id, scope_id) VALUES (?, ?)
-           ON CONFLICT(user_id, scope_id) DO NOTHING`,
-          [canonicalOfflinePrincipalId(scope.userId), scope.scopeId],
+    const apply = (databaseId: string): Promise<void> => this.#applyReplicaTransaction(databaseId, transaction);
+    await this.#transaction(apply);
+  }
+
+  async #applyReplicaTransaction(databaseId: string, transaction: OfflineReplicaTransaction): Promise<void> {
+    const releases = new Map<string, OfflineReplicaRemoteIdRelease>();
+    for (const release of transaction.releaseRemoteIds ?? []) {
+      this.#assertValidReleaseRemoteId(release.remoteId);
+      const key = this.#replicaRowKey(release);
+      if (releases.has(key)) {
+        throw new Error(
+          `Offline replica remoteId release is duplicated for ${release.sourceKey}/${canonicalOfflineReplicaIdentity(release.identity)}.`,
         );
       }
-      for (const scope of transaction.removeReconciliationScopes ?? []) {
-        await this.#execute(databaseId, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', [
-          canonicalOfflinePrincipalId(scope.userId),
-          scope.scopeId,
-        ]);
-      }
-      for (const attention of transaction.putPullAttentions ?? []) {
-        await this.#execute(
-          databaseId,
-          `INSERT INTO offline_pull_attentions (user_id, scope_id, reason, status) VALUES (?, ?, ?, ?)
+      releases.set(key, release);
+    }
+    const consumedReleases = new Set<string>();
+    for (const row of transaction.putRows ?? []) {
+      const key = this.#replicaRowKey(row);
+      const release = releases.get(key);
+      await this.#putReplicaRow(databaseId, row, release);
+      if (release) consumedReleases.add(key);
+    }
+    if (consumedReleases.size !== releases.size) {
+      throw new Error('Offline replica remoteId release must match an existing row in putRows.');
+    }
+    for (const row of transaction.removeRows ?? []) await this.#removeReplicaRow(databaseId, row);
+    for (const command of transaction.putCommands ?? []) await this.#putCommand(databaseId, command);
+    for (const commandId of transaction.removeCommandIds ?? []) {
+      await this.#execute(databaseId, 'DELETE FROM offline_sync_commands WHERE command_id = ?', [commandId]);
+    }
+    for (const cursor of transaction.putCursors ?? []) await this.#putReplicaCursor(databaseId, cursor);
+    for (const attention of transaction.putPullAttentions ?? []) {
+      await this.#execute(
+        databaseId,
+        `INSERT INTO offline_pull_attentions (user_id, scope_id, reason, status) VALUES (?, ?, ?, ?)
            ON CONFLICT(user_id, scope_id) DO UPDATE SET reason = excluded.reason, status = excluded.status`,
-          [
-            canonicalOfflinePrincipalId(attention.userId),
-            attention.scopeId,
-            attention.reason,
-            attention.status === undefined ? null : attention.status,
-          ],
-        );
-      }
-      for (const scope of transaction.removePullAttentions ?? []) {
-        await this.#execute(databaseId, 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', [
-          canonicalOfflinePrincipalId(scope.userId),
-          scope.scopeId,
-        ]);
-      }
-    });
+        [
+          canonicalOfflinePrincipalId(attention.userId),
+          attention.scopeId,
+          attention.reason,
+          attention.status === undefined ? null : attention.status,
+        ],
+      );
+    }
+    for (const scope of transaction.removePullAttentions ?? []) {
+      await this.#execute(databaseId, 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', [
+        canonicalOfflinePrincipalId(scope.userId),
+        scope.scopeId,
+      ]);
+    }
   }
 
   async #open(): Promise<void> {
@@ -580,11 +596,12 @@ export class SqliteOfflineRepository implements OfflineRepository {
     );
   }
 
-  async #nativeTransaction(databaseId: string, run: () => Promise<void>): Promise<void> {
+  async #nativeTransaction<T>(databaseId: string, run: () => Promise<T>): Promise<T> {
     await this.#sqlite!.beginTransaction({ databaseId });
     try {
-      await run();
+      const result = await run();
       await this.#sqlite!.commitTransaction({ databaseId });
+      return result;
     } catch (error) {
       await this.#sqlite!.rollbackTransaction({ databaseId });
       throw error;
@@ -674,13 +691,6 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return { ...scope, cursor: this.#string(row['cursor']) };
   }
 
-  async #readReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
-    const rows = await this.#query('SELECT scope_id FROM offline_reconciliation_scopes WHERE user_id = ? ORDER BY scope_id', [
-      canonicalOfflinePrincipalId(userId),
-    ]);
-    return rows.map((row) => ({ userId, scopeId: this.#string(row['scope_id']) }));
-  }
-
   async #readPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
     const rows = await this.#query('SELECT scope_id, reason, status FROM offline_pull_attentions WHERE user_id = ? ORDER BY scope_id', [
       canonicalOfflinePrincipalId(userId),
@@ -735,7 +745,6 @@ export class SqliteOfflineRepository implements OfflineRepository {
       },
       getReplicaRowByRemoteIdentity: (scope, sourceKey, identity) => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity),
       getReplicaCursor: (scope) => this.#readReplicaCursor(scope),
-      getReconciliationScopes: (userId) => this.#readReconciliationScopes(userId),
       getPullAttentions: (userId) => this.#readPullAttentions(userId),
       getCommands: (scope) => this.#readCommands(scope),
       getCommandsForUser: (userId) => this.#readCommandsForUser(userId),
@@ -744,6 +753,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async #withCommittedRead<T>(operation: () => Promise<T>): Promise<T> {
     await this.initialize();
+    if (this.#atomicMutationRevision !== null) {
+      return this.#queueAtomicOperation(operation);
+    }
     await this.#writes;
     this.#beginReaders();
     try {
@@ -780,6 +792,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   #queueWrite(run: (databaseId: string) => Promise<void>): Promise<void> {
+    if (this.#atomicMutationRevision !== null) {
+      return this.#queueAtomicOperation(async () => this.#atomicTransaction(await this.#databaseConnection(), run));
+    }
     const write = this.#writes.then(async (): Promise<void> => {
       if (this.#activeReaders > 0) await this.#readersIdle;
       await run(await this.#databaseConnection());
@@ -788,21 +803,52 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return write;
   }
 
-  #transaction(run: (databaseId: string) => Promise<void>): Promise<void> {
-    const write = this.#writes.then(async (): Promise<void> => {
+  #transaction<T>(run: (databaseId: string) => Promise<T>): Promise<T> {
+    if (this.#atomicMutationRevision !== null) {
+      return this.#queueAtomicOperation(async () => this.#atomicTransaction(await this.#databaseConnection(), run));
+    }
+    const transaction = this.#writes.then(async (): Promise<T> => {
       if (this.#activeReaders > 0) await this.#readersIdle;
       const databaseId = await this.#databaseConnection();
-      await this.#sqlite!.beginTransaction({ databaseId });
-      try {
-        await run(databaseId);
-        await this.#sqlite!.commitTransaction({ databaseId });
-      } catch (error) {
-        await this.#sqlite!.rollbackTransaction({ databaseId });
-        throw error;
-      }
+      return this.#nativeTransaction(databaseId, () => run(databaseId));
     });
-    this.#writes = write.catch((): void => undefined);
-    return write;
+    this.#writes = transaction.then(
+      () => undefined,
+      () => undefined,
+    );
+    return transaction;
+  }
+
+  async #atomicTransaction<T>(databaseId: string, run: (databaseId: string) => Promise<T>, marksCommit = true): Promise<T> {
+    const expected = this.#atomicMutationRevision;
+    if (expected === null) throw new Error('Offline replica atomic mutation is not active.');
+    const result = await this.#nativeTransaction(databaseId, async () => {
+      // A write, even when it leaves the value unchanged, obtains SQLite's
+      // RESERVED lock before the revision check. No second connection can
+      // commit between this check and the transaction commit.
+      await this.#execute(databaseId, 'UPDATE offline_metadata SET schema_version = schema_version WHERE id = 1');
+      const actual = await this.#dataVersion(databaseId);
+      if (actual !== expected) {
+        throw new Error('Offline replica changed through another SQLite connection; retry the operation from fresh state.');
+      }
+      return run(databaseId);
+    });
+    if (marksCommit) this.#atomicMutationCommitted = true;
+    return result;
+  }
+
+  #queueAtomicOperation<T>(run: () => Promise<T>): Promise<T> {
+    const operation = this.#atomicOperations.then(run);
+    this.#atomicOperations = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
+
+  async #dataVersion(databaseId: string): Promise<number> {
+    const rows = await this.#queryDatabase(databaseId, 'PRAGMA data_version');
+    return this.#number(rows[0]?.['data_version']);
   }
 
   #command(row: SQLiteRow): OfflineCommand {

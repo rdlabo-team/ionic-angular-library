@@ -162,7 +162,7 @@ export class OfflineSyncService {
   readonly #commands = signal<OfflineCommand[]>([]);
   readonly #pullAttentions = signal<OfflinePullAttention[]>([]);
   readonly #knownScopes = new Map<string, OfflineScope>();
-  /** ACKed scopes whose authoritative post-send pull has not completed yet. */
+  /** In-memory scheduling cache for scopes whose authoritative post-send pull has not completed yet. */
   readonly #pendingPullScopes = new Map<string, OfflineScope>();
   #activeUserId: OfflinePrincipalId | null = null;
   #flushPromise: Promise<void> | null = null;
@@ -176,7 +176,6 @@ export class OfflineSyncService {
   #foregroundScopePolicy: readonly string[] | null = null;
   #initialized = false;
   #lastCommandCreatedAt = 0;
-  #coldReconciliationRequired = this.#repository.getReconciliationScopes === undefined;
 
   readonly pendingCommands = this.#commands.asReadonly();
   readonly pendingCount = computed(() => this.pendingCommands().length);
@@ -870,7 +869,7 @@ export class OfflineSyncService {
   }
 
   #beginFlush(explicitFull: boolean): Promise<void> {
-    const isPartial = !explicitFull && !this.#coldReconciliationRequired && this.#foregroundScopePolicy !== null;
+    const isPartial = !explicitFull && this.#foregroundScopePolicy !== null;
     if (this.#flushPromise) {
       if (explicitFull && this.#partialFlushInFlight) {
         if (!this.#chainedFullFlush) {
@@ -1002,7 +1001,7 @@ export class OfflineSyncService {
     await this.#refreshState(generation);
     if (fatalPullFailure !== null) {
       // Auth/upgrade recovery only — never arm the 1s automatic flush retry.
-      // Post-send ACK already removed the command; reconciliation markers remain for later recovery.
+      // Transported commands remain awaiting_pull for later auth/upgrade recovery.
       // Only the owning generation may clear the timer — a stale fatal must not disarm a
       // newer session's already-armed retry_wait / post-pull retry.
       if (this.#isCurrent(generation)) this.#scheduleRetry(null);
@@ -1017,7 +1016,6 @@ export class OfflineSyncService {
       }
       throw failures[0];
     }
-    if (this.#isCurrent(generation)) this.#coldReconciliationRequired = false;
     if (this.#isCurrent(generation)) {
       for (const command of await this.#readKnownCommands()) {
         if (command.state !== 'awaiting_pull') continue;
@@ -1283,7 +1281,6 @@ export class OfflineSyncService {
           : undefined,
       removeRows: rematerialized.removeRows,
       putCommands: [awaitingPull, ...rebased],
-      putReconciliationScopes: [{ userId: command.userId, scopeId: command.scopeId }],
     });
     const scope = { userId: command.userId, scopeId: command.scopeId };
     this.#pendingPullScopes.set(this.#scopeKey(scope), scope);
@@ -1704,19 +1701,14 @@ export class OfflineSyncService {
   }
 
   async #restorePendingPullScopes(userId: OfflinePrincipalId, generation: number): Promise<void> {
-    if (!this.#repository.getReconciliationScopes) return;
-    const durableScopes = await this.#repository.getReconciliationScopes(userId);
+    const commands = await this.#readKnownCommands();
     if (!this.#isCurrent(generation) || this.#activeUserId !== userId) return;
-    const currentKeys = new Set(this.#knownScopes.keys());
     this.#pendingPullScopes.clear();
-    const revoked: OfflineScope[] = [];
-    for (const scope of durableScopes) {
+    for (const command of commands) {
+      if (command.state !== 'awaiting_pull') continue;
+      const scope = { userId: command.userId, scopeId: command.scopeId };
       const key = this.#scopeKey(scope);
-      if (scope.userId === userId && currentKeys.has(key)) this.#pendingPullScopes.set(key, scope);
-      else revoked.push(scope);
-    }
-    if (revoked.length > 0) {
-      await this.#repository.transactReplica({ removeReconciliationScopes: revoked });
+      this.#pendingPullScopes.set(key, scope);
     }
   }
 
@@ -1734,7 +1726,6 @@ export class OfflineSyncService {
   async #markScopeReconciled(scope: OfflineScope, generation: number): Promise<void> {
     if (!this.#isCurrent(generation)) return;
     await this.#repository.transactReplica({
-      removeReconciliationScopes: [scope],
       removePullAttentions: [scope],
     });
     if (!this.#isCurrent(generation)) return;

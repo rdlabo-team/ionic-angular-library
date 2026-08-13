@@ -128,7 +128,6 @@ describe('OfflineSyncService', () => {
   let service: OfflineSyncService;
   let commands: OfflineCommand[];
   let rows: OfflineReplicaRow[];
-  let reconciliationScopes: OfflineScope[];
   let pullAttentions: OfflinePullAttention[];
   let connected: ReturnType<typeof signal<boolean>>;
   let session: { userId: number; scopes: OfflineScope[] } | null;
@@ -140,9 +139,11 @@ describe('OfflineSyncService', () => {
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
   let onCommandRemoved: ReturnType<typeof vi.fn<(command: OfflineCommand) => Promise<void>>>;
   let options: OfflineKitOptions;
-  const execute = vi.fn(async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({
-    response: null,
-  }));
+  const execute = vi.fn(
+    async (_command: OfflineCommand, _target: OfflineCommandTarget): Promise<OfflineCommandResult> => ({
+      response: null,
+    }),
+  );
   const provesCommandNotCommitted = vi.fn((_error: unknown, _command: OfflineCommand) => false);
 
   function expectAwaitingPull(count = commands.length): void {
@@ -155,7 +156,6 @@ describe('OfflineSyncService', () => {
   beforeEach(() => {
     commands = [];
     rows = [];
-    reconciliationScopes = [];
     pullAttentions = [];
     connected = signal(false);
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
@@ -257,9 +257,6 @@ describe('OfflineSyncService', () => {
         );
       }),
       getReplicaCursor: vi.fn(async () => null),
-      getReconciliationScopes: vi.fn(async (userId: number) =>
-        reconciliationScopes.filter((scope) => scope.userId === userId).map((scope) => ({ ...scope })),
-      ),
       getPullAttentions: vi.fn(async (userId: number) =>
         pullAttentions.filter((attention) => attention.userId === userId).map((attention) => structuredClone(attention)),
       ),
@@ -275,14 +272,10 @@ describe('OfflineSyncService', () => {
       clearUser: vi.fn(async (userId: number) => {
         commands = commands.filter((item) => item.userId !== userId);
         rows = rows.filter((item) => item.userId !== userId);
-        reconciliationScopes = reconciliationScopes.filter((scope) => scope.userId !== userId);
         pullAttentions = pullAttentions.filter((attention) => attention.userId !== userId);
       }),
       clearScope: vi.fn(async (scope: OfflineScope) => {
         commands = commands.filter((item) => item.userId !== scope.userId || item.scopeId !== scope.scopeId);
-        reconciliationScopes = reconciliationScopes.filter(
-          (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
-        );
         pullAttentions = pullAttentions.filter((candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId);
       }),
       transactReplica: vi.fn(async (transaction) => {
@@ -310,17 +303,6 @@ describe('OfflineSyncService', () => {
           commands.push(structuredClone(command));
         }
         commands = commands.filter((command) => !(transaction.removeCommandIds ?? []).includes(command.commandId));
-        for (const scope of transaction.putReconciliationScopes ?? []) {
-          reconciliationScopes = reconciliationScopes.filter(
-            (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
-          );
-          reconciliationScopes.push({ ...scope });
-        }
-        for (const scope of transaction.removeReconciliationScopes ?? []) {
-          reconciliationScopes = reconciliationScopes.filter(
-            (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
-          );
-        }
         for (const attention of transaction.putPullAttentions ?? []) {
           pullAttentions = pullAttentions.filter(
             (candidate) => candidate.userId !== attention.userId || candidate.scopeId !== attention.scopeId,
@@ -1133,7 +1115,7 @@ describe('OfflineSyncService', () => {
     expect(execute).toHaveBeenCalledOnce();
   });
 
-  it('ACK後pull失敗scopeをreset後もdurable markerから復元しcommandを再送しない', async () => {
+  it('ACK後pull失敗scopeをreset後もdurable awaiting_pullから復元しcommandを再送しない', async () => {
     session = {
       userId: 1,
       scopes: [
@@ -1161,7 +1143,6 @@ describe('OfflineSyncService', () => {
     connected.set(true);
     await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(postPullError));
     expectAwaitingPull(1);
-    expect(reconciliationScopes).toEqual([{ userId: 1, scopeId: '20' }]);
 
     connected.set(false);
     await service.resetSession();
@@ -1170,7 +1151,7 @@ describe('OfflineSyncService', () => {
     await vi.waitFor(() => expect(scope20Pulls).toBe(3));
 
     expect(execute).toHaveBeenCalledOnce();
-    expect(reconciliationScopes).toEqual([]);
+    expect(commands).toEqual([expect.objectContaining({ scopeId: '20', state: 'awaiting_pull' })]);
   });
 
   it('pre-pull: 無関係なscope A失敗でも成功したscope Bのeligible aggregateは送信する', async () => {
@@ -1454,7 +1435,6 @@ describe('OfflineSyncService', () => {
       getReplicaRowByRemoteId: vi.fn(async () => null),
       getReplicaRowByRemoteIdentity: vi.fn(async () => null),
       getReplicaCursor: vi.fn(async () => null),
-      getReconciliationScopes: vi.fn(async () => []),
       getPullAttentions: vi.fn(async (userId: number) =>
         pullAttentions.filter((attention) => attention.userId === userId).map((attention) => structuredClone(attention)),
       ),
@@ -1796,14 +1776,7 @@ describe('OfflineSyncService', () => {
       const postPullScopes = [...pullsByScope.entries()].filter(([, count]) => count >= 2).map(([scopeId]) => scopeId);
       expect(postPullScopes).toHaveLength(1);
       expect([...pullsByScope.values()].reduce((sum, count) => sum + count, 0)).toBe(3);
-      // Reconciliation markers remain for later auth/upgrade recovery.
-      expect(reconciliationScopes).toEqual(
-        expect.arrayContaining([
-          { userId: 1, scopeId: '10' },
-          { userId: 1, scopeId: '20' },
-        ]),
-      );
-      expect(reconciliationScopes).toHaveLength(2);
+      expect(new Set(commands.map((command) => command.scopeId))).toEqual(new Set(['10', '20']));
       // Fatal must not arm the 1s automatic post-pull flush retry.
       expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
 
@@ -1868,7 +1841,7 @@ describe('OfflineSyncService', () => {
       expect(postPullAttempts).toBe(2);
       expect([...pullsByScope.values()].filter((count) => count >= 2)).toHaveLength(2);
       expect([...pullsByScope.values()].filter((count) => count === 1)).toHaveLength(1);
-      expect(reconciliationScopes).toHaveLength(3);
+      expect(new Set(commands.map((command) => command.scopeId))).toEqual(new Set(['10', '20', '30']));
       expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
 
       const pullsAfterFatal = pull.mock.calls.length;
@@ -2074,18 +2047,6 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toBe(lookalike);
     expect(execute).toHaveBeenCalledOnce();
     expect(execute.mock.calls[0]?.[0]).toMatchObject({ identity: { localId: 'scope-b-lookalike' } });
-  });
-
-  it('所属から外れたdurable reconciliation scopeをsession discoveryで破棄する', async () => {
-    reconciliationScopes = [{ userId: 1, scopeId: '20' }];
-    session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
-
-    await service.refreshSession(['10']);
-    expect(reconciliationScopes).toEqual([]);
-
-    connected.set(true);
-    await service.flush();
-    expect(pull).not.toHaveBeenCalledWith({ userId: 1, scopeId: '20' });
   });
 
   it('local_idを不変主キーにして送信直前に最新server_idへ解決する', async () => {
@@ -2944,7 +2905,6 @@ describe('OfflineSyncService', () => {
       getReplicaRowByRemoteId: vi.fn(async () => null),
       getReplicaRowByRemoteIdentity: vi.fn(async () => null),
       getReplicaCursor: vi.fn(async () => null),
-      getReconciliationScopes: vi.fn(async () => []),
       getPullAttentions: vi.fn(async () => []),
       transactReplica: vi.fn(async (transaction) => {
         for (const command of transaction.putCommands ?? []) {
@@ -4590,7 +4550,6 @@ describe('OfflineSyncService', () => {
       TestBed.resetTestingModule();
       commands = [];
       rows = [];
-      reconciliationScopes = [];
       pullAttentions = [];
       connected = signal(false);
       session = multiScopeSession;
@@ -4651,9 +4610,6 @@ describe('OfflineSyncService', () => {
           return row ? projectReplicaRow(row, scope) : null;
         }),
         getReplicaCursor: vi.fn(async () => null),
-        getReconciliationScopes: vi.fn(async (userId: number) =>
-          reconciliationScopes.filter((scope) => scope.userId === userId).map((scope) => ({ ...scope })),
-        ),
         getPullAttentions: vi.fn(async (userId: number) =>
           pullAttentions.filter((attention) => attention.userId === userId).map((attention) => structuredClone(attention)),
         ),
@@ -4683,17 +4639,6 @@ describe('OfflineSyncService', () => {
             commands.push(structuredClone(command));
           }
           commands = commands.filter((command) => !(transaction.removeCommandIds ?? []).includes(command.commandId));
-          for (const scope of transaction.putReconciliationScopes ?? []) {
-            reconciliationScopes = reconciliationScopes.filter(
-              (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
-            );
-            reconciliationScopes.push({ ...scope });
-          }
-          for (const scope of transaction.removeReconciliationScopes ?? []) {
-            reconciliationScopes = reconciliationScopes.filter(
-              (candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId,
-            );
-          }
           for (const attention of transaction.putPullAttentions ?? []) {
             pullAttentions = pullAttentions.filter(
               (candidate) => candidate.userId !== attention.userId || candidate.scopeId !== attention.scopeId,
