@@ -328,14 +328,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
       throw new Error('Nested offline replica atomic mutations are not supported.');
     }
     this.#beginReaders();
-    const databaseId = await this.#databaseConnection();
-    this.#atomicOperations = Promise.resolve();
-    this.#atomicMutationCommitted = false;
-    this.#atomicIdle = new Promise<void>((resolve) => {
-      this.#resolveAtomicIdle = resolve;
-    });
-    this.#atomicMutationRevision = await this.#nativeTransaction(databaseId, () => this.#dataVersion(databaseId));
     try {
+      const databaseId = await this.#databaseConnection();
+      this.#atomicOperations = Promise.resolve();
+      this.#atomicMutationCommitted = false;
+      this.#atomicIdle = new Promise<void>((resolve) => {
+        this.#resolveAtomicIdle = resolve;
+      });
+      this.#atomicMutationRevision = await this.#nativeTransaction(databaseId, () => this.#dataVersion(databaseId));
       const result = await operation(this.#atomicRepository());
       await this.#atomicOperations;
       if (!this.#atomicMutationCommitted) {

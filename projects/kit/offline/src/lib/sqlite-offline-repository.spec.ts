@@ -325,6 +325,49 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     ).toBe(false);
   });
 
+  it('initial revision read失敗後もreader leaseとwrite gateを解放する', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    const operation = vi.fn(async () => undefined);
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') throw new Error('temporary SQLite read failure');
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+
+    await expect(repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(operation)).rejects.toThrow('temporary SQLite read failure');
+    expect(operation).not.toHaveBeenCalled();
+
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };
+      return { rows: [] };
+    });
+    await expect(
+      repository.putCommand({
+        userId: 1,
+        scopeId: '10',
+        commandId: 'after-startup-failure',
+        aggregateType: 'test_items',
+        sourceKey: 'test_items',
+        identity: { kind: 'generated', localId: '019d-after-failure' },
+        operation: 'test_items.update',
+        payload: {},
+        baseRevision: null,
+        state: 'pending',
+        attempts: 0,
+        retryAt: null,
+        createdAt: 1,
+        lastErrorCode: null,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it('guarded commitはwrite lockをrevision確認より先に取得し、確認後にreplica mutationを適用する', async () => {
     plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
       if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };
