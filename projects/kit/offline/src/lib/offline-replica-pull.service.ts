@@ -114,11 +114,11 @@ export class OfflineReplicaPullService {
         continue;
       }
 
-      const applied = await this.#replicaMutations.run(async () => {
-        const currentCursor = (await this.#repository.getReplicaCursor(scope))?.cursor ?? '';
+      const applied = await this.#replicaMutations.run(async (repository) => {
+        const currentCursor = (await repository.getReplicaCursor(scope))?.cursor ?? '';
         if (currentCursor !== persistedCursor) return currentCursor;
-        const scopeCommands = await this.#repository.getCommands(scope);
-        const userCommands = this.#repository.getCommandsForUser ? await this.#repository.getCommandsForUser(scope.userId) : scopeCommands;
+        const scopeCommands = await repository.getCommands(scope);
+        const userCommands = repository.getCommandsForUser ? await repository.getCommandsForUser(scope.userId) : scopeCommands;
         const changes = this.#collapseChanges(page.changes);
         const projection = await this.#projector?.project({
           scope,
@@ -279,7 +279,7 @@ export class OfflineReplicaPullService {
               scopeCommands.find((command) => command.commandId === commandId),
           )
           .filter((command): command is OfflineCommand => command != null);
-        await this.#repository.transactReplica({
+        await repository.transactReplica({
           putRows: finalRows.putRows,
           removeRows: finalRows.removeRows,
           putCommands: [...putCommands.values()],

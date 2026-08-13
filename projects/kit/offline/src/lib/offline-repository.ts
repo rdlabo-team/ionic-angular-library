@@ -262,7 +262,7 @@ export interface OfflineRepository {
    */
   runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T>;
   /** @internal Runs one optimistic read/derive/write operation with platform-specific concurrency validation. */
-  [OFFLINE_REPOSITORY_ATOMIC_MUTATION]?<T>(operation: () => Promise<T>): Promise<T>;
+  [OFFLINE_REPOSITORY_ATOMIC_MUTATION]?<T>(operation: (repository: OfflineRepository) => Promise<T>): Promise<T>;
 }
 
 /** DI token for the selected platform repository. */
