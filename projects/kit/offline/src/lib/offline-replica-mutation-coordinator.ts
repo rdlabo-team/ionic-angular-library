@@ -15,6 +15,7 @@ import {
   type OfflineCommand,
   type OfflineReplicaRow,
   type OfflineReplicaRowKey,
+  type OfflineRepository,
   type OfflineScope,
 } from './offline-repository';
 import type { OfflineReplicaEntitySchema } from './offline-replica-schema';
@@ -36,10 +37,11 @@ export class OfflineReplicaMutationCoordinator {
   #tail: Promise<void> = Promise.resolve();
 
   /** Enqueues one local replica critical section behind any in-flight mutation. */
-  run<T>(operation: () => Promise<T>): Promise<T> {
+  run<T>(operation: (repository: OfflineRepository) => Promise<T>): Promise<T> {
     const mutation = this.#tail.then(() => {
+      if (!this.#repository) throw new Error('Offline repository is not configured.');
       const atomicMutation = this.#repository?.[OFFLINE_REPOSITORY_ATOMIC_MUTATION];
-      return atomicMutation ? (atomicMutation.call(this.#repository, operation) as Promise<T>) : operation();
+      return atomicMutation ? (atomicMutation.call(this.#repository, operation) as Promise<T>) : operation(this.#repository);
     });
     this.#tail = mutation.then(
       () => undefined,

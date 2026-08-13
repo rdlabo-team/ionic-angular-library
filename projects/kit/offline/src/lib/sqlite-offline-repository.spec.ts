@@ -13,7 +13,7 @@ import {
   text,
   type OfflineReplicaSchemaBundle,
 } from './offline-replica-schema';
-import { canonicalOfflinePrincipalId, type OfflineCommand, type OfflineReplicaRow } from './offline-repository';
+import { canonicalOfflinePrincipalId, type OfflineCommand, type OfflineReplicaRow, type OfflineRepository } from './offline-repository';
 import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
 import { generatedCommandIdentity, generatedReplicaIdentity, naturalReplicaIdentity } from './offline-test-helpers';
 import {
@@ -308,10 +308,10 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       return { rows: [] };
     });
     const repository = createRepository();
-    const operation = vi.fn(async () => {
-      await repository.getCommands({ userId: 1, scopeId: '10' });
+    const operation = vi.fn(async (owner: OfflineRepository) => {
+      await owner.getCommands({ userId: 1, scopeId: '10' });
       dataVersion = 2;
-      await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'stale' }] });
+      await owner.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'stale' }] });
     });
 
     await expect(repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(operation)).rejects.toThrow('changed through another SQLite connection');
@@ -339,8 +339,8 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     });
     const repository = createRepository();
 
-    await repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () => {
-      await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'fresh' }] });
+    await repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async (owner) => {
+      await owner.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'fresh' }] });
     });
 
     const lockCall = plugin.execute.mock.calls.find(([options]) =>
@@ -380,8 +380,8 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     const repository = createRepository();
 
     await expect(
-      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () => {
-        await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'committed' }] });
+      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async (owner) => {
+        await owner.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'committed' }] });
         dataVersion = 2;
       }),
     ).resolves.toBeUndefined();
@@ -407,15 +407,94 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     const repository = createRepository();
 
     await expect(
-      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () => {
-        await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'first' }] });
+      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async (owner) => {
+        await owner.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'first' }] });
         dataVersion = 2;
-        await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'stale-second' }] });
+        await owner.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'stale-second' }] });
       }),
     ).rejects.toThrow('changed through another SQLite connection');
 
     expect(plugin.commitTransaction).toHaveBeenCalledTimes(2);
     expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('atomic owner以外のwriteをatomic operation完了後まで待機させる', async () => {
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+    await repository.initialize();
+    plugin.execute.mockClear();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ownerCommitted = false;
+    let externalCommitted = false;
+    let external: Promise<void> = Promise.resolve();
+
+    const atomic = repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async (owner) => {
+      external = repository
+        .putCommand({
+          userId: 1,
+          scopeId: '10',
+          commandId: 'external',
+          aggregateType: 'test_items',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: '019d-external' },
+          operation: 'test_items.update',
+          payload: {},
+          baseRevision: null,
+          state: 'pending',
+          attempts: 0,
+          retryAt: null,
+          createdAt: 2,
+          lastErrorCode: null,
+        })
+        .then(() => {
+          externalCommitted = true;
+        });
+      await owner.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'owner' }] });
+      ownerCommitted = true;
+      await gate;
+    });
+
+    await vi.waitFor(() => expect(ownerCommitted).toBe(true));
+    expect(externalCommitted).toBe(false);
+    release();
+    await atomic;
+    await external;
+    expect(externalCommitted).toBe(true);
+  });
+
+  it('snapshot callbackからrepository本体を再入しても同じsnapshotで完了する', async () => {
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+    await repository.initialize();
+
+    await expect(
+      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async (owner) =>
+        owner.runReadSnapshot(() => repository.getCommands({ userId: 1, scopeId: '10' })),
+      ),
+    ).resolves.toEqual([]);
   });
 
   it('pull attentionをput/getしtransactionでupsertする', async () => {
@@ -2072,6 +2151,13 @@ describe('SqliteOfflineRepository replica rows', () => {
   }
 
   describe('runReadSnapshot', () => {
+    it('callbackからrepository本体を再入しても同じsnapshotで完了する', async () => {
+      const repository = createRepository();
+      await repository.initialize();
+
+      await expect(repository.runReadSnapshot(() => repository.getCommands({ userId: 1, scopeId: '10' }))).resolves.toEqual([]);
+    });
+
     it('open snapshot中はwriteが待機し、readerはcommit前の状態だけを見る', async () => {
       const repository = createRepository();
       await repository.initialize();

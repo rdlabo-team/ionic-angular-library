@@ -215,6 +215,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
   #atomicMutationRevision: number | null = null;
   #atomicMutationCommitted = false;
   #atomicOperations: Promise<void> = Promise.resolve();
+  #readSnapshotActive = false;
+  #atomicIdle: Promise<void> = Promise.resolve();
+  #resolveAtomicIdle: (() => void) | null = null;
 
   initialize(): Promise<void> {
     this.#initialization ??= this.#open();
@@ -306,12 +309,19 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T> {
     if (this.#atomicMutationRevision !== null) {
-      return this.#queueAtomicOperation(async () => this.#nativeTransaction(await this.#databaseConnection(), () => read(this.#reader())));
+      throw new Error('Use the repository passed to an atomic mutation for snapshot reads.');
     }
-    return this.#transaction(() => read(this.#reader()));
+    return this.#transaction(async () => {
+      this.#readSnapshotActive = true;
+      try {
+        return await read(this.#reader());
+      } finally {
+        this.#readSnapshotActive = false;
+      }
+    });
   }
 
-  async [OFFLINE_REPOSITORY_ATOMIC_MUTATION]<T>(operation: () => Promise<T>): Promise<T> {
+  async [OFFLINE_REPOSITORY_ATOMIC_MUTATION]<T>(operation: (repository: OfflineRepository) => Promise<T>): Promise<T> {
     await this.initialize();
     await this.#writes;
     if (this.#atomicMutationRevision !== null) {
@@ -321,9 +331,12 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const databaseId = await this.#databaseConnection();
     this.#atomicOperations = Promise.resolve();
     this.#atomicMutationCommitted = false;
+    this.#atomicIdle = new Promise<void>((resolve) => {
+      this.#resolveAtomicIdle = resolve;
+    });
     this.#atomicMutationRevision = await this.#nativeTransaction(databaseId, () => this.#dataVersion(databaseId));
     try {
-      const result = await operation();
+      const result = await operation(this.#atomicRepository());
       await this.#atomicOperations;
       if (!this.#atomicMutationCommitted) {
         await this.#queueAtomicOperation(() => this.#atomicTransaction(databaseId, async () => undefined, false));
@@ -332,6 +345,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
     } finally {
       this.#atomicMutationRevision = null;
       this.#endReaders();
+      this.#resolveAtomicIdle?.();
+      this.#resolveAtomicIdle = null;
+      this.#atomicIdle = Promise.resolve();
     }
   }
 
@@ -368,42 +384,46 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async clearUser(userId: OfflinePrincipalId): Promise<void> {
-    await this.#transaction(async (database) => {
-      const principal = canonicalOfflinePrincipalId(userId);
-      await this.#execute(database, 'DELETE FROM offline_session_manifests WHERE user_id = ?', [principal]);
-      await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ?', [principal]);
-      await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ?', [principal]);
-      await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ?', [principal]);
-      await this.#execute(database, 'DELETE FROM offline_pull_attentions WHERE user_id = ?', [principal]);
-      for (const entity of this.#options.replicaSchema.entities) {
-        await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ?`, [principal]);
-      }
-      await this.#execute(database, 'UPDATE offline_metadata SET last_user_id = NULL WHERE id = 1 AND last_user_id = ?', [principal]);
-    });
+    await this.#transaction((database) => this.#clearUser(database, userId));
+  }
+
+  async #clearUser(database: string, userId: OfflinePrincipalId): Promise<void> {
+    const principal = canonicalOfflinePrincipalId(userId);
+    await this.#execute(database, 'DELETE FROM offline_session_manifests WHERE user_id = ?', [principal]);
+    await this.#execute(database, 'DELETE FROM offline_sync_commands WHERE user_id = ?', [principal]);
+    await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ?', [principal]);
+    await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ?', [principal]);
+    await this.#execute(database, 'DELETE FROM offline_pull_attentions WHERE user_id = ?', [principal]);
+    for (const entity of this.#options.replicaSchema.entities) {
+      await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ?`, [principal]);
+    }
+    await this.#execute(database, 'UPDATE offline_metadata SET last_user_id = NULL WHERE id = 1 AND last_user_id = ?', [principal]);
   }
 
   async clearScope(scope: OfflineScope): Promise<void> {
-    await this.#transaction(async (database) => {
-      const values = [canonicalOfflinePrincipalId(scope.userId), scope.scopeId];
-      const partitionSourceKeys = this.#options.replicaSchema.entities
-        .filter((entity) => entity.scope === 'partition')
-        .map((entity) => entity.sourceKey);
-      if (partitionSourceKeys.length > 0) {
-        await this.#execute(
-          database,
-          `DELETE FROM offline_sync_commands
+    await this.#transaction((database) => this.#clearScope(database, scope));
+  }
+
+  async #clearScope(database: string, scope: OfflineScope): Promise<void> {
+    const values = [canonicalOfflinePrincipalId(scope.userId), scope.scopeId];
+    const partitionSourceKeys = this.#options.replicaSchema.entities
+      .filter((entity) => entity.scope === 'partition')
+      .map((entity) => entity.sourceKey);
+    if (partitionSourceKeys.length > 0) {
+      await this.#execute(
+        database,
+        `DELETE FROM offline_sync_commands
            WHERE user_id = ? AND scope_id = ? AND source_key IN (${partitionSourceKeys.map(() => '?').join(', ')})`,
-          [...values, ...partitionSourceKeys],
-        );
-      }
-      await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', values);
-      await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', values);
-      await this.#execute(database, 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', values);
-      for (const entity of this.#options.replicaSchema.entities) {
-        if (entity.scope !== 'partition') continue;
-        await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_scope_id = ?`, values);
-      }
-    });
+        [...values, ...partitionSourceKeys],
+      );
+    }
+    await this.#execute(database, 'DELETE FROM offline_replica_cursors WHERE user_id = ? AND scope_id = ?', values);
+    await this.#execute(database, 'DELETE FROM offline_reconciliation_scopes WHERE user_id = ? AND scope_id = ?', values);
+    await this.#execute(database, 'DELETE FROM offline_pull_attentions WHERE user_id = ? AND scope_id = ?', values);
+    for (const entity of this.#options.replicaSchema.entities) {
+      if (entity.scope !== 'partition') continue;
+      await this.#execute(database, `DELETE FROM ${entity.tableName} WHERE _offline_user_id = ? AND _offline_scope_id = ?`, values);
+    }
   }
 
   async transactReplica(transaction: OfflineReplicaTransaction): Promise<void> {
@@ -751,8 +771,64 @@ export class SqliteOfflineRepository implements OfflineRepository {
     };
   }
 
+  #atomicRepository(): OfflineRepository {
+    const reader = this.#reader();
+    const atomicTransaction = <T>(run: (databaseId: string) => Promise<T>, marksCommit = true): Promise<T> =>
+      this.#queueAtomicOperation(() => this.#atomicTransaction(this.#databaseId!, run, marksCommit));
+    return {
+      initialize: () => Promise.resolve(),
+      ...reader,
+      runReadSnapshot: (read) =>
+        this.#queueAtomicOperation(() =>
+          this.#nativeTransaction(this.#databaseId!, async () => {
+            this.#readSnapshotActive = true;
+            try {
+              return await read(reader);
+            } finally {
+              this.#readSnapshotActive = false;
+            }
+          }),
+        ),
+      putCommand: (command) => atomicTransaction((databaseId) => this.#putCommand(databaseId, command)),
+      replaceCommand: (command) => atomicTransaction((databaseId) => this.#putCommand(databaseId, command)),
+      removeCommand: (commandId) =>
+        atomicTransaction((databaseId) => this.#execute(databaseId, 'DELETE FROM offline_sync_commands WHERE command_id = ?', [commandId])),
+      putPullAttention: (attention) =>
+        atomicTransaction((databaseId) => this.#applyReplicaTransaction(databaseId, { putPullAttentions: [attention] })),
+      removePullAttention: (scope) =>
+        atomicTransaction((databaseId) => this.#applyReplicaTransaction(databaseId, { removePullAttentions: [scope] })),
+      setLastUserId: (userId) =>
+        atomicTransaction((databaseId) =>
+          this.#execute(
+            databaseId,
+            `INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET schema_version = excluded.schema_version, last_user_id = excluded.last_user_id`,
+            [OFFLINE_SCHEMA_VERSION, canonicalOfflinePrincipalId(userId)],
+          ),
+        ),
+      putSessionManifest: (userId, value) =>
+        atomicTransaction((databaseId) =>
+          this.#execute(
+            databaseId,
+            `INSERT INTO offline_session_manifests (user_id, value_json) VALUES (?, ?)
+             ON CONFLICT(user_id) DO UPDATE SET value_json = excluded.value_json`,
+            [canonicalOfflinePrincipalId(userId), JSON.stringify(value)],
+          ),
+        ),
+      clearUser: (userId) => atomicTransaction((databaseId) => this.#clearUser(databaseId, userId)),
+      clearScope: (scope) => atomicTransaction((databaseId) => this.#clearScope(databaseId, scope)),
+      transactReplica: (transaction) => {
+        for (const row of transaction.putRows ?? []) this.#validateReplicaRow(row);
+        return atomicTransaction((databaseId) => this.#applyReplicaTransaction(databaseId, transaction));
+      },
+    };
+  }
+
   async #withCommittedRead<T>(operation: () => Promise<T>): Promise<T> {
     await this.initialize();
+    if (this.#readSnapshotActive) {
+      return operation();
+    }
     if (this.#atomicMutationRevision !== null) {
       return this.#queueAtomicOperation(operation);
     }
@@ -793,7 +869,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   #queueWrite(run: (databaseId: string) => Promise<void>): Promise<void> {
     if (this.#atomicMutationRevision !== null) {
-      return this.#queueAtomicOperation(async () => this.#atomicTransaction(await this.#databaseConnection(), run));
+      return this.#atomicIdle.then(() => this.#queueWrite(run));
     }
     const write = this.#writes.then(async (): Promise<void> => {
       if (this.#activeReaders > 0) await this.#readersIdle;
@@ -805,7 +881,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   #transaction<T>(run: (databaseId: string) => Promise<T>): Promise<T> {
     if (this.#atomicMutationRevision !== null) {
-      return this.#queueAtomicOperation(async () => this.#atomicTransaction(await this.#databaseConnection(), run));
+      return this.#atomicIdle.then(() => this.#transaction(run));
     }
     const transaction = this.#writes.then(async (): Promise<T> => {
       if (this.#activeReaders > 0) await this.#readersIdle;
