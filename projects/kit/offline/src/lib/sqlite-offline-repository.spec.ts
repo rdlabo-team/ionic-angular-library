@@ -14,6 +14,7 @@ import {
   type OfflineReplicaSchemaBundle,
 } from './offline-replica-schema';
 import { canonicalOfflinePrincipalId, type OfflineCommand, type OfflineReplicaRow } from './offline-repository';
+import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
 import { generatedCommandIdentity, generatedReplicaIdentity, naturalReplicaIdentity } from './offline-test-helpers';
 import {
   COMMUNITY_SQLITE,
@@ -291,6 +292,130 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(plugin.beginTransaction).toHaveBeenCalledOnce();
     expect(plugin.commitTransaction).toHaveBeenCalledOnce();
     expect(plugin.rollbackTransaction).not.toHaveBeenCalled();
+  });
+
+  it('別SQLite connectionのcommitをwrite lock取得後に検出し、product callbackを再実行しない', async () => {
+    let dataVersion = 1;
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[dataVersion]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+    const operation = vi.fn(async () => {
+      await repository.getCommands({ userId: 1, scopeId: '10' });
+      dataVersion = 2;
+      await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'stale' }] });
+    });
+
+    await expect(repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(operation)).rejects.toThrow('changed through another SQLite connection');
+
+    expect(operation).toHaveBeenCalledOnce();
+    expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
+    expect(
+      plugin.execute.mock.calls.some(([options]) =>
+        String((options as { statement: string }).statement).includes('INSERT INTO offline_replica_cursors'),
+      ),
+    ).toBe(false);
+  });
+
+  it('guarded commitはwrite lockをrevision確認より先に取得し、確認後にreplica mutationを適用する', async () => {
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+
+    await repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () => {
+      await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'fresh' }] });
+    });
+
+    const lockCall = plugin.execute.mock.calls.find(([options]) =>
+      String((options as { statement: string }).statement).startsWith('UPDATE offline_metadata SET schema_version'),
+    );
+    const revisionCall = plugin.query.mock.calls
+      .filter(([options]) => (options as { statement: string }).statement === 'PRAGMA data_version')
+      .at(1);
+    const cursorCall = plugin.execute.mock.calls.find(([options]) =>
+      String((options as { statement: string }).statement).includes('INSERT INTO offline_replica_cursors'),
+    );
+    expect(lockCall).toBeDefined();
+    expect(revisionCall).toBeDefined();
+    expect(cursorCall).toBeDefined();
+    expect(lockCall![0]).toBeDefined();
+    expect(plugin.execute.mock.invocationCallOrder[plugin.execute.mock.calls.indexOf(lockCall!)]).toBeLessThan(
+      plugin.query.mock.invocationCallOrder[plugin.query.mock.calls.indexOf(revisionCall!)]!,
+    );
+    expect(plugin.query.mock.invocationCallOrder[plugin.query.mock.calls.indexOf(revisionCall!)]).toBeLessThan(
+      plugin.execute.mock.invocationCallOrder[plugin.execute.mock.calls.indexOf(cursorCall!)]!,
+    );
+  });
+
+  it('guarded writeのcommit後にexternal revisionが進んでも完了済みproduct operationを失敗扱いにしない', async () => {
+    let dataVersion = 1;
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[dataVersion]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+
+    await expect(
+      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () => {
+        await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'committed' }] });
+        dataVersion = 2;
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(
+      plugin.query.mock.calls.filter(([options]) => (options as { statement: string }).statement === 'PRAGMA data_version'),
+    ).toHaveLength(2);
+  });
+
+  it('同一operation内の2回目のtransactionもexternal revisionを再確認する', async () => {
+    let dataVersion = 1;
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[dataVersion]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+
+    await expect(
+      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () => {
+        await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'first' }] });
+        dataVersion = 2;
+        await repository.transactReplica({ putCursors: [{ userId: 1, scopeId: '10', cursor: 'stale-second' }] });
+      }),
+    ).rejects.toThrow('changed through another SQLite connection');
+
+    expect(plugin.commitTransaction).toHaveBeenCalledTimes(2);
+    expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
   });
 
   it('pull attentionをput/getしtransactionでupsertする', async () => {
@@ -2030,7 +2155,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       await expect(repository.runReadSnapshot((reader) => reader.getReplicaCursor({ userId: 1, scopeId: '10' }))).resolves.toBeNull();
     });
 
-    it('独立した並行snapshotはそれぞれreader leaseを持ち、writerは両方の完了を待つ', async () => {
+    it('同一native connectionのsnapshotを直列化し、後続writerは両snapshotの完了を待つ', async () => {
       const repository = createRepository();
       await repository.initialize();
       plugin.execute.mockClear();
@@ -2043,11 +2168,15 @@ describe('SqliteOfflineRepository replica rows', () => {
       const gateB = new Promise<void>((resolve) => {
         releaseB = resolve;
       });
-      let bothReadersReady: (() => void) | undefined;
-      const readersReady = new Promise<void>((resolve) => {
-        bothReadersReady = resolve;
+      let snapshotAReady: (() => void) | undefined;
+      const readerAReady = new Promise<void>((resolve) => {
+        snapshotAReady = resolve;
       });
-      let readersHeld = 0;
+      let snapshotBReady: (() => void) | undefined;
+      const readerBReady = new Promise<void>((resolve) => {
+        snapshotBReady = resolve;
+      });
+      let snapshotBEntered = false;
 
       plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
         if (statement.includes('offline_replica_schema_metadata')) {
@@ -2063,18 +2192,18 @@ describe('SqliteOfflineRepository replica rows', () => {
 
       const snapshotA = repository.runReadSnapshot(async (reader) => {
         await reader.getCommands({ userId: 1, scopeId: '10' });
-        readersHeld += 1;
-        if (readersHeld === 2) bothReadersReady?.();
+        snapshotAReady?.();
         await gateA;
       });
       const snapshotB = repository.runReadSnapshot(async (reader) => {
+        snapshotBEntered = true;
+        snapshotBReady?.();
         await reader.getCommands({ userId: 1, scopeId: '10' });
-        readersHeld += 1;
-        if (readersHeld === 2) bothReadersReady?.();
         await gateB;
       });
 
-      await readersReady;
+      await readerAReady;
+      expect(snapshotBEntered).toBe(false);
       let writeFinished = false;
       const write = repository
         .putCommand({
@@ -2111,7 +2240,8 @@ describe('SqliteOfflineRepository replica rows', () => {
 
       releaseA?.();
       await snapshotA;
-      await Promise.resolve();
+      await readerBReady;
+      expect(snapshotBEntered).toBe(true);
       expect(writeFinished).toBe(false);
 
       releaseB?.();

@@ -239,7 +239,6 @@ describe('OfflineAggregateIntentProjector', () => {
         getReplicaRowByRemoteId: vi.fn(async () => null),
         getReplicaRowByRemoteIdentity: vi.fn(async () => null),
         getReplicaCursor: vi.fn(async () => null),
-        getReconciliationScopes: vi.fn(async () => []),
         getPullAttentions: vi.fn(async () => []),
         transactReplica,
       } as unknown as OfflineRepository;

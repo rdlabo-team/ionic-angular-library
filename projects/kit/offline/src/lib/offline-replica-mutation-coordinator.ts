@@ -8,7 +8,9 @@ import {
 } from './offline-aggregate-intent-projector';
 import { canonicalOfflineReplicaIdentity, commandIdentityMatchesReplicaRow, type OfflineCommandIdentity } from './offline-identity';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
+import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
 import {
+  OFFLINE_REPOSITORY,
   canonicalOfflineReplicaRowKey,
   type OfflineCommand,
   type OfflineReplicaRow,
@@ -28,13 +30,17 @@ import type { OfflineReplicaEntitySchema } from './offline-replica-schema';
  */
 @Injectable({ providedIn: 'root' })
 export class OfflineReplicaMutationCoordinator {
+  readonly #repository = inject(OFFLINE_REPOSITORY, { optional: true });
   readonly #projector = inject(OFFLINE_AGGREGATE_INTENT_PROJECTOR, { optional: true });
   readonly #options = inject(OFFLINE_KIT_OPTIONS, { optional: true });
   #tail: Promise<void> = Promise.resolve();
 
   /** Enqueues one local replica critical section behind any in-flight mutation. */
   run<T>(operation: () => Promise<T>): Promise<T> {
-    const mutation = this.#tail.then(operation);
+    const mutation = this.#tail.then(() => {
+      const atomicMutation = this.#repository?.[OFFLINE_REPOSITORY_ATOMIC_MUTATION];
+      return atomicMutation ? (atomicMutation.call(this.#repository, operation) as Promise<T>) : operation();
+    });
     this.#tail = mutation.then(
       () => undefined,
       () => undefined,

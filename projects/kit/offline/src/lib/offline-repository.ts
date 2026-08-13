@@ -11,6 +11,7 @@ import {
   type OfflineReplicaIdentity,
   type OfflinePrincipalId,
 } from './offline-identity';
+import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import {
   assertOfflineReplicaGeneratedRemoteId,
@@ -164,10 +165,6 @@ export interface OfflineReplicaTransaction {
   putCommands?: readonly OfflineCommand[];
   removeCommandIds?: readonly string[];
   putCursors?: readonly OfflineReplicaCursor[];
-  /** Scopes whose acknowledged server changes still require an authoritative pull. */
-  putReconciliationScopes?: readonly OfflineScope[];
-  /** Scopes whose authoritative post-acknowledgement pull completed successfully. */
-  removeReconciliationScopes?: readonly OfflineScope[];
   /** Durable fatal-pull attentions to upsert for user+scope. */
   putPullAttentions?: readonly OfflinePullAttention[];
   /** Scopes whose fatal-pull attentions should be removed after a successful pull. */
@@ -205,7 +202,6 @@ export interface OfflineRepositoryReader {
     identity: OfflineReplicaRemoteIdentity,
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
-  getReconciliationScopes?(userId: OfflinePrincipalId): Promise<OfflineScope[]>;
   getPullAttentions?(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
   getCommandsForUser?(userId: OfflinePrincipalId): Promise<OfflineCommand[]>;
@@ -241,7 +237,6 @@ export interface OfflineRepository {
     identity: OfflineReplicaRemoteIdentity,
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaCursor(scope: OfflineScope): Promise<OfflineReplicaCursor | null>;
-  getReconciliationScopes?(userId: OfflinePrincipalId): Promise<OfflineScope[]>;
   /** Durable fatal-pull attentions for the principal, ordered by scope id. */
   getPullAttentions?(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]>;
   getCommands(scope: OfflineScope): Promise<OfflineCommand[]>;
@@ -266,6 +261,8 @@ export interface OfflineRepository {
    * must not be called from `read`.
    */
   runReadSnapshot<T>(read: (reader: OfflineRepositoryReader) => Promise<T>): Promise<T>;
+  /** @internal Runs one optimistic read/derive/write operation with platform-specific concurrency validation. */
+  [OFFLINE_REPOSITORY_ATOMIC_MUTATION]?<T>(operation: () => Promise<T>): Promise<T>;
 }
 
 /** DI token for the selected platform repository. */
@@ -310,6 +307,8 @@ const CURSORS_KEY = 'offline:replica:cursors';
 const OUTBOX_KEY = 'offline:outbox:commands';
 const REPLICA_TRANSACTION_KEY = 'offline:replica:transaction';
 const REPLICA_SCHEMA_MIGRATION_KEY = 'offline:replica:schema-migration';
+// Legacy marker storage is no longer read or written. Keep cleanup support for
+// databases created by released versions that persisted this key.
 const RECONCILIATION_SCOPES_KEY = 'offline:replica:reconciliation-scopes';
 const PULL_ATTENTIONS_KEY = 'offline:replica:pull-attentions';
 
@@ -403,10 +402,6 @@ export class IonicOfflineRepository implements OfflineRepository {
     return this.#withCommittedRead(() => this.#readReplicaCursor(scope));
   }
 
-  async getReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
-    return this.#withCommittedRead(() => this.#readReconciliationScopes(userId));
-  }
-
   async getPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
     return this.#withCommittedRead(() => this.#readPullAttentions(userId));
   }
@@ -489,11 +484,6 @@ export class IonicOfflineRepository implements OfflineRepository {
     return cursor === undefined ? null : { ...scope, cursor };
   }
 
-  async #readReconciliationScopes(userId: OfflinePrincipalId): Promise<OfflineScope[]> {
-    const scopes = await this.#readRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY);
-    return Object.values(scopes).filter((scope) => scope.userId === userId);
-  }
-
   async #readPullAttentions(userId: OfflinePrincipalId): Promise<OfflinePullAttention[]> {
     const attentions = await this.#readRecord<OfflinePullAttention>(PULL_ATTENTIONS_KEY);
     return Object.values(attentions)
@@ -530,7 +520,6 @@ export class IonicOfflineRepository implements OfflineRepository {
       },
       getReplicaRowByRemoteIdentity: (scope, sourceKey, identity) => this.#readReplicaRowByRemoteIdentity(scope, sourceKey, identity),
       getReplicaCursor: (scope) => this.#readReplicaCursor(scope),
-      getReconciliationScopes: (userId) => this.#readReconciliationScopes(userId),
       getPullAttentions: (userId) => this.#readPullAttentions(userId),
       getCommands: (scope) => this.#readCommands(scope),
       getCommandsForUser: (userId) => this.#readCommandsForUser(userId),
@@ -835,11 +824,10 @@ export class IonicOfflineRepository implements OfflineRepository {
   async #applyReplicaTransaction(transaction: OfflineReplicaTransaction, journal: boolean): Promise<void> {
     await this.#assertReplicaSchemaLocked();
     for (const row of transaction.putRows ?? []) this.#validateReplicaRow(row);
-    const [rows, commands, cursors, reconciliationScopes, pullAttentions] = await Promise.all([
+    const [rows, commands, cursors, pullAttentions] = await Promise.all([
       this.#readRecord<OfflineReplicaRow>(ROWS_KEY),
       this.#readRecord<OfflineCommand>(OUTBOX_KEY),
       this.#readRecord<string>(CURSORS_KEY),
-      this.#readRecord<OfflineScope>(RECONCILIATION_SCOPES_KEY),
       this.#readRecord<OfflinePullAttention>(PULL_ATTENTIONS_KEY),
     ]);
     const identityCheckRows = { ...rows };
@@ -890,12 +878,6 @@ export class IonicOfflineRepository implements OfflineRepository {
     for (const cursor of transaction.putCursors ?? []) {
       cursors[this.#cursorKey(cursor)] = cursor.cursor;
     }
-    for (const scope of transaction.putReconciliationScopes ?? []) {
-      reconciliationScopes[this.#cursorKey(scope)] = scope;
-    }
-    for (const scope of transaction.removeReconciliationScopes ?? []) {
-      delete reconciliationScopes[this.#cursorKey(scope)];
-    }
     for (const attention of transaction.putPullAttentions ?? []) {
       pullAttentions[this.#cursorKey(attention)] = attention;
     }
@@ -906,7 +888,6 @@ export class IonicOfflineRepository implements OfflineRepository {
       this.#storage.set(ROWS_KEY, rows),
       this.#storage.set(OUTBOX_KEY, commands),
       this.#storage.set(CURSORS_KEY, cursors),
-      this.#storage.set(RECONCILIATION_SCOPES_KEY, reconciliationScopes),
       this.#storage.set(PULL_ATTENTIONS_KEY, pullAttentions),
     ]);
     await this.#writeAffectedRowPartitions(rows, transaction);

@@ -1,6 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
+import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
+import { OFFLINE_REPOSITORY } from './offline-repository';
 
 describe('OfflineReplicaMutationCoordinator', () => {
   it('serializes local apply sections and releases the lane after failure', async () => {
@@ -27,5 +29,19 @@ describe('OfflineReplicaMutationCoordinator', () => {
     await coordinator.drain();
 
     expect(order).toEqual(['first:start', 'first:end', 'second', 'third']);
+  });
+
+  it('uses the repository atomic-mutation capability without retrying the product operation', async () => {
+    const atomicMutation = vi.fn(async (operation: () => Promise<string>) => operation());
+    TestBed.configureTestingModule({
+      providers: [{ provide: OFFLINE_REPOSITORY, useValue: { [OFFLINE_REPOSITORY_ATOMIC_MUTATION]: atomicMutation } }],
+    });
+    const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+    const operation = vi.fn(async () => 'done');
+
+    await expect(coordinator.run(operation)).resolves.toBe('done');
+
+    expect(atomicMutation).toHaveBeenCalledOnce();
+    expect(operation).toHaveBeenCalledOnce();
   });
 });
