@@ -504,6 +504,16 @@ describe('OfflineReplicaPullService', () => {
     expect(pull.mock.calls[0]?.[0].schemaHash).toBe(schemaHash);
   });
 
+  it('wire protocol fingerprintをlocal replica schemaから独立して送受信検証する', async () => {
+    const options = TestBed.inject(OFFLINE_KIT_OPTIONS);
+    options.wireProtocol = { version: 7, hash: 'wire-v7' };
+    pull.mockResolvedValueOnce(page([], { nextCursor: '', schemaVersion: 7, schemaHash: 'wire-v7' }));
+
+    await service.pull(scope);
+
+    expect(pull).toHaveBeenCalledWith(expect.objectContaining({ schemaVersion: 7, schemaHash: 'wire-v7' }));
+  });
+
   it('multi-page cursor progressionでstored cursorをページングする', async () => {
     await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-v0' }] });
     pull

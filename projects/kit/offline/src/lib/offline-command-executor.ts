@@ -1,5 +1,11 @@
 import { InjectionToken } from '@angular/core';
-import type { OfflineCommand, OfflineOptimisticReplicaCompanion, OfflineReplicaRow, OfflineScope } from './offline-repository';
+import type {
+  OfflineCommand,
+  OfflineOptimisticReplicaCompanion,
+  OfflineReplicaRow,
+  OfflineReplicaRowKey,
+  OfflineScope,
+} from './offline-repository';
 import type { OfflineCommandIdentity, OfflinePrincipalId, OfflineReplicaIdentity } from './offline-identity';
 import type { OfflineGeneratedRemoteId, OfflineNaturalKey } from './offline-replica-schema';
 
@@ -10,6 +16,14 @@ export interface OfflineCommandResult {
   serverRevision?: string | number;
   /** Full server-confirmed domain values after applying the mutation. */
   confirmedValues?: unknown;
+  /**
+   * Server-confirmed local-only projection changes owned by this command.
+   *
+   * Kit validates that every row belongs to the command's declared optimistic
+   * companion footprint, then commits these changes atomically with the base
+   * row acknowledgement, command removal, and reconciliation marker.
+   */
+  confirmedCompanions?: readonly OfflineConfirmedReplicaCompanion[];
   /** Removes the local replica row after a confirmed server delete. */
   removeReplica?: boolean;
   /**
@@ -18,6 +32,17 @@ export interface OfflineCommandResult {
    */
   clearRemoteId?: boolean;
   response?: unknown;
+}
+
+/** Local-only projection changes confirmed by one server acknowledgement. */
+export interface OfflineConfirmedReplicaCompanion {
+  /** Exact optimistic companion footprint entry owned by this command. */
+  readonly key: OfflineReplicaRowKey;
+  /**
+   * Applies the acknowledged domain effect to the latest confirmed projection read inside Kit's
+   * ACK lane. Return `null` to remove the confirmed projection.
+   */
+  readonly reduce: (latestConfirmedValues: unknown) => unknown | null;
 }
 
 /** Target identity resolved from the local replica immediately before transport. */

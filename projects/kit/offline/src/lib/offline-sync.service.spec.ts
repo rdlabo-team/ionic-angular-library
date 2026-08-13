@@ -2817,6 +2817,508 @@ describe('OfflineSyncService', () => {
     expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
   });
 
+  it('confirmedCompanions putはACK・command削除・reconciliation markerと同一transactReplicaで確定する', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'confirmed-put-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'confirmed-put' },
+          operation: 'documents.update',
+          payload: { title: 'optimistic' },
+          optimisticValue: { id: 20, title: 'optimistic' },
+          baseRevision: 1,
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'optimistic view' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    const repository = TestBed.inject(OFFLINE_REPOSITORY);
+    const transactReplica = vi.mocked(repository.transactReplica);
+    const callsBeforeFlush = transactReplica.mock.calls.length;
+    execute.mockResolvedValueOnce({
+      serverRevision: 2,
+      confirmedValues: { id: 20, title: 'server' },
+      confirmedCompanions: [
+        {
+          key: companion,
+          reduce: () => ({ title: 'server view' }),
+        },
+      ],
+      response: null,
+    });
+
+    connected.set(true);
+    await service.flush();
+
+    const ackCalls = transactReplica.mock.calls.slice(callsBeforeFlush).filter(([transaction]) =>
+      (transaction.putReconciliationScopes ?? []).some((scope) => scope.userId === 1 && scope.scopeId === '10'),
+    );
+    expect(ackCalls).toHaveLength(1);
+    expect(ackCalls[0]?.[0]).toMatchObject({
+      putRows: expect.arrayContaining([
+        expect.objectContaining({
+          sourceKey: 'documents',
+          values: { id: 20, title: 'server' },
+          confirmedValues: { id: 20, title: 'server' },
+          syncState: 'confirmed',
+        }),
+        expect.objectContaining({
+          sourceKey: 'document_views',
+          values: { title: 'server view' },
+          confirmedValues: { title: 'server view' },
+          syncState: 'confirmed',
+          visibility: 'present',
+        }),
+      ]),
+      removeCommandIds: [expect.any(String)],
+      putReconciliationScopes: [{ userId: 1, scopeId: '10' }],
+    });
+    expect(commands).toEqual([]);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'server view' },
+      confirmedValues: { title: 'server view' },
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+  });
+
+  it('confirmedCompanions removeはACKと同一transactionでcompanionを除く', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'confirmed-remove-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'confirmed-remove' },
+          operation: 'documents.update',
+          payload: { title: 'drop view' },
+          optimisticValue: { id: 21, title: 'drop view' },
+          baseRevision: 1,
+        },
+        replicaTransaction: { removeRows: [companion] },
+      }),
+      { flush: false },
+    );
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
+    execute.mockResolvedValueOnce({
+      serverRevision: 2,
+      confirmedValues: { id: 21, title: 'drop view' },
+      confirmedCompanions: [
+        {
+          key: companion,
+          reduce: () => null,
+        },
+      ],
+      response: null,
+    });
+
+    connected.set(true);
+    await service.flush();
+
+    expect(commands).toEqual([]);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toBeUndefined();
+    expect(rows.find((row) => row.sourceKey === 'documents')).toMatchObject({
+      values: { id: 21, title: 'drop view' },
+      confirmedValues: { id: 21, title: 'drop view' },
+      syncState: 'confirmed',
+    });
+  });
+
+  it('後続optimistic companionはconfirmedCompanionsの上にoverlayしconfirmedValuesはサーバ確定値を残す', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'confirmed-overlay-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'confirmed-overlay' },
+          operation: 'documents.update',
+          payload: { title: 'first' },
+          optimisticValue: { id: 22, title: 'first' },
+          baseRevision: 1,
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'first optimistic' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'confirmed-overlay' },
+          operation: 'documents.update',
+          payload: { title: 'second' },
+          optimisticValue: { id: 22, title: 'second' },
+          baseRevision: 1,
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'second optimistic' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    const firstCommandId = commands[0]!.commandId;
+    const secondCommandId = commands[1]!.commandId;
+    execute
+      .mockResolvedValueOnce({
+        serverRevision: 2,
+        confirmedValues: { id: 22, title: 'first server' },
+        confirmedCompanions: [
+          {
+            key: companion,
+            reduce: () => ({ title: 'server companion' }),
+          },
+        ],
+        response: null,
+      })
+      .mockRejectedValueOnce(Object.assign(new Error('hold later command'), { status: 0 }));
+
+    connected.set(true);
+    await service.flush();
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.commandId).toBe(secondCommandId);
+    expect(commands[0]?.commandId).not.toBe(firstCommandId);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'second optimistic' },
+      confirmedValues: { title: 'server companion' },
+      syncState: 'pending',
+    });
+    expect(rows.find((row) => row.sourceKey === 'documents')).toMatchObject({
+      values: { id: 22, title: 'second' },
+      confirmedValues: { id: 22, title: 'first server' },
+    });
+  });
+
+  it('footprint外のconfirmedCompanionsはACKせずtransaction mutationを起こさない', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'declared-view' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'undeclared-companion' },
+          operation: 'documents.update',
+          payload: { title: 'optimistic' },
+          optimisticValue: { id: 23, title: 'optimistic' },
+          baseRevision: 1,
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'optimistic view' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    const beforeCommandId = commands[0]!.commandId;
+    const beforeReconciliation = structuredClone(reconciliationScopes);
+    const repository = TestBed.inject(OFFLINE_REPOSITORY);
+    const transactReplica = vi.mocked(repository.transactReplica);
+    const callsBeforeFlush = transactReplica.mock.calls.length;
+    execute.mockResolvedValueOnce({
+      serverRevision: 2,
+      confirmedValues: { id: 23, title: 'server' },
+      confirmedCompanions: [
+        {
+          key: { ...companion, identity: { kind: 'local', localId: 'undeclared-view' } },
+          reduce: () => ({ title: 'smuggled' }),
+        },
+      ],
+      response: null,
+    });
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('undeclared companion');
+
+    const ackMutations = transactReplica.mock.calls.slice(callsBeforeFlush).filter(
+      ([transaction]) =>
+        (transaction.removeCommandIds ?? []).length > 0 ||
+        (transaction.putReconciliationScopes ?? []).length > 0 ||
+        (transaction.putRows ?? []).some(
+          (row) =>
+            row.sourceKey === 'document_views' &&
+            (row.values as { title?: string } | null)?.title === 'smuggled',
+        ),
+    );
+    expect(ackMutations).toEqual([]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      commandId: beforeCommandId,
+      serverCommitUnknown: true,
+    });
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      identity: { kind: 'local', localId: 'declared-view' },
+      values: { title: 'optimistic view' },
+      confirmedValues: { title: 'baseline' },
+    });
+    expect(rows.find((row) => row.sourceKey === 'documents')?.confirmedValues).toBeNull();
+    expect(reconciliationScopes).toEqual(beforeReconciliation);
+  });
+
+  it('confirmedCompanionsはfootprintをすべて覆う必要がある', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'exact-coverage' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'exact-coverage-command' },
+          operation: 'documents.update',
+          payload: { title: 'optimistic' },
+          optimisticValue: { id: 24, title: 'optimistic' },
+          baseRevision: 1,
+        },
+        replicaTransaction: { putRows: [{ ...companion, syncState: 'pending' }] },
+      }),
+      { flush: false },
+    );
+    const commandId = commands[0]!.commandId;
+    execute.mockResolvedValueOnce({
+      confirmedCompanions: [],
+      response: null,
+    });
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('must cover every optimistic companion exactly once');
+    expect(commands).toContainEqual(expect.objectContaining({ commandId }));
+
+  });
+
+  it('confirmedCompanions reducerは最新のconfirmedValuesを使う', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'latest-confirmed' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'latest-confirmed-command' },
+          operation: 'documents.update',
+          payload: { title: 'optimistic' },
+          optimisticValue: { id: 25, title: 'optimistic' },
+          baseRevision: 1,
+        },
+        replicaTransaction: {
+          putRows: [{ ...companion, values: { title: 'optimistic view' }, syncState: 'pending' }],
+        },
+      }),
+      { flush: false },
+    );
+    const current = rows.find((row) => row.sourceKey === 'document_views')!;
+    current.confirmedValues = { title: 'mutated confirmed' };
+    const seen: unknown[] = [];
+    execute.mockResolvedValueOnce({
+      serverRevision: 2,
+      confirmedValues: { id: 25, title: 'server' },
+      confirmedCompanions: [
+        {
+          key: companion,
+          reduce: (latestConfirmedValues) => {
+            seen.push(latestConfirmedValues);
+            return { title: 'reduced', from: (latestConfirmedValues as { title: string }).title };
+          },
+        },
+      ],
+      response: null,
+    });
+
+    connected.set(true);
+    await service.flush();
+
+    expect(seen).toEqual([{ title: 'mutated confirmed' }]);
+    expect(rows.find((row) => row.sourceKey === 'document_views')).toMatchObject({
+      values: { title: 'reduced', from: 'mutated confirmed' },
+      confirmedValues: { title: 'reduced', from: 'mutated confirmed' },
+      syncState: 'confirmed',
+      visibility: 'present',
+    });
+  });
+
+  it('current companionの明示的なconfirmed absenceを旧beforeへfallbackしない', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'confirmed-absence' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'confirmed-absence-command' },
+          operation: 'documents.update',
+          payload: {},
+          optimisticValue: { id: 27 },
+        },
+        replicaTransaction: { putRows: [{ ...companion, syncState: 'pending' }] },
+      }),
+      { flush: false },
+    );
+    rows.find((row) => row.sourceKey === 'document_views')!.confirmedValues = null;
+    const seen: unknown[] = [];
+    execute.mockResolvedValueOnce({
+      confirmedCompanions: [
+        {
+          key: companion,
+          reduce: (latest) => {
+            seen.push(latest);
+            throw new Error('authoritative companion is absent');
+          },
+        },
+      ],
+    });
+
+    connected.set(true);
+    await expect(service.flush()).rejects.toThrow('authoritative companion is absent');
+    expect(seen).toEqual([null]);
+    expect(commands).toHaveLength(1);
+  });
+
+  it('confirmedCompanions putはcanonicalなconfirmed syncStateとpresent visibilityを書く', async () => {
+    const companion: OfflineReplicaRow = {
+      userId: 1,
+      scopeId: '10',
+      sourceKey: 'document_views',
+      identity: { kind: 'local', localId: 'canonical-visibility' },
+      values: { title: 'baseline' },
+      confirmedValues: { title: 'baseline' },
+      serverRevision: null,
+      fetchedAt: 1,
+      syncState: 'confirmed',
+      visibility: 'pending_delete',
+    };
+    rows.push(companion);
+    await service.enqueuePrepared(
+      async () => ({
+        request: {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'canonical-visibility-command' },
+          operation: 'documents.update',
+          payload: { title: 'optimistic' },
+          optimisticValue: { id: 26, title: 'optimistic' },
+          baseRevision: 1,
+        },
+        replicaTransaction: {
+          putRows: [
+            {
+              ...companion,
+              values: { title: 'optimistic view' },
+              syncState: 'pending',
+              visibility: 'pending_delete',
+            },
+          ],
+        },
+      }),
+      { flush: false },
+    );
+    const repository = TestBed.inject(OFFLINE_REPOSITORY);
+    const transactReplica = vi.mocked(repository.transactReplica);
+    const callsBeforeFlush = transactReplica.mock.calls.length;
+    execute.mockResolvedValueOnce({
+      serverRevision: 2,
+      confirmedValues: { id: 26, title: 'server' },
+      confirmedCompanions: [{ key: companion, reduce: () => ({ title: 'canonical' }) }],
+      response: null,
+    });
+
+    connected.set(true);
+    await service.flush();
+
+    const ackCalls = transactReplica.mock.calls.slice(callsBeforeFlush).filter(([transaction]) =>
+      (transaction.putReconciliationScopes ?? []).some((scope) => scope.userId === 1 && scope.scopeId === '10'),
+    );
+    expect(ackCalls[0]?.[0]?.putRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceKey: 'document_views',
+          values: { title: 'canonical' },
+          confirmedValues: { title: 'canonical' },
+          syncState: 'confirmed',
+          visibility: 'present',
+        }),
+      ]),
+    );
+  });
+
   it('同一ミリ秒のDate.nowでもcreatedAtは単調増加で保存する', async () => {
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
     await service.enqueue(

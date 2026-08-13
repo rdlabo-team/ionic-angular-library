@@ -24,6 +24,8 @@ import {
   createRandomOfflineEncryptionKey,
   SqliteOfflineRepository,
 } from './sqlite-offline-repository';
+import { OfflineStorageUnavailableError } from './offline-storage';
+import { OFFLINE_SCHEMA_VERSION } from './offline-repository';
 
 type TestItemSelect = { id: number; title: string };
 type TestItemWithSubtitleSelect = { id: number; title: string; subtitle: string };
@@ -250,11 +252,15 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     };
   });
 
-  it('暗号化databaseのopen失敗を呼び出し元へ伝播する', async () => {
+  it('暗号化databaseのopen失敗をtyped storage_unavailableとしてcause付きで伝播する', async () => {
     const error = new Error('SQLCipher is not configured');
     plugin.open.mockRejectedValueOnce(error);
     const repository = createRepository();
-    await expect(repository.initialize()).rejects.toBe(error);
+    await expect(repository.initialize()).rejects.toSatisfy((thrown: unknown) => {
+      expect(thrown).toBeInstanceOf(OfflineStorageUnavailableError);
+      expect(thrown).toMatchObject({ reason: 'storage_unavailable', cause: error });
+      return true;
+    });
     expect(plugin.open).toHaveBeenCalledWith({
       databaseName: 'test-offline',
       createEncryptionKey: expect.any(Function),
@@ -617,7 +623,14 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       };
       const repository = createRepository(undefined, { replicaSchema: replicaSchemaV1HashDrift });
 
-      await expect(repository.initialize()).rejects.toThrow('Offline replica schema hash mismatch at version 1');
+      await expect(repository.initialize()).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(OfflineStorageUnavailableError);
+        expect(error).toMatchObject({
+          reason: 'replica_schema_mismatch',
+        });
+        expect((error as Error).message).toContain('Offline replica schema hash mismatch at version 1');
+        return true;
+      });
       expect(
         plugin.execute.mock.calls.some(([options]) =>
           (options as { statement: string }).statement.startsWith('CREATE TABLE IF NOT EXISTS test_items'),
@@ -657,7 +670,14 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       };
       const repository = createRepository(undefined, { replicaSchema: replicaSchemaV3MissingMigration });
 
-      await expect(repository.initialize()).rejects.toThrow('Missing offline replica schema migration from version 2 to 3.');
+      await expect(repository.initialize()).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(OfflineStorageUnavailableError);
+        expect(error).toMatchObject({
+          reason: 'migration_missing',
+          message: 'Missing offline replica schema migration from version 2 to 3.',
+        });
+        return true;
+      });
       expect(
         plugin.execute.mock.calls.some(([options]) =>
           (options as { statement: string }).statement.startsWith('CREATE TABLE IF NOT EXISTS test_items'),
@@ -679,7 +699,11 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       });
       const repository = createRepository(undefined, { replicaSchema: replicaSchemaV2 });
 
-      await expect(repository.initialize()).rejects.toBe(error);
+      await expect(repository.initialize()).rejects.toSatisfy((thrown: unknown) => {
+        expect(thrown).toBeInstanceOf(OfflineStorageUnavailableError);
+        expect(thrown).toMatchObject({ reason: 'storage_unavailable', cause: error });
+        return true;
+      });
       expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
       expect(
         plugin.execute.mock.calls.some(([options]) => {
@@ -687,6 +711,138 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
           return call.statement.includes('offline_replica_schema_metadata') && call.values?.[0] === 2;
         }),
       ).toBe(false);
+    });
+
+    it('maps typed initialization failure reasons without deleting storage', async () => {
+      const cases: {
+        name: string;
+        reason: OfflineStorageUnavailableError['reason'];
+        arrange: () => void;
+        options?: { replicaSchema?: OfflineReplicaSchemaBundle; createEncryptionKey?: () => Promise<string> };
+        messageIncludes: string;
+      }[] = [
+        {
+          name: 'encryption_key_unavailable',
+          reason: 'encryption_key_unavailable',
+          arrange: () => {
+            plugin.open.mockImplementation(async (options: { createEncryptionKey?: () => Promise<string> }) => {
+              await options.createEncryptionKey?.();
+              return { databaseId: 'offline-db' };
+            });
+          },
+          options: {
+            createEncryptionKey: async () => {
+              throw new Error('keychain denied');
+            },
+          },
+          messageIncludes: 'keychain denied',
+        },
+        {
+          name: 'core_schema_incompatible',
+          reason: 'core_schema_incompatible',
+          arrange: () => {
+            plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+              if (statement.includes('offline_replica_schema_metadata')) {
+                return {
+                  columns: ['version', 'schema_hash'],
+                  rows: [[replicaSchemaV1.version, replicaSchemaV1Hash]],
+                };
+              }
+              if (statement.includes('offline_metadata') && statement.includes('schema_version')) {
+                return { rows: [{ schema_version: OFFLINE_SCHEMA_VERSION + 99 }] };
+              }
+              if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+              return { rows: [] };
+            });
+          },
+          messageIncludes: 'Unsupported offline storage schema version',
+        },
+        {
+          name: 'replica_schema_mismatch (hash drift)',
+          reason: 'replica_schema_mismatch',
+          arrange: () => {
+            storedReplicaMetadata = {
+              version: replicaSchemaV1.version,
+              schemaHash: replicaSchemaV1Hash,
+            };
+          },
+          options: { replicaSchema: replicaSchemaV1HashDrift },
+          messageIncludes: 'Offline replica schema hash mismatch',
+        },
+        {
+          name: 'replica_schema_mismatch (newer stored version)',
+          reason: 'replica_schema_mismatch',
+          arrange: () => {
+            storedReplicaMetadata = {
+              version: 9,
+              schemaHash: replicaSchemaV1Hash,
+            };
+          },
+          messageIncludes: 'newer than application version',
+        },
+        {
+          name: 'migration_missing',
+          reason: 'migration_missing',
+          arrange: () => {
+            storedReplicaMetadata = {
+              version: replicaSchemaV1.version,
+              schemaHash: replicaSchemaV1Hash,
+            };
+          },
+          options: { replicaSchema: replicaSchemaV3MissingMigration },
+          messageIncludes: 'Missing offline replica schema migration',
+        },
+        {
+          name: 'storage_unavailable',
+          reason: 'storage_unavailable',
+          arrange: () => {
+            plugin.open.mockRejectedValueOnce(new Error('native plugin missing'));
+          },
+          messageIncludes: 'native plugin missing',
+        },
+      ];
+
+      for (const testCase of cases) {
+        TestBed.resetTestingModule();
+        storedReplicaMetadata = {
+          version: replicaSchemaV1.version,
+          schemaHash: replicaSchemaV1Hash,
+        };
+        plugin.open.mockReset();
+        plugin.open.mockImplementation(async () => ({ databaseId: 'offline-db' }));
+        plugin.execute.mockClear();
+        plugin.beginTransaction.mockClear();
+        plugin.commitTransaction.mockClear();
+        plugin.rollbackTransaction.mockClear();
+        plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+          if (statement.includes('offline_replica_schema_metadata')) {
+            if (!storedReplicaMetadata) return { rows: [] };
+            return {
+              columns: ['version', 'schema_hash'],
+              rows: [[storedReplicaMetadata.version, storedReplicaMetadata.schemaHash]],
+            };
+          }
+          if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+          return { rows: [] };
+        });
+        testCase.arrange();
+        const repository = createRepository(testCase.options?.createEncryptionKey, {
+          replicaSchema: testCase.options?.replicaSchema,
+        });
+
+        await expect(repository.initialize(), testCase.name).rejects.toSatisfy((error: unknown) => {
+          expect(error, testCase.name).toBeInstanceOf(OfflineStorageUnavailableError);
+          expect(error, testCase.name).toMatchObject({ reason: testCase.reason });
+          expect((error as Error).message, testCase.name).toContain(testCase.messageIncludes);
+          return true;
+        });
+        expect(
+          plugin.execute.mock.calls.some(([options]) =>
+            (options as { statement: string }).statement.startsWith('DELETE FROM offline_sync_commands'),
+          ),
+          testCase.name,
+        ).toBe(false);
+      }
     });
   });
 
