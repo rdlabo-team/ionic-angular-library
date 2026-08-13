@@ -370,7 +370,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.update',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
       attempts: 0,
@@ -387,7 +386,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.update',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
       attempts: 0,
@@ -413,7 +411,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(userQuery?.statement).toBe('SELECT * FROM offline_sync_commands WHERE user_id = ? ORDER BY created_at ASC, command_id ASC');
   });
 
-  it('delete command persists replica_mutation in the SQLite outbox row', async () => {
+  it('delete command persists replica_mutation and satisfies the released v2 payload_hash column', async () => {
     const repository = createRepository();
     await repository.initialize();
     await repository.putCommand({
@@ -425,7 +423,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       identity: { kind: 'generated', localId: 'delete-uuid' },
       operation: 'test_items.delete',
       payload: { id: 42 },
-      payloadHash: 'hash',
       baseRevision: 4,
       replicaMutation: 'delete',
       state: 'pending',
@@ -440,6 +437,8 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       .find(({ statement }) => statement.startsWith('INSERT INTO offline_sync_commands'));
     expect(insert?.statement).toContain('replica_mutation');
     expect(insert?.values).toContain('delete');
+    expect(insert?.statement).toContain('payload_hash');
+    expect(insert?.values?.[10]).toBe('');
   });
 
   it('persists and restores declared localOnly footprint keys', async () => {
@@ -461,7 +460,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       operation: 'test_items.update',
       payload: { title: 'Optimistic' },
       localOnlyFootprint: [companion],
-      payloadHash: 'hash',
       baseRevision: 1,
       state: 'pending',
       attempts: 0,
@@ -490,7 +488,6 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
       payload_json: JSON.stringify(command.payload),
       local_only_footprint_json: JSON.stringify([companion]),
       replica_mutation: 'upsert',
-      payload_hash: command.payloadHash,
       base_revision_json: JSON.stringify(command.baseRevision),
       state: command.state,
       attempts: command.attempts,
@@ -1109,7 +1106,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-bbbb' },
           operation: 'test_items.create',
           payload: { title: 'Local item' },
-          payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
           attempts: 0,
@@ -1532,7 +1528,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-lease-read' },
           operation: 'test_items.update',
           payload: {},
-          payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
           attempts: 0,
@@ -1974,7 +1969,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-aaaa' },
           operation: 'test_items.update',
           payload: {},
-          payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
           attempts: 0,
@@ -2092,7 +2086,6 @@ describe('SqliteOfflineRepository replica rows', () => {
           identity: { kind: 'generated', localId: '019d-aaaa' },
           operation: 'test_items.update',
           payload: {},
-          payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
           attempts: 0,

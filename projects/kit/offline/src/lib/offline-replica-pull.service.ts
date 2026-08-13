@@ -2,7 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { isOfflineAggregateIntentConflict, offlineAggregateIntentMutations } from './offline-aggregate-intent-projector';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
-import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
+import { offlineCommandWithBaseRevision } from './offline-command-executor';
 import { commandFootprintKeys, OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import {
   OFFLINE_REPLICA_PROJECTOR,
@@ -72,7 +72,6 @@ export class OfflineReplicaPullService {
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   readonly #puller = inject(OFFLINE_REPLICA_PULLER);
   readonly #projector = inject(OFFLINE_REPLICA_PROJECTOR, { optional: true });
-  readonly #executor = inject(OFFLINE_COMMAND_EXECUTOR);
   readonly #hooks = inject(OFFLINE_COMMAND_HOOKS);
   readonly #replicaMutations = inject(OfflineReplicaMutationCoordinator);
   #schemaHash: Promise<string> | null = null;
@@ -124,8 +123,6 @@ export class OfflineReplicaPullService {
         const projection = await this.#projector?.project({
           scope,
           changes,
-          commands: scopeCommands,
-          repository: this.#repository,
         });
         this.#assertProjection(scope, projection);
         const putRows: OfflineReplicaRow[] = [];
@@ -223,6 +220,7 @@ export class OfflineReplicaPullService {
             for (const command of related) {
               putCommands.set(command.commandId, { ...command, state: 'conflict', retryAt: null, lastErrorCode: 'remote_deleted' });
             }
+            rematerializeAfter.push(related[0]!);
             continue;
           }
 
@@ -256,7 +254,7 @@ export class OfflineReplicaPullService {
           putRows.push(confirmedRow);
           if (remaining.length > 0) rematerializeAfter.push(remaining[0]!);
           for (const command of remaining) {
-            putCommands.set(command.commandId, this.#executor.withServerRevision(command, change.serverRevision));
+            putCommands.set(command.commandId, offlineCommandWithBaseRevision(command, change.serverRevision));
           }
         }
 
@@ -660,9 +658,9 @@ export class OfflineReplicaPullService {
     const following = related
       .slice(lastAcknowledgedIndex + 1)
       .map((command) =>
-        acknowledgementSuperseded
+        acknowledgementSuperseded || change.deleted
           ? { ...command, state: 'conflict' as const, retryAt: null, lastErrorCode: change.deleted ? 'remote_deleted' : 'remote_revision' }
-          : this.#executor.withServerRevision(command, change.serverRevision),
+          : offlineCommandWithBaseRevision(command, change.serverRevision),
       );
     for (const command of following) putCommands.set(command.commandId, command);
     for (const command of related.slice(0, lastAcknowledgedIndex + 1)) {
@@ -676,15 +674,10 @@ export class OfflineReplicaPullService {
           ...row,
           confirmedValues: null,
           serverRevision: change.serverRevision,
-          syncState: acknowledgementSuperseded ? 'conflict' : 'pending',
+          syncState: 'conflict',
           visibility: following.at(-1)!.replicaMutation === 'delete' ? 'pending_delete' : 'present',
           fetchedAt: Date.now(),
         });
-        if (acknowledgementSuperseded) {
-          for (const command of following) {
-            putCommands.set(command.commandId, { ...command, state: 'conflict', lastErrorCode: 'remote_deleted' });
-          }
-        }
       } else {
         removeRows.push({ ...row, identity: row.identity });
       }

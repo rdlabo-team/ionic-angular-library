@@ -819,7 +819,6 @@ export class SqliteOfflineRepository implements OfflineRepository {
         ? {}
         : { localOnlyFootprint: this.#parse(row['local_only_footprint_json']) }),
       replicaMutation: this.#string(row['replica_mutation']) as 'upsert' | 'delete',
-      payloadHash: this.#string(row['payload_hash']),
       baseRevision: this.#parseNullable(row['base_revision_json']),
       state: this.#string(row['state']) as OfflineCommand['state'],
       attempts: this.#number(row['attempts']),
@@ -863,7 +862,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         JSON.stringify(command.payload),
         command.localOnlyFootprint === undefined ? null : JSON.stringify(command.localOnlyFootprint),
         command.replicaMutation ?? 'upsert',
-        command.payloadHash,
+        '',
         this.#stringifyNullable(command.baseRevision),
         command.state,
         command.attempts,

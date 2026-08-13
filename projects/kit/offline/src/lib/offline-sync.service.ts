@@ -1,9 +1,10 @@
-import { computed, effect, ErrorHandler, inject, Injectable, InjectionToken, signal } from '@angular/core';
+import { computed, effect, ErrorHandler, inject, Injectable, InjectionToken, signal, untracked } from '@angular/core';
 import {
   OFFLINE_COMMAND_EXECUTOR,
   OFFLINE_SYNC_CONTEXT,
   offlineCommandLookupIdentity,
   offlineCommandTargetFromReplicaRow,
+  offlineCommandWithBaseRevision,
   type OfflineCommandResult,
   type EnqueueOfflineCommandIdentity,
   type OfflineSyncSession,
@@ -195,7 +196,11 @@ export class OfflineSyncService {
   constructor() {
     effect(() => {
       const connected = this.#network.connected();
-      if (this.#initialized && connected) this.#flushInBackground();
+      // The network transition may be observed after an explicit flush has already
+      // persisted a fatal pull attention. Do not let that stale transition restart
+      // the intentionally stopped loop; auth/session refresh remains able to retry.
+      const hasFatalPullAttention = untracked(() => this.#pullAttentions().length > 0);
+      if (this.#initialized && connected && !hasFatalPullAttention) this.#flushInBackground();
     });
   }
 
@@ -517,7 +522,6 @@ export class OfflineSyncService {
       operation: request.operation,
       payload: normalized.payload,
       replicaMutation: request.replicaMutation ?? 'upsert',
-      payloadHash: await this.#payloadHash(normalized.payload),
       baseRevision: normalized.baseRevision,
       state: 'pending',
       attempts: 0,
@@ -1177,34 +1181,12 @@ export class OfflineSyncService {
     commandIdentity: OfflineCommandIdentity,
   ): Promise<{ payload: T; baseRevision: string | number | null }> {
     let baseRevision = request.baseRevision ?? null;
-    let payload = request.payload;
     const sourceKey = this.#hooks.entityType(request);
     const row = await this.#getReplicaRowForSync(scope, sourceKey, commandIdentity);
     if (row?.serverRevision != null && row.serverRevision !== baseRevision) {
-      const rebased = this.#executor.withServerRevision(
-        {
-          ...scope,
-          commandId: '',
-          aggregateType: request.aggregateType,
-          sourceKey,
-          identity: commandIdentity,
-          operation: request.operation,
-          payload,
-          replicaMutation: request.replicaMutation ?? 'upsert',
-          payloadHash: '',
-          baseRevision,
-          state: 'pending',
-          attempts: 0,
-          retryAt: null,
-          createdAt: 0,
-          lastErrorCode: null,
-        },
-        row.serverRevision,
-      );
       baseRevision = row.serverRevision;
-      payload = rebased.payload as T;
     }
-    return { payload, baseRevision };
+    return { payload: request.payload, baseRevision };
   }
 
   async #completeCommand(
@@ -1237,15 +1219,10 @@ export class OfflineSyncService {
     const following = latestCommands.slice(latestIndex + 1);
     const rebased =
       result.clearRemoteId === true
-        ? following.map((item) => {
-            if (!this.#executor.withoutServerRevision) {
-              throw new Error('Offline command executor must implement withoutServerRevision to recreate a deleted remoteId row.');
-            }
-            return this.#executor.withoutServerRevision(item);
-          })
+        ? following.map((item) => offlineCommandWithBaseRevision(item, null))
         : revision === undefined
           ? following
-          : following.map((item) => this.#executor.withServerRevision(item, revision));
+          : following.map((item) => offlineCommandWithBaseRevision(item, revision));
     const current = await this.#rowForCommand(command);
     if (!this.#isCurrent(generation)) return;
     if (!current) {
@@ -1766,11 +1743,6 @@ export class OfflineSyncService {
 
   async #waitForSendingTransitions(): Promise<void> {
     await Promise.allSettled([...this.#sendingTransitions]);
-  }
-
-  async #payloadHash(payload: unknown): Promise<string> {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(this.#canonicalJson(payload)));
-    return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 
   #canonicalJson(value: unknown): string {

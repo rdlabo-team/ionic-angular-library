@@ -578,8 +578,10 @@ baseline. The server remains authoritative; SQLite is the durable local working 
 Synchronized mode requires `aggregateIntentProjector`. Kit calls it inside `OfflineReplicaMutationCoordinator` after
 enqueue, batch enqueue, replacement, discard, transport success, and pull acknowledgement. The adapter must derive
 only from authoritative confirmed values plus the complete remaining intent chain. Do not call it from product code.
-Commands persist payload/metadata and declared `localOnlyFootprint` keys only; optimistic snapshots and companion
-before/after images are not durable truth.
+Commands persist an immutable payload plus Kit-owned metadata (`baseRevision`, state, footprint keys). Kit updates
+only `baseRevision` when a newer server revision is known, and sets it to `null` after a generated remote identity is
+released; the product executor always receives the original payload. Optimistic snapshots and companion before/after
+images are not durable truth.
 
 When an API response is assembled from a base replica row plus product-owned local-only view rows, use
 `enqueuePrepared()`. Its callback runs inside the shared replica mutation lane, so every read used to derive the

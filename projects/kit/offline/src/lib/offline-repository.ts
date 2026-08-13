@@ -68,6 +68,7 @@ interface OfflineCommandBase<T> extends OfflineScope {
   /** Stable row identity. The Outbox never persists a generated server id. */
   identity: OfflineCommandIdentity;
   operation: string;
+  /** Opaque product payload. Kit never mutates this after enqueue. */
   payload: T;
   /**
    * Declared localOnly projection rows this intent may create, update, or remove.
@@ -76,7 +77,6 @@ interface OfflineCommandBase<T> extends OfflineScope {
   localOnlyFootprint?: readonly OfflineReplicaRowKey[];
   /** Durable intent used to preserve a hidden tombstone across restart and replay. */
   replicaMutation?: OfflineReplicaMutation;
-  payloadHash: string;
   baseRevision: string | number | null;
   state: OfflineCommandState;
   attempts: number;

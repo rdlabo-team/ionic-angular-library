@@ -75,12 +75,7 @@ export interface OfflineReplicaPullProjection {
 
 /** Pure product adapter for local-only projections derived from server replica changes. */
 export interface OfflineReplicaProjector {
-  project(input: {
-    scope: OfflineScope;
-    changes: readonly OfflineReplicaChange[];
-    commands: readonly import('./offline-repository').OfflineCommand[];
-    repository: import('./offline-repository').OfflineRepository;
-  }): Promise<OfflineReplicaPullProjection>;
+  project(input: { scope: OfflineScope; changes: readonly OfflineReplicaChange[] }): Promise<OfflineReplicaPullProjection>;
 }
 
 /** Backend response accepted by the shared pull-page normalizer. */

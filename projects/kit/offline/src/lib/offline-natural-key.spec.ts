@@ -1,7 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { KitStorageService } from '@rdlabo/ionic-angular-kit';
 import { describe, expect, it, vi } from 'vitest';
-import { OFFLINE_COMMAND_EXECUTOR } from './offline-command-executor';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OFFLINE_REPLICA_PULLER, type OfflineReplicaPullPage } from './offline-replica-puller';
@@ -287,13 +286,6 @@ describe('natural-key pull reconciliation', () => {
         { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
         { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
         { provide: OFFLINE_COMMAND_HOOKS, useValue: { entityType: (command: OfflineCommand) => command.aggregateType } },
-        {
-          provide: OFFLINE_COMMAND_EXECUTOR,
-          useValue: {
-            execute: vi.fn(),
-            withServerRevision: (command: OfflineCommand, revision: string | number) => ({ ...command, baseRevision: revision }),
-          },
-        },
         { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project: rematerializeTestAggregate } },
       ],
     });
@@ -311,7 +303,6 @@ describe('natural-key pull reconciliation', () => {
           identity: naturalCommandIdentity(key42),
           operation: 'create',
           payload: { favTo: '42', label: 'optimistic' },
-          payloadHash: 'hash',
           baseRevision: null,
           state: 'pending',
           attempts: 1,
@@ -350,7 +341,6 @@ describe('natural-key pull reconciliation', () => {
           identity: naturalCommandIdentity(key42),
           operation: 'update',
           payload: { favTo: '42', label: 'pending edit' },
-          payloadHash: 'hash-2',
           baseRevision: 2,
           state: 'pending',
           attempts: 0,

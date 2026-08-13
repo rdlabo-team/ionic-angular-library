@@ -80,7 +80,6 @@ const READ_CACHE_ONLY_COMMAND_EXECUTOR: OfflineCommandExecutor = {
   execute: async (): Promise<OfflineCommandResult> => {
     throw new Error('This offline provider is configured as a read-only cache.');
   },
-  withServerRevision: (command) => command,
 };
 
 const READ_CACHE_ONLY_REPLICA_PULLER: OfflineReplicaPuller = {

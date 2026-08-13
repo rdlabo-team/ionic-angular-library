@@ -313,7 +313,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'test_items.update',
         payload: { title: 'Local item' },
-        payloadHash: 'hash',
         baseRevision: 7,
         state: 'pending',
         attempts: 0,
@@ -366,7 +365,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-cccc' },
         operation: 'test_items.delete',
         payload: {},
-        payloadHash: 'hash',
         baseRevision: null,
         state: 'pending',
         attempts: 0,
@@ -406,7 +404,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'test_items.update',
         payload: {},
-        payloadHash: 'hash',
         baseRevision: null,
         state: 'pending',
         attempts: 0,
@@ -468,7 +465,6 @@ describe('IonicOfflineRepository', () => {
         identity: { kind: 'generated', localId: '019d-aaaa' },
         operation: 'test_items.update',
         payload: { title: 'Local item' },
-        payloadHash: 'hash',
         baseRevision: 7,
         state: 'pending',
         attempts: 0,
@@ -823,7 +819,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.update',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending' as const,
       attempts: 0,
@@ -847,7 +842,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: 'legacy' },
       operation: 'test_items.update',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
       attempts: 0,
@@ -886,7 +880,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'documents.upsert',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending' as const,
       attempts: 0,
@@ -941,7 +934,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-aaaa' },
       operation: 'test_items.create',
       payload: { title: 'local' },
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
       attempts: 0,
@@ -1022,7 +1014,9 @@ describe('IonicOfflineRepository', () => {
     storage.values.set('offline:metadata', { schemaVersion: 999, lastUserId: 1 });
     storage.values.set('offline:outbox:commands', { stale: {} });
     storage.values.set('firebaseToken', { token: 'keep' });
-    await expect(repository.initialize()).rejects.toThrow('Unsupported offline storage schema version 999; expected 2');
+    await expect(repository.initialize()).rejects.toThrow(
+      `Unsupported offline storage schema version 999; expected ${OFFLINE_SCHEMA_VERSION}`,
+    );
     expect(storage.values.get('offline:outbox:commands')).toEqual({ stale: {} });
     expect(storage.values.get('offline:metadata')).toEqual({ schemaVersion: 999, lastUserId: 1 });
     expect(storage.values.get('firebaseToken')).toEqual({ token: 'keep' });
@@ -1054,7 +1048,6 @@ describe('IonicOfflineRepository', () => {
       identity: { kind: 'generated', localId: '019d-bbbb' },
       operation: 'test_items.create',
       payload: { title: 'Local item' },
-      payloadHash: 'hash',
       baseRevision: null,
       state: 'pending',
       attempts: 0,
@@ -1091,7 +1084,6 @@ describe('IonicOfflineRepository', () => {
       identity: generatedCommandIdentity('delete-uuid'),
       operation: 'test_items.delete',
       payload: { id: 42 },
-      payloadHash: 'delete-hash',
       baseRevision: 7,
       replicaMutation: 'delete',
       state: 'pending',
@@ -2056,7 +2048,6 @@ describe('IonicOfflineRepository', () => {
       identity: generatedCommandIdentity('019d-snap'),
       operation: 'test_items.update',
       payload: {},
-      payloadHash: 'hash',
       baseRevision: 1,
       state: 'pending',
       attempts: 0,
