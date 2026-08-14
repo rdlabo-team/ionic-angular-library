@@ -42,8 +42,8 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
   pendingFailureHook: Promise<void> | null = null;
   failureCalls = 0;
   readonly sockets: FakeWebSocket[] = [];
-  readonly removeAppListener = vi.fn(() => Promise.resolve());
-  readonly removeNetworkListener = vi.fn(() => Promise.resolve());
+  readonly removeAppListener = vi.fn(async () => undefined);
+  readonly removeNetworkListener = vi.fn(async () => undefined);
   appListenerResolver: ((handle: PluginListenerHandle) => void) | null = null;
   requireRemoteAccess = false;
 
@@ -59,27 +59,24 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
     return this.connectEnabled;
   }
 
-  protected buildSocketTargets(): Promise<{ url: string; protocols: string[] }[]> {
+  protected async buildSocketTargets(): Promise<{ url: string; protocols: string[] }[]> {
     if (this.failTargets) {
-      return Promise.reject(new Error('token failed'));
+      throw new Error('token failed');
     }
-    return Promise.resolve(
-      Array.from({ length: this.targetCount }, (_, index) => ({
-        url: `https://example.test/realtime/${index}`,
-        protocols: ['test'],
-      })),
-    );
+    return Array.from({ length: this.targetCount }, (_, index) => ({
+      url: `https://example.test/realtime/${index}`,
+      protocols: ['test'],
+    }));
   }
 
-  protected override handleConnectionFailure(): Promise<void> {
+  protected override async handleConnectionFailure(): Promise<void> {
     this.failureCalls += 1;
     if (this.pendingFailureHook) {
       return this.pendingFailureHook;
     }
     if (this.failFailureHook) {
-      return Promise.reject(new Error('storage unavailable'));
+      throw new Error('storage unavailable');
     }
-    return Promise.resolve();
   }
 
   protected override parseMessage(data: string): TestEvent[] {
@@ -108,8 +105,8 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
     });
   }
 
-  protected override addNetworkStatusListener(): Promise<PluginListenerHandle> {
-    return Promise.resolve({ remove: this.removeNetworkListener });
+  protected override async addNetworkStatusListener(): Promise<PluginListenerHandle> {
+    return { remove: this.removeNetworkListener };
   }
 
   openForTest(): Promise<void> {
@@ -147,8 +144,8 @@ class TestConnection extends KitRealtimeConnection<TestEvent> {
 class InheritedConstructorConnection extends KitRealtimeConnection<TestEvent> {
   protected readonly shouldConnect = false;
 
-  protected buildSocketTargets(): Promise<{ url: string; protocols: string[] }[]> {
-    return Promise.resolve([]);
+  protected async buildSocketTargets(): Promise<{ url: string; protocols: string[] }[]> {
+    return [];
   }
 }
 

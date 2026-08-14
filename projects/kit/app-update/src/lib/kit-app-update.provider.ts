@@ -22,14 +22,12 @@ export class KitAppUpdateService {
     if (!this.#updates.isEnabled || !this.#document.defaultView?.navigator.serviceWorker?.controller) {
       return;
     }
-    try {
-      const available = await withTimeout(this.#updates.checkForUpdate(), UPDATE_CHECK_TIMEOUT_MS);
-      if (available) {
-        this.#document.location?.reload();
-      }
-    } catch (error) {
-      console.error('Angular service-worker update check failed', error);
-    }
+    const checkForUpdate = async (): Promise<boolean | undefined> => withTimeout(this.#updates.checkForUpdate(), UPDATE_CHECK_TIMEOUT_MS);
+    await checkForUpdate()
+      .then((available) => {
+        if (available) this.#document.location?.reload();
+      })
+      .catch((error: unknown) => console.error('Angular service-worker update check failed', error));
   }
 }
 
@@ -42,9 +40,7 @@ export class KitAppUpdateService {
  * rolling out because code already running in older application versions cannot gain this behavior retroactively.
  */
 export function provideKitAppUpdate(): EnvironmentProviders {
-  return makeEnvironmentProviders([
-    provideAppInitializer(() => inject(KitAppUpdateService).initialize()),
-  ]);
+  return makeEnvironmentProviders([provideAppInitializer(() => inject(KitAppUpdateService).initialize())]);
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {

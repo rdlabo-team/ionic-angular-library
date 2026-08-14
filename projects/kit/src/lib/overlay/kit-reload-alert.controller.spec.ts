@@ -98,7 +98,7 @@ describe('KitReloadAlertController', () => {
     await controller.present(OPTS);
     await controller.dismiss();
     first.triggerDismiss();
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     await controller.present(OPTS);
     expect(alertCtrl.create).toHaveBeenCalledTimes(2);
   });

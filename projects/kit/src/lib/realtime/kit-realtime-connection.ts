@@ -184,8 +184,8 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
   }
 
   /** Hook used by authenticated clients to invalidate a token after handshake failure. */
-  protected handleConnectionFailure(): Promise<void> {
-    return Promise.resolve();
+  protected async handleConnectionFailure(): Promise<void> {
+    return;
   }
 
   /** Parse a text WebSocket message into one or more domain events. */
@@ -247,11 +247,9 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
       }
       this.listeners.push(networkHandle);
     })();
-    try {
-      await this.#lifecycleRegistration;
-    } finally {
+    await this.#lifecycleRegistration.finally(() => {
       this.#lifecycleRegistration = null;
-    }
+    });
   }
 
   /** Remove all lifecycle listeners, including listeners whose async registration has not completed yet. */
@@ -310,84 +308,82 @@ export abstract class KitRealtimeConnection<TEvent extends KitRealtimeEvent> {
     this.#clearReconnectTimer();
     this.#opening = true;
     const generation = this.#generation;
+    await this.#openGeneration(generation)
+      .catch(() => this.#requestReconnect())
+      .finally(() => {
+        if (generation === this.#generation) this.#opening = false;
+      });
+  }
 
-    try {
-      const targets = await this.buildSocketTargets();
-      if (!this.#canOpen || generation !== this.#generation) {
-        return;
+  /** Build and attach the sockets for one lifecycle generation. */
+  async #openGeneration(generation: number): Promise<void> {
+    const targets = await this.buildSocketTargets();
+    if (!this.#canOpen || generation !== this.#generation) {
+      return;
+    }
+    const nextTargets = new Map(targets.map((target) => [toKitWebSocketUrl(target.url), target]));
+    for (const [key, socket] of this.#sockets) {
+      if (nextTargets.has(key)) {
+        continue;
       }
-      const nextTargets = new Map(targets.map((target) => [toKitWebSocketUrl(target.url), target]));
-      for (const [key, socket] of this.#sockets) {
-        if (nextTargets.has(key)) {
-          continue;
-        }
-        const health = this.#health.get(socket);
-        if (health) {
-          this.#removeSocket(socket, health);
-        }
+      const health = this.#health.get(socket);
+      if (health) {
+        this.#removeSocket(socket, health);
       }
-      this.#targets = nextTargets;
-      if (this.#sockets.size === 0) {
-        this.#clearPingTimer();
+    }
+    this.#targets = nextTargets;
+    if (this.#sockets.size === 0) {
+      this.#clearPingTimer();
+    }
+    for (const target of targets) {
+      const key = toKitWebSocketUrl(target.url);
+      if (this.#sockets.has(key)) {
+        continue;
       }
-      for (const target of targets) {
-        const key = toKitWebSocketUrl(target.url);
-        if (this.#sockets.has(key)) {
-          continue;
-        }
-        const socket = this.createWebSocket(key, target.protocols);
-        const health: SocketHealth = {
-          key,
-          lastActivityAt: 0,
-          openTimer: null,
-          watchdog: new KitRealtimeLivenessWatchdog(this.#options.livenessTimeoutMs, () => this.#connectionFailed(generation, socket)),
-        };
-        this.#sockets.set(key, socket);
-        this.#health.set(socket, health);
-        health.openTimer = setTimeout(() => this.#connectionFailed(generation, socket), this.#options.openTimeoutMs);
+      const socket = this.createWebSocket(key, target.protocols);
+      const health: SocketHealth = {
+        key,
+        lastActivityAt: 0,
+        openTimer: null,
+        watchdog: new KitRealtimeLivenessWatchdog(this.#options.livenessTimeoutMs, () => this.#connectionFailed(generation, socket)),
+      };
+      this.#sockets.set(key, socket);
+      this.#health.set(socket, health);
+      health.openTimer = setTimeout(() => this.#connectionFailed(generation, socket), this.#options.openTimeoutMs);
 
-        socket.onopen = () => {
-          if (generation !== this.#generation || this.#sockets.get(key) !== socket) {
-            return;
-          }
-          this.#clearOpenTimer(health);
-          this.#markActivity(health);
-          this.#startPing();
-          if (this.isStreamOpen) {
-            this.#reconnectAttempt = 0;
-            this.#reconnected$.next();
-          }
-        };
-        socket.onmessage = ({ data }) => {
-          if (generation !== this.#generation || this.#sockets.get(key) !== socket || typeof data !== 'string') {
-            return;
-          }
-          this.#markActivity(health);
-          if (data === this.#options.pong) {
-            return;
-          }
-          let events: TEvent[];
-          try {
-            events = this.parseMessage(data);
-          } catch {
-            // Ignore malformed application messages while retaining the healthy socket.
-            return;
-          }
-          for (const event of events) {
-            this.#events$.next({ ...event, isSelf: event.originId === this.id });
-          }
-        };
-        socket.onerror = () => this.#connectionFailed(generation, socket);
-        socket.onclose = () => this.#connectionFailed(generation, socket);
-      }
-      this.#opening = false;
-    } catch {
-      this.#opening = false;
-      this.#requestReconnect();
-    } finally {
-      if (generation === this.#generation) {
-        this.#opening = false;
-      }
+      socket.onopen = () => {
+        if (generation !== this.#generation || this.#sockets.get(key) !== socket) {
+          return;
+        }
+        this.#clearOpenTimer(health);
+        this.#markActivity(health);
+        this.#startPing();
+        if (this.isStreamOpen) {
+          this.#reconnectAttempt = 0;
+          this.#reconnected$.next();
+        }
+      };
+      socket.onmessage = ({ data }) => {
+        if (generation !== this.#generation || this.#sockets.get(key) !== socket || typeof data !== 'string') {
+          return;
+        }
+        this.#markActivity(health);
+        if (data === this.#options.pong) {
+          return;
+        }
+        let events: TEvent[];
+        try {
+          events = this.parseMessage(data);
+        } catch {
+          // Ignore malformed application messages while retaining the healthy socket.
+          return;
+        }
+        for (const event of events) {
+          this.#events$.next({ ...event, isSelf: event.originId === this.id });
+        }
+      };
+      socket.onerror = () => this.#connectionFailed(generation, socket);
+      socket.onclose = () => this.#connectionFailed(generation, socket);
     }
   }
 

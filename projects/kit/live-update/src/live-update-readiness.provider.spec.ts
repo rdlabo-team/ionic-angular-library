@@ -37,7 +37,7 @@ describe('provideLiveUpdateReadiness', () => {
     TestBed.inject(ApplicationRef);
 
     stable.next(true);
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     expect(ready).not.toHaveBeenCalled();
 
     routerEvents.next(new NavigationEnd(1, '/', '/'));

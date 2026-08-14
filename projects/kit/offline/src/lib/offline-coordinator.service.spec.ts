@@ -301,6 +301,27 @@ describe('OfflineCoordinatorService', () => {
       expect(coordinator.isStorageReady()).toBe(false);
     });
 
+    it('normalizes a synchronous repository initialization failure through onStorageUnavailable', async () => {
+      const cause = new Error('driver initialization threw synchronously');
+      const onStorageUnavailable = vi.fn(async () => undefined);
+      const { coordinator, session, sync } = setup(null, {
+        repositoryInitialize: () => {
+          throw cause;
+        },
+        onStorageUnavailable,
+      });
+
+      await expect(coordinator.initialize()).resolves.toBeUndefined();
+
+      const state = coordinator.storageState();
+      expect(state.status).toBe('unavailable');
+      if (state.status !== 'unavailable') return;
+      expect(state.error.cause).toBe(cause);
+      expect(onStorageUnavailable).toHaveBeenCalledExactlyOnceWith(state.error);
+      expect(session.initialize).not.toHaveBeenCalled();
+      expect(sync.initialize).not.toHaveBeenCalled();
+    });
+
     it('short-circuits repository-backed public APIs after online-only degradation', async () => {
       const { coordinator, session, sync } = setup(null, {
         repositoryInitialize: async () => {

@@ -249,7 +249,7 @@ describe('KitAuthRecoveryService', () => {
     recovery.initialize();
     access.grantLocal();
     availability.next(true);
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
 
     access.grantLocal();
     releaseOld?.();

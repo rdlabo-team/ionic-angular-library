@@ -55,16 +55,19 @@ const getDisableTargets = (event: Event): DisableableElement[] => {
  * <ion-button type="submit" [form]="formRef">Save</ion-button>
  * ```
  */
-export const disableHandler = async (event: Event, work: Promise<void | boolean>): Promise<void> => {
+export const disableHandler = (event: Event, work: Promise<void | boolean>): Promise<void> => {
   if (event.type === 'submit') event.preventDefault();
 
   const targets = getDisableTargets(event);
   const disabledStates = targets.map((target) => target.disabled);
   targets.forEach((target) => (target.disabled = true));
 
-  try {
-    await work.catch((): undefined => undefined);
-  } finally {
-    targets.forEach((target, index) => (target.disabled = disabledStates[index]));
-  }
+  return work
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .finally(() => {
+      targets.forEach((target, index) => (target.disabled = disabledStates[index]));
+    });
 };

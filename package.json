@@ -80,6 +80,7 @@
     "@ionic/storage-angular": "^4.0.0",
     "@playwright/test": "^1.57.0",
     "@rdlabo/capacitor-brotherprint": "^8.1.1",
+    "@rdlabo/eslint-plugin-rules": "^21.2.6",
     "angular-eslint": "21.4.0",
     "child_process": "^1.0.2",
     "dom-to-image-more": "^3.10.0",

@@ -354,6 +354,7 @@ describe('OfflineSyncService', () => {
     service.revokeSession();
     vi.clearAllTimers();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('readCacheOnly mode rejects enqueue before creating replica or Outbox state', async () => {
@@ -541,7 +542,7 @@ describe('OfflineSyncService', () => {
     await applying;
 
     const discard = service.discardAllPending();
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     expect(commands).toHaveLength(2);
 
     release();
@@ -1666,56 +1667,52 @@ describe('OfflineSyncService', () => {
     ['HTTP 409', () => ({ status: 409, message: 'Conflict' })],
   ] as const)('pre-pull fatal (%s) は1s自動retryせずpending post-pullもスキップする', async (_label, createError) => {
     vi.useFakeTimers();
-    try {
-      session = {
-        userId: 1,
-        scopes: [
-          { userId: 1, scopeId: '10' },
-          { userId: 1, scopeId: '20' },
-        ],
-      };
-      let scope20Pulls = 0;
-      const postPullError = new Error('scope 20 post-send pull failed before fatal');
-      const fatalError = createError();
-      pull.mockImplementation(async (scope) => {
-        if (scope.scopeId === '20') {
-          scope20Pulls += 1;
-          // First full flush: pre-pull ok, post-send pull fails and leaves pending marker.
-          if (scope20Pulls === 2) throw postPullError;
-        }
-      });
-      await service.enqueue(
-        {
-          scopeId: '20',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: `fatal-skip-post-${_label.replace(/\s+/g, '-')}` },
-          operation: 'documents.create',
-          payload: { title: 'seed' },
-        },
-        { flush: false },
-      );
-      connected.set(true);
-      await expect(service.flush()).rejects.toBe(postPullError);
-      expect(execute).toHaveBeenCalledOnce();
-      expectAwaitingPull(1);
-      // Drop the transient post-pull retry so this case only asserts fatal does not arm a new one.
-      vi.clearAllTimers();
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    let scope20Pulls = 0;
+    const postPullError = new Error('scope 20 post-send pull failed before fatal');
+    const fatalError = createError();
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '20') {
+        scope20Pulls += 1;
+        // First full flush: pre-pull ok, post-send pull fails and leaves pending marker.
+        if (scope20Pulls === 2) throw postPullError;
+      }
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: `fatal-skip-post-${_label.replace(/\s+/g, '-')}` },
+        operation: 'documents.create',
+        payload: { title: 'seed' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(postPullError);
+    expect(execute).toHaveBeenCalledOnce();
+    expectAwaitingPull(1);
+    // Drop the transient post-pull retry so this case only asserts fatal does not arm a new one.
+    vi.clearAllTimers();
 
-      pull.mockImplementation(async (scope) => {
-        if (scope.scopeId === '10') throw fatalError;
-      });
-      const pullsBeforeFatal = pull.mock.calls.length;
-      await expect(service.flush()).rejects.toBe(fatalError);
-      expect(execute).toHaveBeenCalledOnce();
-      expect(pull.mock.calls.slice(pullsBeforeFatal).map((call) => call[0]?.scopeId)).toEqual(['10']);
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10') throw fatalError;
+    });
+    const pullsBeforeFatal = pull.mock.calls.length;
+    await expect(service.flush()).rejects.toBe(fatalError);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(pull.mock.calls.slice(pullsBeforeFatal).map((call) => call[0]?.scopeId)).toEqual(['10']);
 
-      const pullsAfterFatal = pull.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(pull.mock.calls.length).toBe(pullsAfterFatal);
-      expect(handleError).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    const pullsAfterFatal = pull.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(pull.mock.calls.length).toBe(pullsAfterFatal);
+    expect(handleError).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1726,266 +1723,248 @@ describe('OfflineSyncService', () => {
   ] as const)('post-send pull fatal (%s) は残りpending post-pullを止めACK保持・1s自動retryなし', async (_label, createError) => {
     vi.useFakeTimers();
     const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
-    try {
-      session = {
-        userId: 1,
-        scopes: [
-          { userId: 1, scopeId: '10' },
-          { userId: 1, scopeId: '20' },
-        ],
-      };
-      const fatalError = createError();
-      const pullsByScope = new Map<string, number>();
-      pull.mockImplementation(async (scope) => {
-        const count = (pullsByScope.get(scope.scopeId) ?? 0) + 1;
-        pullsByScope.set(scope.scopeId, count);
-        // Second pull for a scope is the post-send pull after ACK.
-        if (count >= 2) throw fatalError;
-      });
-      await service.enqueue(
-        {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: `post-fatal-a-${_label.replace(/\s+/g, '-')}` },
-          operation: 'documents.create',
-          payload: { title: 'a' },
-        },
-        { flush: false },
-      );
-      await service.enqueue(
-        {
-          scopeId: '20',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: `post-fatal-b-${_label.replace(/\s+/g, '-')}` },
-          operation: 'documents.create',
-          payload: { title: 'b' },
-        },
-        { flush: false },
-      );
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const fatalError = createError();
+    const pullsByScope = new Map<string, number>();
+    pull.mockImplementation(async (scope) => {
+      const count = (pullsByScope.get(scope.scopeId) ?? 0) + 1;
+      pullsByScope.set(scope.scopeId, count);
+      // Second pull for a scope is the post-send pull after ACK.
+      if (count >= 2) throw fatalError;
+    });
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: `post-fatal-a-${_label.replace(/\s+/g, '-')}` },
+        operation: 'documents.create',
+        payload: { title: 'a' },
+      },
+      { flush: false },
+    );
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: `post-fatal-b-${_label.replace(/\s+/g, '-')}` },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+      },
+      { flush: false },
+    );
 
-      setTimeoutSpy.mockClear();
-      connected.set(true);
-      await expect(service.flush()).rejects.toBe(fatalError);
+    setTimeoutSpy.mockClear();
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(fatalError);
 
-      // Both commands transported; retained until pull acknowledges commandId.
-      expect(execute).toHaveBeenCalledTimes(2);
-      expectAwaitingPull(2);
-      // Two pending post-pull scopes: first fatal stops the second immediately.
-      expect(pullsByScope.get('10')).toBeGreaterThanOrEqual(1);
-      expect(pullsByScope.get('20')).toBeGreaterThanOrEqual(1);
-      const postPullScopes = [...pullsByScope.entries()].filter(([, count]) => count >= 2).map(([scopeId]) => scopeId);
-      expect(postPullScopes).toHaveLength(1);
-      expect([...pullsByScope.values()].reduce((sum, count) => sum + count, 0)).toBe(3);
-      expect(new Set(commands.map((command) => command.scopeId))).toEqual(new Set(['10', '20']));
-      // Fatal must not arm the 1s automatic post-pull flush retry.
-      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
+    // Both commands transported; retained until pull acknowledges commandId.
+    expect(execute).toHaveBeenCalledTimes(2);
+    expectAwaitingPull(2);
+    // Two pending post-pull scopes: first fatal stops the second immediately.
+    expect(pullsByScope.get('10')).toBeGreaterThanOrEqual(1);
+    expect(pullsByScope.get('20')).toBeGreaterThanOrEqual(1);
+    const postPullScopes = [...pullsByScope.entries()].filter(([, count]) => count >= 2).map(([scopeId]) => scopeId);
+    expect(postPullScopes).toHaveLength(1);
+    expect([...pullsByScope.values()].reduce((sum, count) => sum + count, 0)).toBe(3);
+    expect(new Set(commands.map((command) => command.scopeId))).toEqual(new Set(['10', '20']));
+    // Fatal must not arm the 1s automatic post-pull flush retry.
+    expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
 
-      const pullsAfterFatal = pull.mock.calls.length;
-      // Drop unrelated scheduler/effect timers, then prove no 1s retry remained.
-      vi.clearAllTimers();
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(pull.mock.calls.length).toBe(pullsAfterFatal);
-      expect(execute).toHaveBeenCalledTimes(2);
-    } finally {
-      setTimeoutSpy.mockRestore();
-      vi.useRealTimers();
-    }
+    const pullsAfterFatal = pull.mock.calls.length;
+    // Drop unrelated scheduler/effect timers, then prove no 1s retry remained.
+    vi.clearAllTimers();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(pull.mock.calls.length).toBe(pullsAfterFatal);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it('post-send pull transientの後のfatalはfatalを優先して投げ残りpendingを止める', async () => {
     vi.useFakeTimers();
     const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
-    try {
-      session = {
-        userId: 1,
-        scopes: [
-          { userId: 1, scopeId: '10' },
-          { userId: 1, scopeId: '20' },
-          { userId: 1, scopeId: '30' },
-        ],
-      };
-      const transient = new Error('post-send transient');
-      const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
-      const pullsByScope = new Map<string, number>();
-      let postPullAttempts = 0;
-      pull.mockImplementation(async (scope) => {
-        const count = (pullsByScope.get(scope.scopeId) ?? 0) + 1;
-        pullsByScope.set(scope.scopeId, count);
-        if (count < 2) return;
-        postPullAttempts += 1;
-        if (postPullAttempts === 1) throw transient;
-        throw fatal;
-      });
-      for (const [scopeId, localId] of [
-        ['10', 'post-prefer-a'],
-        ['20', 'post-prefer-b'],
-        ['30', 'post-prefer-c'],
-      ] as const) {
-        await service.enqueue(
-          {
-            scopeId,
-            aggregateType: 'documents',
-            identity: { kind: 'generated', localId },
-            operation: 'documents.create',
-            payload: { title: localId },
-          },
-          { flush: false },
-        );
-      }
-
-      setTimeoutSpy.mockClear();
-      connected.set(true);
-      await expect(service.flush()).rejects.toBe(fatal);
-      expect(execute).toHaveBeenCalledTimes(3);
-      expectAwaitingPull(3);
-      expect(postPullAttempts).toBe(2);
-      expect([...pullsByScope.values()].filter((count) => count >= 2)).toHaveLength(2);
-      expect([...pullsByScope.values()].filter((count) => count === 1)).toHaveLength(1);
-      expect(new Set(commands.map((command) => command.scopeId))).toEqual(new Set(['10', '20', '30']));
-      expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
-
-      const pullsAfterFatal = pull.mock.calls.length;
-      vi.clearAllTimers();
-      await vi.advanceTimersByTimeAsync(2_000);
-      expect(pull.mock.calls.length).toBe(pullsAfterFatal);
-    } finally {
-      setTimeoutSpy.mockRestore();
-      vi.useRealTimers();
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+        { userId: 1, scopeId: '30' },
+      ],
+    };
+    const transient = new Error('post-send transient');
+    const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    const pullsByScope = new Map<string, number>();
+    let postPullAttempts = 0;
+    pull.mockImplementation(async (scope) => {
+      const count = (pullsByScope.get(scope.scopeId) ?? 0) + 1;
+      pullsByScope.set(scope.scopeId, count);
+      if (count < 2) return;
+      postPullAttempts += 1;
+      if (postPullAttempts === 1) throw transient;
+      throw fatal;
+    });
+    for (const [scopeId, localId] of [
+      ['10', 'post-prefer-a'],
+      ['20', 'post-prefer-b'],
+      ['30', 'post-prefer-c'],
+    ] as const) {
+      await service.enqueue(
+        {
+          scopeId,
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId },
+          operation: 'documents.create',
+          payload: { title: localId },
+        },
+        { flush: false },
+      );
     }
+
+    setTimeoutSpy.mockClear();
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(fatal);
+    expect(execute).toHaveBeenCalledTimes(3);
+    expectAwaitingPull(3);
+    expect(postPullAttempts).toBe(2);
+    expect([...pullsByScope.values()].filter((count) => count >= 2)).toHaveLength(2);
+    expect([...pullsByScope.values()].filter((count) => count === 1)).toHaveLength(1);
+    expect(new Set(commands.map((command) => command.scopeId))).toEqual(new Set(['10', '20', '30']));
+    expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 1_000)).toBe(false);
+
+    const pullsAfterFatal = pull.mock.calls.length;
+    vi.clearAllTimers();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(pull.mock.calls.length).toBe(pullsAfterFatal);
   });
 
   it('遅延した旧世代のpost-pull fatalは新世代のretry_wait timerを消さない', async () => {
     vi.useFakeTimers();
-    try {
-      let releasePostPull!: (error: unknown) => void;
-      let postPullStarted!: () => void;
-      const postPullEntered = new Promise<void>((resolve) => {
-        postPullStarted = resolve;
-      });
-      const postPullGate = new Promise<void>((_resolve, reject) => {
-        releasePostPull = (error) => reject(error);
-      });
-      // Avoid unhandled rejection if the gate is abandoned mid-test.
-      void postPullGate.catch(() => undefined);
+    let releasePostPull!: (error: unknown) => void;
+    let postPullStarted!: () => void;
+    const postPullEntered = new Promise<void>((resolve) => {
+      postPullStarted = resolve;
+    });
+    const postPullGate = new Promise<void>((_resolve, reject) => {
+      releasePostPull = (error) => reject(error);
+    });
+    // Avoid unhandled rejection if the gate is abandoned mid-test.
+    void postPullGate.catch(() => undefined);
 
-      const pullsByScope = new Map<string, number>();
-      pull.mockImplementation(async (scope) => {
-        const count = (pullsByScope.get(`${scope.userId}:${scope.scopeId}`) ?? 0) + 1;
-        pullsByScope.set(`${scope.userId}:${scope.scopeId}`, count);
-        // Session A post-send pull stays pending until we release the fatal.
-        if (scope.userId === 1 && scope.scopeId === '10' && count >= 2) {
-          postPullStarted();
-          await postPullGate;
-        }
-      });
+    const pullsByScope = new Map<string, number>();
+    pull.mockImplementation(async (scope) => {
+      const count = (pullsByScope.get(`${scope.userId}:${scope.scopeId}`) ?? 0) + 1;
+      pullsByScope.set(`${scope.userId}:${scope.scopeId}`, count);
+      // Session A post-send pull stays pending until we release the fatal.
+      if (scope.userId === 1 && scope.scopeId === '10' && count >= 2) {
+        postPullStarted();
+        await postPullGate;
+      }
+    });
 
-      await service.enqueue(
-        {
-          scopeId: '10',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'stale-fatal-a' },
-          operation: 'documents.create',
-          payload: { title: 'a' },
-        },
-        { flush: false },
-      );
-      connected.set(true);
-      const flushA = service.flush();
-      await postPullEntered;
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'stale-fatal-a' },
+        operation: 'documents.create',
+        payload: { title: 'a' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    const flushA = service.flush();
+    await postPullEntered;
 
-      // Transition generation without waiting for A's deferred post-pull to settle.
-      service.revokeSession();
-      commands = commands.filter((command) => command.userId !== 1);
-      rows = rows.filter((row) => row.userId !== 1);
-      session = { userId: 2, scopes: [{ userId: 2, scopeId: '20' }] };
-      // Stay offline during session B activation so refreshSession does not start a
-      // background flush that would swallow the subsequent explicit flush().
-      connected.set(false);
-      await service.refreshSession();
+    // Transition generation without waiting for A's deferred post-pull to settle.
+    service.revokeSession();
+    commands = commands.filter((command) => command.userId !== 1);
+    rows = rows.filter((row) => row.userId !== 1);
+    session = { userId: 2, scopes: [{ userId: 2, scopeId: '20' }] };
+    // Stay offline during session B activation so refreshSession does not start a
+    // background flush that would swallow the subsequent explicit flush().
+    connected.set(false);
+    await service.refreshSession();
 
-      execute.mockRejectedValueOnce({ status: 500 }).mockResolvedValue({ response: null });
-      await service.enqueue(
-        {
-          scopeId: '20',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'stale-fatal-b' },
-          operation: 'documents.create',
-          payload: { title: 'b' },
-        },
-        { flush: false },
-      );
-      connected.set(true);
-      await service.flush();
-      expect(service.pendingCommands()[0]).toMatchObject({
-        state: 'retry_wait',
-        retryAt: expect.any(Number),
+    execute.mockRejectedValueOnce({ status: 500 }).mockResolvedValue({ response: null });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
         identity: { kind: 'generated', localId: 'stale-fatal-b' },
-      });
-      const executesBeforeRetry = execute.mock.calls.length;
+        operation: 'documents.create',
+        payload: { title: 'b' },
+      },
+      { flush: false },
+    );
+    connected.set(true);
+    await service.flush();
+    expect(service.pendingCommands()[0]).toMatchObject({
+      state: 'retry_wait',
+      retryAt: expect.any(Number),
+      identity: { kind: 'generated', localId: 'stale-fatal-b' },
+    });
+    const executesBeforeRetry = execute.mock.calls.length;
 
-      const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
-      releasePostPull(fatal);
-      await expect(flushA).rejects.toBe(fatal);
-      // Stale fatal must settle/reject without clearing B's armed retry timer.
-      expect(service.pendingCommands()[0]).toMatchObject({
-        state: 'retry_wait',
-        identity: { kind: 'generated', localId: 'stale-fatal-b' },
-      });
+    const fatal = new OfflineReplicaSchemaMismatchError(1, 'abc', 2, 'def');
+    releasePostPull(fatal);
+    await expect(flushA).rejects.toBe(fatal);
+    // Stale fatal must settle/reject without clearing B's armed retry timer.
+    expect(service.pendingCommands()[0]).toMatchObject({
+      state: 'retry_wait',
+      identity: { kind: 'generated', localId: 'stale-fatal-b' },
+    });
 
-      await vi.advanceTimersByTimeAsync(2_000);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(execute.mock.calls.length).toBeGreaterThan(executesBeforeRetry);
-      expect(
-        commands.some(
-          (command) =>
-            command.identity.kind === 'generated' && command.identity.localId === 'stale-fatal-b' && command.state !== 'awaiting_pull',
-        ),
-      ).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
+    await vi.advanceTimersByTimeAsync(2_000);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(execute.mock.calls.length).toBeGreaterThan(executesBeforeRetry);
+    expect(
+      commands.some(
+        (command) =>
+          command.identity.kind === 'generated' && command.identity.localId === 'stale-fatal-b' && command.state !== 'awaiting_pull',
+      ),
+    ).toBe(false);
   });
 
   it('pre-pull transient失敗はscope隔離し1s自動retryをスケジュールする', async () => {
     vi.useFakeTimers();
-    try {
-      session = {
-        userId: 1,
-        scopes: [
-          { userId: 1, scopeId: '10' },
-          { userId: 1, scopeId: '20' },
-        ],
-      };
-      const transient = new Error('scope 10 transient pre-pull');
-      let scope10Pulls = 0;
-      pull.mockImplementation(async (scope) => {
-        if (scope.scopeId === '10' && ++scope10Pulls === 1) throw transient;
-      });
-      await service.enqueue(
-        {
-          scopeId: '20',
-          aggregateType: 'documents',
-          identity: { kind: 'generated', localId: 'transient-isolated' },
-          operation: 'documents.create',
-          payload: { title: 'b' },
-        },
-        { flush: false },
-      );
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const transient = new Error('scope 10 transient pre-pull');
+    let scope10Pulls = 0;
+    pull.mockImplementation(async (scope) => {
+      if (scope.scopeId === '10' && ++scope10Pulls === 1) throw transient;
+    });
+    await service.enqueue(
+      {
+        scopeId: '20',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'transient-isolated' },
+        operation: 'documents.create',
+        payload: { title: 'b' },
+      },
+      { flush: false },
+    );
 
-      connected.set(true);
-      await expect(service.flush()).rejects.toBe(transient);
-      expect(execute).toHaveBeenCalledOnce();
-      expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(expect.arrayContaining(['10', '20']));
+    connected.set(true);
+    await expect(service.flush()).rejects.toBe(transient);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(pull.mock.calls.map((call) => call[0]?.scopeId)).toEqual(expect.arrayContaining(['10', '20']));
 
-      const pullsBeforeRetry = pull.mock.calls.length;
-      await vi.advanceTimersByTimeAsync(1_000);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(pull.mock.calls.length).toBeGreaterThan(pullsBeforeRetry);
-    } finally {
-      vi.useRealTimers();
-    }
+    const pullsBeforeRetry = pull.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(pull.mock.calls.length).toBeGreaterThan(pullsBeforeRetry);
   });
 
   it('pre-pull transientの後のfatalはfatalを優先して投げ残りscopeを止める', async () => {
@@ -3312,6 +3291,28 @@ describe('OfflineSyncService', () => {
     await expect(service.flush()).rejects.toThrow('pull failed');
   });
 
+  it('background error reporting preserves the microtask boundary and absorbs reporter rejection', async () => {
+    const events: string[] = [];
+    const pullError = new Error('background pull failed');
+    handleError.mockImplementation((error) => {
+      events.push(`reported:${(error as Error).message}`);
+      return Promise.reject(new Error('reporter failed')) as never;
+    });
+    pull.mockRejectedValue(pullError);
+
+    connected.set(true);
+    const initialization = service.initialize();
+    events.push('initialize-returned');
+    expect(handleError).not.toHaveBeenCalled();
+
+    await initialization;
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(pullError));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(events[0]).toBe('initialize-returned');
+    expect(events.slice(1)).not.toHaveLength(0);
+    expect(events.slice(1).every((event) => event === 'reported:background pull failed')).toBe(true);
+  });
+
   it('sending書き込み中の同一session resetでも完了後にpendingへ復旧する', async () => {
     let notifySendingStarted!: () => void;
     const sendingStarted = new Promise<void>((resolve) => (notifySendingStarted = resolve));
@@ -3481,7 +3482,7 @@ describe('OfflineSyncService', () => {
       );
       expect(current?.state).toBe('sending');
     });
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     expect(cancellationEntered).toBe(false);
 
     releaseSending();
@@ -4346,24 +4347,21 @@ describe('OfflineSyncService', () => {
   it('tombstone read APIを持たないcustom repositoryではdelete enqueueを明示rejectする', async () => {
     const repository = TestBed.inject(OFFLINE_REPOSITORY) as OfflineRepository & { getReplicaRowIncludingPendingDelete?: unknown };
     const getReplicaRowIncludingPendingDelete = repository.getReplicaRowIncludingPendingDelete;
-    try {
-      delete repository.getReplicaRowIncludingPendingDelete;
-      await expect(
-        service.enqueue(
-          {
-            scopeId: '10',
-            aggregateType: 'documents',
-            identity: { kind: 'generated', localId: 'missing-tombstone-api' },
-            operation: 'documents.delete',
-            payload: {},
-            replicaMutation: 'delete',
-          },
-          { flush: false },
-        ),
-      ).rejects.toThrow('Offline repository does not support durable replica delete tombstones.');
-    } finally {
-      repository.getReplicaRowIncludingPendingDelete = getReplicaRowIncludingPendingDelete;
-    }
+    delete repository.getReplicaRowIncludingPendingDelete;
+    await expect(
+      service.enqueue(
+        {
+          scopeId: '10',
+          aggregateType: 'documents',
+          identity: { kind: 'generated', localId: 'missing-tombstone-api' },
+          operation: 'documents.delete',
+          payload: {},
+          replicaMutation: 'delete',
+        },
+        { flush: false },
+      ),
+    ).rejects.toThrow('Offline repository does not support durable replica delete tombstones.');
+    repository.getReplicaRowIncludingPendingDelete = getReplicaRowIncludingPendingDelete;
     expect(commands).toEqual([]);
     expect(rows).toEqual([]);
   });

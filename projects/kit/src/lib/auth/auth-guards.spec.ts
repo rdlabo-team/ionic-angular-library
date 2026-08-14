@@ -301,6 +301,22 @@ describe('kitRequireAuthorizedGuard', () => {
     expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
   });
 
+  it("'user' → classifies a synchronous phased resume failure as unavailable", async () => {
+    const networkError = { status: 0 };
+    const onAuthorized = vi.fn(async () => ({
+      activate: async () => true,
+      resume: () => {
+        throw networkError;
+      },
+    }));
+    setup('user', { onAuthorized, isUnavailableError: (error) => error === networkError });
+
+    await expect(
+      runGuard(TestBed.runInInjectionContext(() => kitRequireAuthorizedGuard(routeStub, stateStub))),
+    ).resolves.toBe(true);
+    expect(TestBed.inject(KitAuthAccessService).mode).toBe('remote');
+  });
+
   it("'anonymous' → returns true without calling any hook", async () => {
     const onAuthorized = vi.fn() as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;
     const onUnauthenticated = vi.fn() as unknown as (s: RouterStateSnapshot) => Promise<boolean | UrlTree>;

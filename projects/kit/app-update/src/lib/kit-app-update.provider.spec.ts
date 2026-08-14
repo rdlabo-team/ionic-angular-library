@@ -80,9 +80,10 @@ describe('provideKitAppUpdate', () => {
 });
 
 function setup(result: boolean | Error | Promise<boolean>, isEnabled = true, isControlled = true) {
-  const checkForUpdate = vi.fn(() =>
-    result instanceof Promise ? result : result instanceof Error ? Promise.reject(result) : Promise.resolve(result),
-  );
+  const checkForUpdate = vi.fn(async () => {
+    if (result instanceof Error) throw result;
+    return result;
+  });
   const reload = vi.fn();
   TestBed.configureTestingModule({
     providers: [

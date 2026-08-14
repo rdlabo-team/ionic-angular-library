@@ -12,14 +12,12 @@ const fakeStore = (): KitEmailStore & { map: Map<string, unknown> } => {
   const map = new Map<string, unknown>();
   return {
     map,
-    get: <T>(key: string) => Promise.resolve((map.get(key) ?? null) as T | null),
-    set: <T>(key: string, value: T) => {
+    get: async <T>(key: string) => (map.get(key) ?? null) as T | null,
+    set: async <T>(key: string, value: T) => {
       map.set(key, value);
-      return Promise.resolve();
     },
-    remove: (key: string) => {
+    remove: async (key: string) => {
       map.delete(key);
-      return Promise.resolve();
     },
   };
 };

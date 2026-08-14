@@ -409,7 +409,7 @@ describe('offlineInterceptor', () => {
       expect(transportUnsubscribed).toBe(true);
 
       resolveLocal(new HttpResponse({ body: { value: 'cached' }, status: 200 }));
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(handleError).not.toHaveBeenCalled();
     });
 

@@ -482,7 +482,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     });
     let ownerCommitted = false;
     let externalCommitted = false;
-    let external: Promise<void> = Promise.resolve();
+    let external: Promise<void> = new Promise<void>((resolve) => queueMicrotask(resolve));
 
     const atomic = repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async (owner) => {
       external = repository
@@ -786,6 +786,25 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     plugin.execute.mockImplementationOnce(async () => Promise.reject(error));
     await expect(repository.clearUser(7)).rejects.toBe(error);
     expect(plugin.rollbackTransaction).toHaveBeenCalledOnce();
+    expect(plugin.commitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rollbackも失敗した場合は元の書き込み失敗とrollback失敗を両方公開する', async () => {
+    const writeError = new Error('disk full');
+    const rollbackError = new Error('rollback failed');
+    const repository = createRepository();
+    await repository.initialize();
+    plugin.execute.mockRejectedValueOnce(writeError);
+    plugin.rollbackTransaction.mockRejectedValueOnce(rollbackError);
+
+    const failure = await repository.clearUser(7).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([writeError, rollbackError]);
+    expect((failure as AggregateError).cause).toBe(writeError);
     expect(plugin.commitTransaction).not.toHaveBeenCalled();
   });
 
@@ -1789,8 +1808,8 @@ describe('SqliteOfflineRepository replica rows', () => {
         () => undefined,
         () => undefined,
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(writeFinished).toBe(false);
       expect(
         plugin.execute.mock.calls.some(([options]) =>
@@ -2210,7 +2229,7 @@ describe('SqliteOfflineRepository replica rows', () => {
       const snapshotGate = new Promise<void>((resolve) => {
         releaseSnapshot = resolve;
       });
-      let write: Promise<void> = Promise.resolve();
+      let write: Promise<void> = new Promise<void>((resolve) => queueMicrotask(resolve));
 
       const snapshot = repository.runReadSnapshot(async (reader) => {
         await reader.getCommands({ userId: 1, scopeId: '10' });
@@ -2234,8 +2253,8 @@ describe('SqliteOfflineRepository replica rows', () => {
           () => undefined,
           () => undefined,
         );
-        await Promise.resolve();
-        await Promise.resolve();
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
+        await new Promise<void>((resolve) => queueMicrotask(resolve));
         expect(
           plugin.execute.mock.calls.some(([options]) =>
             String((options as { statement: string }).statement).includes('INSERT INTO offline_sync_commands'),
@@ -2358,8 +2377,8 @@ describe('SqliteOfflineRepository replica rows', () => {
         () => undefined,
         () => undefined,
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(writeFinished).toBe(false);
       expect(
         plugin.execute.mock.calls.some(([options]) =>

@@ -95,10 +95,12 @@ export const COMMUNITY_SQLITE = new InjectionToken<CommunitySqliteDriver | null>
  * The returned lower-case hexadecimal value is suitable for
  * `OfflineKitOptions.createEncryptionKey` and contains no device or user identifiers.
  */
-export function createRandomOfflineEncryptionKey(): Promise<string> {
+export async function createRandomOfflineEncryptionKey(): Promise<string> {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return Promise.resolve(Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(''));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
+
+const settledSqliteOperation = async (): Promise<void> => undefined;
 
 /** Create the standard encrypted `@capacitor-community/sqlite` driver. */
 export function createCommunitySqliteDriver(connection: CommunitySqliteConnection): CommunitySqliteDriver {
@@ -208,15 +210,15 @@ export class SqliteOfflineRepository implements OfflineRepository {
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   #databaseId: string | null = null;
   #initialization: Promise<void> | null = null;
-  #writes: Promise<void> = Promise.resolve();
+  #writes: Promise<void> = settledSqliteOperation();
   #activeReaders = 0;
-  #readersIdle: Promise<void> = Promise.resolve();
+  #readersIdle: Promise<void> = settledSqliteOperation();
   #resolveReadersIdle: (() => void) | null = null;
   #atomicMutationRevision: number | null = null;
   #atomicMutationCommitted = false;
-  #atomicOperations: Promise<void> = Promise.resolve();
+  #atomicOperations: Promise<void> = settledSqliteOperation();
   #readSnapshotActive = false;
-  #atomicIdle: Promise<void> = Promise.resolve();
+  #atomicIdle: Promise<void> = settledSqliteOperation();
   #resolveAtomicIdle: (() => void) | null = null;
 
   initialize(): Promise<void> {
@@ -313,11 +315,8 @@ export class SqliteOfflineRepository implements OfflineRepository {
     }
     return this.#transaction(async () => {
       this.#readSnapshotActive = true;
-      try {
-        return await read(this.#reader());
-      } finally {
-        this.#readSnapshotActive = false;
-      }
+      const executeRead = async (): Promise<T> => read(this.#reader());
+      return executeRead().finally(() => (this.#readSnapshotActive = false));
     });
   }
 
@@ -328,9 +327,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       throw new Error('Nested offline replica atomic mutations are not supported.');
     }
     this.#beginReaders();
-    try {
+    const executeAtomicMutation = async (): Promise<T> => {
       const databaseId = await this.#databaseConnection();
-      this.#atomicOperations = Promise.resolve();
+      this.#atomicOperations = settledSqliteOperation();
       this.#atomicMutationCommitted = false;
       this.#atomicIdle = new Promise<void>((resolve) => {
         this.#resolveAtomicIdle = resolve;
@@ -342,13 +341,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
         await this.#queueAtomicOperation(() => this.#atomicTransaction(databaseId, async () => undefined, false));
       }
       return result;
-    } finally {
+    };
+    return executeAtomicMutation().finally(() => {
       this.#atomicMutationRevision = null;
       this.#endReaders();
       this.#resolveAtomicIdle?.();
       this.#resolveAtomicIdle = null;
-      this.#atomicIdle = Promise.resolve();
-    }
+      this.#atomicIdle = settledSqliteOperation();
+    });
   }
 
   async putCommand(command: OfflineCommand): Promise<void> {
@@ -482,35 +482,37 @@ export class SqliteOfflineRepository implements OfflineRepository {
   }
 
   async #open(): Promise<void> {
-    try {
-      if (!this.#sqlite) {
-        throw new OfflineStorageUnavailableError('storage_unavailable', 'Native offline storage requires a community SQLite connection');
-      }
-      const { databaseId } = await this.#sqlite.open({
-        databaseName: this.#options.databaseName,
-        createEncryptionKey: this.#wrapCreateEncryptionKey(this.#options.createEncryptionKey),
-      });
-      this.#databaseId = databaseId;
-      for (const statement of SCHEMA) await this.#execute(databaseId, statement);
-      const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
-      if (metadata.length === 0) {
-        await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [
-          OFFLINE_SCHEMA_VERSION,
-        ]);
-      } else {
-        const storedVersion = this.#number(metadata[0]!['schema_version']);
-        if (storedVersion !== OFFLINE_SCHEMA_VERSION) {
-          throw new OfflineStorageUnavailableError(
-            'core_schema_incompatible',
-            `Unsupported offline storage schema version ${storedVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
-              'A lossless core schema migration is required before this database can be opened.',
-          );
-        }
-      }
-      await this.#initializeReplicaSchema(databaseId);
-    } catch (error) {
+    await this.#openDatabase().catch((error: unknown) => {
       throw this.#mapInitializationError(error);
+    });
+  }
+
+  async #openDatabase(): Promise<void> {
+    if (!this.#sqlite) {
+      throw new OfflineStorageUnavailableError('storage_unavailable', 'Native offline storage requires a community SQLite connection');
     }
+    const { databaseId } = await this.#sqlite.open({
+      databaseName: this.#options.databaseName,
+      createEncryptionKey: this.#wrapCreateEncryptionKey(this.#options.createEncryptionKey),
+    });
+    this.#databaseId = databaseId;
+    for (const statement of SCHEMA) await this.#execute(databaseId, statement);
+    const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
+    if (metadata.length === 0) {
+      await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [
+        OFFLINE_SCHEMA_VERSION,
+      ]);
+    } else {
+      const storedVersion = this.#number(metadata[0]!['schema_version']);
+      if (storedVersion !== OFFLINE_SCHEMA_VERSION) {
+        throw new OfflineStorageUnavailableError(
+          'core_schema_incompatible',
+          `Unsupported offline storage schema version ${storedVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
+            'A lossless core schema migration is required before this database can be opened.',
+        );
+      }
+    }
+    await this.#initializeReplicaSchema(databaseId);
   }
 
   async #initializeReplicaSchema(databaseId: string): Promise<void> {
@@ -567,8 +569,8 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   #wrapCreateEncryptionKey(createEncryptionKey: (() => Promise<string>) | undefined): (() => Promise<string>) | undefined {
     if (!createEncryptionKey) return undefined;
-    return async () => {
-      try {
+    return () => {
+      const create = async (): Promise<string> => {
         const encryptionKey = await createEncryptionKey();
         if (!encryptionKey) {
           throw new OfflineStorageUnavailableError(
@@ -577,14 +579,15 @@ export class SqliteOfflineRepository implements OfflineRepository {
           );
         }
         return encryptionKey;
-      } catch (error) {
+      };
+      return create().catch((error: unknown) => {
         if (error instanceof OfflineStorageUnavailableError) throw error;
         throw new OfflineStorageUnavailableError(
           'encryption_key_unavailable',
           error instanceof Error ? error.message : 'Offline encryption key is unavailable.',
           { cause: error },
         );
-      }
+      });
     };
   }
 
@@ -618,14 +621,24 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async #nativeTransaction<T>(databaseId: string, run: () => Promise<T>): Promise<T> {
     await this.#sqlite!.beginTransaction({ databaseId });
-    try {
-      const result = await run();
-      await this.#sqlite!.commitTransaction({ databaseId });
-      return result;
-    } catch (error) {
-      await this.#sqlite!.rollbackTransaction({ databaseId });
-      throw error;
-    }
+    const execute = async (): Promise<T> => run();
+    return execute()
+      .then(async (result) => {
+        await this.#sqlite!.commitTransaction({ databaseId });
+        return result;
+      })
+      .catch(async (error: unknown) => {
+        const rollback = await this.#sqlite!.rollbackTransaction({ databaseId }).then(
+          () => ({ status: 'fulfilled' as const }),
+          (rollbackError: unknown) => ({ status: 'rejected' as const, rollbackError }),
+        );
+        if (rollback.status === 'rejected') {
+          throw new AggregateError([error, rollback.rollbackError], 'Offline SQLite transaction and rollback both failed.', {
+            cause: error,
+          });
+        }
+        throw error;
+      });
   }
 
   async #databaseConnection(): Promise<string> {
@@ -776,17 +789,14 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const atomicTransaction = <T>(run: (databaseId: string) => Promise<T>, marksCommit = true): Promise<T> =>
       this.#queueAtomicOperation(() => this.#atomicTransaction(this.#databaseId!, run, marksCommit));
     return {
-      initialize: () => Promise.resolve(),
+      initialize: settledSqliteOperation,
       ...reader,
       runReadSnapshot: (read) =>
         this.#queueAtomicOperation(() =>
           this.#nativeTransaction(this.#databaseId!, async () => {
             this.#readSnapshotActive = true;
-            try {
-              return await read(reader);
-            } finally {
-              this.#readSnapshotActive = false;
-            }
+            const executeRead = async () => read(reader);
+            return executeRead().finally(() => (this.#readSnapshotActive = false));
           }),
         ),
       putCommand: (command) => atomicTransaction((databaseId) => this.#putCommand(databaseId, command)),
@@ -834,11 +844,8 @@ export class SqliteOfflineRepository implements OfflineRepository {
     }
     await this.#writes;
     this.#beginReaders();
-    try {
-      return await operation();
-    } finally {
-      this.#endReaders();
-    }
+    const read = async (): Promise<T> => operation();
+    return read().finally(() => this.#endReaders());
   }
 
   #beginReaders(): void {
@@ -855,7 +862,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
     if (this.#activeReaders === 0) {
       this.#resolveReadersIdle?.();
       this.#resolveReadersIdle = null;
-      this.#readersIdle = Promise.resolve();
+      this.#readersIdle = settledSqliteOperation();
     }
   }
 

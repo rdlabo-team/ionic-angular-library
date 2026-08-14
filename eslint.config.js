@@ -2,6 +2,7 @@
 const eslint = require("@eslint/js");
 const tseslint = require("typescript-eslint");
 const angular = require("angular-eslint");
+const rdlabo = require("@rdlabo/eslint-plugin-rules");
 
 module.exports = tseslint.config(
   {
@@ -13,6 +14,15 @@ module.exports = tseslint.config(
       ...angular.configs.tsRecommended,
     ],
     processor: angular.processInlineTemplates,
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: __dirname,
+      },
+    },
+    plugins: {
+      "@rdlabo/rules": rdlabo,
+    },
     rules: {
       "@typescript-eslint/no-empty-function": "off",
       "@typescript-eslint/no-unused-vars": "off",
@@ -25,6 +35,16 @@ module.exports = tseslint.config(
       "@angular-eslint/no-empty-lifecycle-method": "off",
       "@angular-eslint/directive-selector": "off",
       "@angular-eslint/component-selector": "off",
+      "@rdlabo/rules/restrict-try-block": [
+        "error",
+        {
+          allowPromise: false,
+          allowPromiseResolve: false,
+          allowRxjs: false,
+          allowInSignal: false,
+          maxLines: 3,
+        },
+      ],
     },
   },
   {
