@@ -47,6 +47,12 @@ import {
 } from './offline-repository';
 import { OFFLINE_REPOSITORY_ATOMIC_MUTATION } from './offline-repository-concurrency';
 import { OfflineStorageUnavailableError } from './offline-storage';
+import {
+  COMMUNITY_SQLITE_ENCRYPTED,
+  COMMUNITY_SQLITE_MODE,
+  COMMUNITY_SQLITE_READONLY,
+  COMMUNITY_SQLITE_VERSION,
+} from './offline-community-sqlite-config';
 
 /** Minimal native SQLite driver surface required by the offline repository. */
 export interface CommunitySqliteDriver {
@@ -118,7 +124,13 @@ export function createCommunitySqliteDriver(connection: CommunitySqliteConnectio
         if (!encryptionKey) throw new Error('Native offline storage requires a non-empty encryption key on first open');
         await connection.setEncryptionSecret(encryptionKey);
       }
-      const value = await connection.createConnection(databaseName, true, 'secret', 1, false);
+      const value = await connection.createConnection(
+        databaseName,
+        COMMUNITY_SQLITE_ENCRYPTED,
+        COMMUNITY_SQLITE_MODE,
+        COMMUNITY_SQLITE_VERSION,
+        COMMUNITY_SQLITE_READONLY,
+      );
       await value.open();
       databases.set(databaseName, value);
       return { databaseId: databaseName };

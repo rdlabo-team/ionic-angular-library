@@ -4,6 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { finalize, firstValueFrom, of, Subject, throwError, type Observable } from 'rxjs';
 import { OfflineNetworkService } from './offline-network.service';
+import { OFFLINE_MUTATION_PERSISTENCE_ENABLED } from './offline-mutation-persistence.service';
 import { offlineInterceptor } from './offline.interceptor';
 import {
   OFFLINE_BYPASS,
@@ -21,6 +22,7 @@ describe('offlineInterceptor', () => {
   let markApiSuccess: ReturnType<typeof vi.fn>;
   let markApiFailure: ReturnType<typeof vi.fn>;
   let handleError: ReturnType<typeof vi.fn>;
+  let mutationPersistenceEnabled: boolean;
 
   beforeEach(() => {
     resolve = vi.fn(() => null);
@@ -28,11 +30,13 @@ describe('offlineInterceptor', () => {
     markApiSuccess = vi.fn();
     markApiFailure = vi.fn();
     handleError = vi.fn();
+    mutationPersistenceEnabled = true;
     TestBed.configureTestingModule({
       providers: [
         { provide: OfflineRequestPolicyRegistry, useValue: { resolve } },
         { provide: OfflineMutationRequestPolicyRegistry, useValue: { resolve: resolveMutation } },
         { provide: OfflineNetworkService, useValue: { markApiSuccess, markApiFailure } },
+        { provide: OFFLINE_MUTATION_PERSISTENCE_ENABLED, useValue: () => mutationPersistenceEnabled },
         { provide: ErrorHandler, useValue: { handleError } },
       ],
     });
@@ -173,6 +177,18 @@ describe('offlineInterceptor', () => {
     expect(markApiFailure).not.toHaveBeenCalled();
   });
 
+  it('mutation persistence OFFではmatched policyを解決せずtransportへ渡す', async () => {
+    mutationPersistenceEnabled = false;
+    const request = new HttpRequest('POST', '/groups/1/documents', {});
+    const response = new HttpResponse({ status: 201 });
+    const next = vi.fn(() => of(response));
+
+    await expect(firstValueFrom(run(request, next))).resolves.toBe(response);
+
+    expect(resolveMutation).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('matched mutationのprepare失敗時はtransportへfall throughしない', async () => {
     const error = new Error('outbox full');
     resolveMutation.mockReturnValue({
@@ -294,9 +310,7 @@ describe('offlineInterceptor', () => {
 
       for (const status of [401, 403, 500]) {
         const error = new HttpErrorResponse({ status });
-        await expect(
-          collect(run(new HttpRequest('GET', '/bootstrap'), () => throwError(() => error))),
-        ).rejects.toBe(error);
+        await expect(collect(run(new HttpRequest('GET', '/bootstrap'), () => throwError(() => error)))).rejects.toBe(error);
       }
     });
 
@@ -342,9 +356,9 @@ describe('offlineInterceptor', () => {
         }),
       );
 
-      await expect(
-        collect(run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 })))),
-      ).rejects.toBe(projectionError);
+      await expect(collect(run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 }))))).rejects.toBe(
+        projectionError,
+      );
     });
 
     it('remote projectResponseのstatus=0はtransport fallbackとして握りつぶさない', async () => {
@@ -360,9 +374,9 @@ describe('offlineInterceptor', () => {
         }),
       );
 
-      await expect(
-        collect(run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 })))),
-      ).rejects.toBe(projectionError);
+      await expect(collect(run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 }))))).rejects.toBe(
+        projectionError,
+      );
     });
 
     it('local projectResponse失敗はErrorHandlerへ報告しnetwork-firstへ継続する', async () => {
@@ -418,9 +432,11 @@ describe('offlineInterceptor', () => {
       resolve.mockReturnValue(localFirstPlan({ readLocal: vi.fn(async () => local) }));
       let transportUnsubscribed = false;
       const transportSubject = new Subject<HttpResponse<unknown>>();
-      const transport$ = transportSubject.asObservable().pipe(finalize(() => {
-        transportUnsubscribed = true;
-      }));
+      const transport$ = transportSubject.asObservable().pipe(
+        finalize(() => {
+          transportUnsubscribed = true;
+        }),
+      );
 
       const emissions: HttpResponse<unknown>[] = [];
       const subscription = run(new HttpRequest('GET', '/bootstrap'), () => transport$).subscribe({

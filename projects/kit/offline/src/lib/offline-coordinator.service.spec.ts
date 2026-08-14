@@ -1,9 +1,10 @@
-import { signal } from '@angular/core';
+import { ErrorHandler, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
+import { OFFLINE_MUTATION_PERSISTENCE_ADAPTER } from './offline-mutation-persistence.service';
 import { OFFLINE_REPOSITORY, OFFLINE_SCHEMA_VERSION, type OfflineScope } from './offline-repository';
 import { OfflineSessionService, type OfflineSessionManifest } from './offline-session.service';
 import { OfflineStorageUnavailableError } from './offline-storage';
@@ -20,9 +21,11 @@ describe('OfflineCoordinatorService', () => {
     options: {
       repositoryInitialize?: () => Promise<void>;
       onStorageUnavailable?: (error: OfflineStorageUnavailableError) => void | Promise<void>;
+      preferenceLoad?: () => Promise<boolean | null | undefined>;
     } = {},
   ) {
     const order: string[] = [];
+    const handleError = vi.fn();
     const sessionState: { userId: number | null } = { userId: null };
     const repository = {
       initialize: vi.fn(options.repositoryInitialize ?? (async () => undefined)),
@@ -64,6 +67,11 @@ describe('OfflineCoordinatorService', () => {
       discardAllPending: vi.fn(async () => undefined),
       flush: vi.fn(async () => undefined),
     };
+    class TestMutationPersistenceAdapter {
+      loadEnabled = options.preferenceLoad ?? (async () => true);
+      saveEnabled = vi.fn(async () => undefined);
+    }
+    const mutationPersistence = options.preferenceLoad ? { adapter: TestMutationPersistenceAdapter } : undefined;
     TestBed.configureTestingModule({
       providers: [
         OfflineCoordinatorService,
@@ -71,12 +79,17 @@ describe('OfflineCoordinatorService', () => {
         { provide: OfflineNetworkService, useValue: network },
         { provide: OfflineSessionService, useValue: session },
         { provide: OfflineSyncService, useValue: sync },
+        { provide: ErrorHandler, useValue: { handleError } },
+        ...(mutationPersistence
+          ? [TestMutationPersistenceAdapter, { provide: OFFLINE_MUTATION_PERSISTENCE_ADAPTER, useExisting: TestMutationPersistenceAdapter }]
+          : []),
         {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
             replicaSchema: emptyReplicaSchema,
             onStorageUnavailable: options.onStorageUnavailable,
+            mutationPersistence,
           },
         },
       ],
@@ -89,8 +102,25 @@ describe('OfflineCoordinatorService', () => {
       sync,
       network,
       repository,
+      handleError,
     };
   }
+
+  it('continues repository, network, session, and sync startup with mutation admission fail-closed after preference read failure', async () => {
+    const failure = new Error('preference unavailable');
+    const { coordinator, repository, network, session, sync, handleError } = setup(null, {
+      preferenceLoad: async () => Promise.reject(failure),
+    });
+
+    await expect(coordinator.initialize()).resolves.toBeUndefined();
+
+    expect(coordinator.mutationPersistence.enabled()).toBe(false);
+    expect(handleError).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(repository.initialize).toHaveBeenCalledOnce();
+    expect(network.initialize).toHaveBeenCalledOnce();
+    expect(session.initialize).toHaveBeenCalledOnce();
+    expect(sync.initialize).toHaveBeenCalledOnce();
+  });
 
   it('restores local visibility without starting remote synchronization', async () => {
     const manifest = { userId: 1, scopeIds: ['2'], authSubject: 'subject', updatedAt: 1 };

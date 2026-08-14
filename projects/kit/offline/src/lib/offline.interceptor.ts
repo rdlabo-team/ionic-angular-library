@@ -20,6 +20,7 @@ import {
   throwError,
 } from 'rxjs';
 import { isOfflineFallbackError, OfflineNetworkService } from './offline-network.service';
+import { OFFLINE_MUTATION_PERSISTENCE_ENABLED } from './offline-mutation-persistence.service';
 import {
   OFFLINE_BYPASS,
   OFFLINE_RESPONSE_HEADER,
@@ -48,6 +49,7 @@ export const offlineInterceptor: HttpInterceptorFn = (request, next) => {
     return readNetworkFirst(request, plan, transport, fallback);
   }
   if (LOCAL_FIRST_MUTATION_METHODS.has(request.method)) {
+    if (!inject(OFFLINE_MUTATION_PERSISTENCE_ENABLED)()) return transport();
     const plan = inject(OfflineMutationRequestPolicyRegistry).resolve(request);
     if (plan) {
       return defer(() => from(plan.prepare())).pipe(
@@ -106,10 +108,7 @@ function readLocalFirst(
   );
 }
 
-function resolveLocalAttempt(
-  plan: OfflineReadRequestPlan,
-  errorHandler: ErrorHandler,
-): Observable<HttpEvent<unknown> | null> {
+function resolveLocalAttempt(plan: OfflineReadRequestPlan, errorHandler: ErrorHandler): Observable<HttpEvent<unknown> | null> {
   return defer(() =>
     from(plan.readLocal()).pipe(
       catchError((localError: unknown) => {
@@ -136,10 +135,7 @@ function tryProjectLocal(
   );
 }
 
-function emitTaggedLocalResponse(
-  cached: AngularHttpResponse<unknown>,
-  plan: OfflineReadRequestPlan,
-): Observable<HttpEvent<unknown>> {
+function emitTaggedLocalResponse(cached: AngularHttpResponse<unknown>, plan: OfflineReadRequestPlan): Observable<HttpEvent<unknown>> {
   return projectReadResponse(cached.clone({ headers: cached.headers.set(OFFLINE_RESPONSE_HEADER, 'local') }), plan);
 }
 

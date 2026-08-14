@@ -495,6 +495,43 @@ provideOffline({
 });
 ```
 
+Products may make durable mutation saving device-configurable without disabling replica reads. Supply only the
+durable preference adapter; Kit owns the concurrency-sensitive transition. It starts admission closed while loading,
+gates every `enqueue` / `enqueuePrepared` / `enqueuePreparedBatch`, and routes matched HTTP writes to normal transport
+while disabled. Disabling closes admission synchronously, waits for already accepted commits, flushes pending
+commands, verifies an empty Outbox, and then persists `false`. A failed transition restores the last successfully
+persisted state. Replacement and discard APIs remain available because they resolve existing commands rather than
+create additional pending work.
+
+```ts
+@Injectable({ providedIn: 'root' })
+class ProductMutationPersistenceAdapter implements OfflineMutationPersistenceAdapter {
+  readonly #settings = inject(ProductSettingsService);
+
+  loadEnabled(): Promise<boolean | null> {
+    return this.#settings.get('offlineMutationPersistence');
+  }
+
+  saveEnabled(enabled: boolean): Promise<void> {
+    return this.#settings.set('offlineMutationPersistence', enabled);
+  }
+}
+
+provideOffline({
+  // repository/schema/executor/puller options omitted
+  mutationPersistence: {
+    adapter: ProductMutationPersistenceAdapter,
+    defaultEnabled: true,
+  },
+});
+
+const offline = inject(OfflineCoordinatorService);
+await offline.mutationPersistence.setEnabled(false);
+```
+
+The product owns settings UI, labels, confirmation copy, and the storage key. Omitting `mutationPersistence` keeps
+the historical always-enabled behavior. `readCacheOnly` applications do not expose this setting.
+
 The native offline runtime uses `@capacitor-community/sqlite` on iOS and Android. Install the plugin in the app and
 sync native projects:
 
@@ -549,6 +586,34 @@ provideOffline({
   createEncryptionKey: createRandomOfflineEncryptionKey,
   // ...product policies, puller, and executor
 });
+```
+
+An explicit user-requested local reset must run before Angular and Kit initialize SQLite. Use the cold-start helpers
+instead of reproducing the community plugin's encrypted connection lifecycle in every application. Kit never invokes
+reset automatically after a storage error. The product must show destructive confirmation first and owns the marker key.
+Only databases that use Kit's same encrypted secret-mode, connection-version-1, read/write lifecycle belong in
+`kitCompatibleDatabaseNames`; delete differently configured databases and files in `additionalCleanup`. The marker is
+removed only after every database and product cleanup succeeds, so a partial failure is retried on the next cold launch.
+
+```ts
+// Settings action
+await requestOfflineLocalReset({
+  markerStore: Preferences,
+  markerKey: 'product:offline:reset',
+});
+
+// main.ts, before bootstrapApplication(...). Report reset failure but always continue startup.
+await recoverOfflineLocalReset({
+  markerStore: Preferences,
+  markerKey: 'product:offline:reset',
+  sqliteConnection,
+  kitCompatibleDatabaseNames: ['product-offline', 'product-offline-media'],
+  additionalCleanup: removeOfflineMediaFiles,
+}).catch((error: unknown) => {
+  console.error('Offline local reset failed; it will retry on the next launch.', error);
+});
+
+await bootstrapApplication(AppComponent, appConfig);
 ```
 
 Replica identity follows the product database:

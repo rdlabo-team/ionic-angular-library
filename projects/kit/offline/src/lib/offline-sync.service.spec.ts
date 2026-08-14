@@ -11,6 +11,7 @@ import {
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS, type OfflineKitOptions } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
+import { OfflineMutationAdmissionService, OfflineMutationPersistenceDisabledError } from './offline-mutation-admission.service';
 import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './offline-replica-pull.service';
 import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import {
@@ -374,6 +375,29 @@ describe('OfflineSyncService', () => {
     ).rejects.toThrow('read-only cache');
     expect(commands).toEqual([]);
     expect(rows).toEqual([]);
+  });
+
+  it('rejects every new command entry point after mutation admission closes', async () => {
+    await TestBed.inject(OfflineMutationAdmissionService).close();
+    const request = {
+      scopeId: '10',
+      aggregateType: 'documents',
+      identity: { kind: 'generated' as const, localId: 'closed-write' },
+      operation: 'documents.create',
+      payload: { title: 'write' },
+    };
+    const prepare = vi.fn(async () => ({ request }));
+    const prepareBatch = vi.fn(async () => [{ request }]);
+
+    await expect(service.enqueue(request, { flush: false })).rejects.toBeInstanceOf(OfflineMutationPersistenceDisabledError);
+    await expect(service.enqueuePrepared(prepare, { flush: false })).rejects.toBeInstanceOf(OfflineMutationPersistenceDisabledError);
+    await expect(service.enqueuePreparedBatch(prepareBatch, { flush: false })).rejects.toBeInstanceOf(
+      OfflineMutationPersistenceDisabledError,
+    );
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(prepareBatch).not.toHaveBeenCalled();
+    expect(commands).toEqual([]);
   });
 
   it('prepared enqueue rematerializes the base row and declared localOnly footprint', async () => {

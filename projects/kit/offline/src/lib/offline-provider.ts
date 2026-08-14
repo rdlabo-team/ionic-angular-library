@@ -9,6 +9,11 @@ import type { OfflineKitOptions } from './offline-kit-options';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
 import {
+  OFFLINE_MUTATION_PERSISTENCE_ADAPTER,
+  OFFLINE_MUTATION_PERSISTENCE_ENABLED,
+  OfflineMutationPersistenceService,
+} from './offline-mutation-persistence.service';
+import {
   IonicOfflineRepository,
   OFFLINE_REPOSITORY,
   selectOfflineRepository,
@@ -70,6 +75,7 @@ export interface ProvideReadCacheOfflineOptions extends ProvideOfflineOptionsBas
   /** Creates the encrypted native cache database key on first install. Unused by the web repository. */
   createEncryptionKey: () => Promise<string>;
   mutationPolicies?: never;
+  mutationPersistence?: never;
   commandExecutor?: never;
   replicaPuller?: never;
 }
@@ -116,6 +122,7 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
         replicaSchema: options.replicaSchema,
         wireProtocol: options.wireProtocol,
         outboxLimits: options.outboxLimits,
+        mutationPersistence: options.mutationPersistence,
         onStorageUnavailable: options.onStorageUnavailable,
       },
     },
@@ -127,6 +134,16 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
       provide: OFFLINE_REPOSITORY,
       useFactory: () => selectOfflineRepository(Capacitor.getPlatform(), inject(IonicOfflineRepository), inject(SqliteOfflineRepository)),
     },
+    {
+      provide: OFFLINE_MUTATION_PERSISTENCE_ENABLED,
+      useFactory: () => inject(OfflineMutationPersistenceService).enabled,
+    },
+    ...(options.mutationPersistence
+      ? [
+          options.mutationPersistence.adapter,
+          { provide: OFFLINE_MUTATION_PERSISTENCE_ADAPTER, useExisting: options.mutationPersistence.adapter },
+        ]
+      : []),
     { provide: OFFLINE_SYNC_CONTEXT, useExisting: OfflineSessionService },
     synchronized
       ? { provide: OFFLINE_COMMAND_EXECUTOR, useExisting: options.commandExecutor }
