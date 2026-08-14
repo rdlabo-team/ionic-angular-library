@@ -7,7 +7,6 @@ import {
   offlineNaturalReplicaIdentity,
   parseOfflineCommandIdentity,
   parseOfflinePrincipalId,
-  replicaAddressFromIdentity,
   serializeOfflineCommandIdentity,
 } from './offline-identity';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
@@ -176,6 +175,9 @@ const SCHEMA = [
   identity_json TEXT NOT NULL,
   operation TEXT NOT NULL,
   payload_json TEXT NOT NULL,
+  optimistic_value_json TEXT NOT NULL DEFAULT 'null',
+  optimistic_companions_json TEXT,
+  legacy_optimistic_value_json TEXT,
   local_only_footprint_json TEXT,
   replica_mutation TEXT NOT NULL DEFAULT 'upsert',
   payload_hash TEXT NOT NULL,
@@ -286,6 +288,13 @@ export class SqliteOfflineRepository implements OfflineRepository {
 
   async getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
     return this.#withCommittedRead(() => this.#readReplicaRows(scope, sourceKey));
+  }
+
+  async getReplicaRowsIncludingPendingDelete<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+  ): Promise<OfflineReplicaRow<TValues>[]> {
+    return this.#withCommittedRead(() => this.#readReplicaRows(scope, sourceKey, true));
   }
 
   async getReplicaRowByRemoteId<TValues = unknown>(
@@ -457,10 +466,28 @@ export class SqliteOfflineRepository implements OfflineRepository {
       releases.set(key, release);
     }
     const consumedReleases = new Set<string>();
+    const existingRows = new Map<string, OfflineReplicaRow>();
+    const partitions = new Map<string, { scope: OfflineScope; sourceKey: string }>();
+    for (const row of transaction.putRows ?? []) {
+      const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
+      const partitionScopeId = schema.scope === 'partition' ? row.scopeId : '';
+      partitions.set(`${canonicalOfflinePrincipalId(row.userId)}:${partitionScopeId}:${row.sourceKey}`, {
+        scope: row,
+        sourceKey: row.sourceKey,
+      });
+    }
+    await Promise.all(
+      [...partitions.values()].map(async ({ scope, sourceKey }) => {
+        for (const row of await this.#readReplicaRows(scope, sourceKey, true)) {
+          existingRows.set(this.#replicaRowKey(row), row);
+        }
+      }),
+    );
     for (const row of transaction.putRows ?? []) {
       const key = this.#replicaRowKey(row);
       const release = releases.get(key);
-      await this.#putReplicaRow(databaseId, row, release);
+      await this.#putReplicaRow(databaseId, row, release, existingRows.get(key) ?? null);
+      existingRows.set(key, row);
       if (release) consumedReleases.add(key);
     }
     if (consumedReleases.size !== releases.size) {
@@ -516,7 +543,9 @@ export class SqliteOfflineRepository implements OfflineRepository {
       ]);
     } else {
       const storedVersion = this.#number(metadata[0]!['schema_version']);
-      if (storedVersion !== OFFLINE_SCHEMA_VERSION) {
+      if (storedVersion === 1) {
+        await this.#migrateCoreSchemaV1(databaseId);
+      } else if (storedVersion !== OFFLINE_SCHEMA_VERSION) {
         throw new OfflineStorageUnavailableError(
           'core_schema_incompatible',
           `Unsupported offline storage schema version ${storedVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
@@ -525,6 +554,29 @@ export class SqliteOfflineRepository implements OfflineRepository {
       }
     }
     await this.#initializeReplicaSchema(databaseId);
+  }
+
+  async #migrateCoreSchemaV1(databaseId: string): Promise<void> {
+    const columns = await this.#queryDatabase(databaseId, 'PRAGMA table_info(offline_sync_commands)');
+    const names = new Set(columns.map((row) => this.#string(row['name'])));
+    await this.#nativeTransaction(databaseId, async () => {
+      if (!names.has('legacy_optimistic_value_json')) {
+        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN legacy_optimistic_value_json TEXT');
+      }
+      if (!names.has('local_only_footprint_json')) {
+        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN local_only_footprint_json TEXT');
+      }
+      if (!names.has('reconciliation_identity_json')) {
+        await this.#execute(databaseId, 'ALTER TABLE offline_sync_commands ADD COLUMN reconciliation_identity_json TEXT');
+      }
+      if (names.has('optimistic_value_json')) {
+        await this.#execute(
+          databaseId,
+          'UPDATE offline_sync_commands SET legacy_optimistic_value_json = optimistic_value_json WHERE legacy_optimistic_value_json IS NULL',
+        );
+      }
+      await this.#execute(databaseId, 'UPDATE offline_metadata SET schema_version = ? WHERE id = 1', [OFFLINE_SCHEMA_VERSION]);
+    });
   }
 
   async #initializeReplicaSchema(databaseId: string): Promise<void> {
@@ -673,7 +725,11 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return row ? this.#parse<T>(row['value_json']) : null;
   }
 
-  async #readReplicaRows<TValues>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
+  async #readReplicaRows<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    includePendingDelete = false,
+  ): Promise<OfflineReplicaRow<TValues>[]> {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const predicates = ['_offline_user_id = ?'];
     const values: SQLiteValue[] = [canonicalOfflinePrincipalId(scope.userId)];
@@ -687,7 +743,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
         : 'local_id ASC';
     const rows = await this.#query(`SELECT * FROM ${schema.tableName} WHERE ${predicates.join(' AND ')} ORDER BY ${orderBy}`, values);
     return rows
-      .filter((row) => (row['_offline_visibility'] ?? 'present') !== 'pending_delete')
+      .filter((row) => includePendingDelete || (row['_offline_visibility'] ?? 'present') !== 'pending_delete')
       .map((row) => this.#replicaRowFromSqliteRow<TValues>(schema, scope, sourceKey, row));
   }
 
@@ -784,6 +840,7 @@ export class SqliteOfflineRepository implements OfflineRepository {
       ): Promise<OfflineReplicaRow<TValues> | null> =>
         (await this.#queryReplicaRow(scope, sourceKey, identity, true)) as OfflineReplicaRow<TValues> | null,
       getReplicaRows: (scope, sourceKey) => this.#readReplicaRows(scope, sourceKey),
+      getReplicaRowsIncludingPendingDelete: (scope, sourceKey) => this.#readReplicaRows(scope, sourceKey, true),
       getReplicaRowByRemoteId: async (scope, sourceKey, remoteId) => {
         if (this.#resolveReplicaEntitySchema(sourceKey).identity.kind !== 'generated') return null;
         return this.#readReplicaRowByRemoteIdentity(scope, sourceKey, { remoteId });
@@ -956,6 +1013,15 @@ export class SqliteOfflineRepository implements OfflineRepository {
       identity: parseOfflineCommandIdentity(this.#parse(row['identity_json'])),
       operation: this.#string(row['operation']),
       payload: this.#parse(row['payload_json']),
+      ...(row['legacy_optimistic_value_json'] === null || row['legacy_optimistic_value_json'] === undefined
+        ? {}
+        : { legacyOptimisticValue: this.#parse(row['legacy_optimistic_value_json']) }),
+      ...(row['optimistic_companions_json'] === null || row['optimistic_companions_json'] === undefined
+        ? {}
+        : { legacyOptimisticCompanions: this.#parse(row['optimistic_companions_json']) }),
+      ...(row['payload_hash'] === null || row['payload_hash'] === undefined || row['payload_hash'] === ''
+        ? {}
+        : { legacyPayloadHash: this.#string(row['payload_hash']) }),
       ...(row['local_only_footprint_json'] === null || row['local_only_footprint_json'] === undefined
         ? {}
         : { localOnlyFootprint: this.#parse(row['local_only_footprint_json']) }),
@@ -978,13 +1044,16 @@ export class SqliteOfflineRepository implements OfflineRepository {
       databaseId,
       `INSERT INTO offline_sync_commands
         (command_id, user_id, scope_id, aggregate_type, source_key, identity_json, operation, payload_json,
-         local_only_footprint_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code,
+         optimistic_value_json, optimistic_companions_json, legacy_optimistic_value_json, local_only_footprint_json, replica_mutation, payload_hash, base_revision_json, state, attempts, retry_at, created_at, last_error_code,
          server_commit_unknown, reconciliation_identity_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(command_id) DO UPDATE SET
         user_id = excluded.user_id, scope_id = excluded.scope_id, aggregate_type = excluded.aggregate_type,
         source_key = excluded.source_key,
         identity_json = excluded.identity_json, operation = excluded.operation, payload_json = excluded.payload_json,
+        optimistic_value_json = excluded.optimistic_value_json,
+        optimistic_companions_json = excluded.optimistic_companions_json,
+        legacy_optimistic_value_json = excluded.legacy_optimistic_value_json,
         local_only_footprint_json = excluded.local_only_footprint_json,
         replica_mutation = excluded.replica_mutation,
         payload_hash = excluded.payload_hash,
@@ -1001,9 +1070,12 @@ export class SqliteOfflineRepository implements OfflineRepository {
         serializeOfflineCommandIdentity(command.identity),
         command.operation,
         JSON.stringify(command.payload),
+        JSON.stringify(command.legacyOptimisticValue ?? null),
+        command.legacyOptimisticCompanions === undefined ? null : JSON.stringify(command.legacyOptimisticCompanions),
+        command.legacyOptimisticValue === undefined ? null : JSON.stringify(command.legacyOptimisticValue),
         command.localOnlyFootprint === undefined ? null : JSON.stringify(command.localOnlyFootprint),
         command.replicaMutation ?? 'upsert',
-        '',
+        command.legacyPayloadHash ?? '',
         this.#stringifyNullable(command.baseRevision),
         command.state,
         command.attempts,
@@ -1052,7 +1124,12 @@ export class SqliteOfflineRepository implements OfflineRepository {
     return this.#replicaRowFromSqliteRow(schema, scope, sourceKey, row);
   }
 
-  async #putReplicaRow(databaseId: string, row: OfflineReplicaRow, release: OfflineReplicaRemoteIdRelease | undefined): Promise<void> {
+  async #putReplicaRow(
+    databaseId: string,
+    row: OfflineReplicaRow,
+    release: OfflineReplicaRemoteIdRelease | undefined,
+    existing: OfflineReplicaRow | null,
+  ): Promise<void> {
     const schema = this.#resolveReplicaEntitySchema(row.sourceKey);
     if (row.identity.kind === 'generated') {
       assertOfflineReplicaGeneratedRemoteId(schema, row.identity.remoteId);
@@ -1072,7 +1149,6 @@ export class SqliteOfflineRepository implements OfflineRepository {
     const encoded = encodeOfflineReplicaValues(schema, row.values);
     if (row.confirmedValues !== null) encodeOfflineReplicaValues(schema, row.confirmedValues);
     assertOfflineReplicaNaturalKeyBaseline(schema, row.values, row.confirmedValues);
-    const existing = await this.#queryReplicaRow(row, row.sourceKey, replicaAddressFromIdentity(row.identity), true);
     if (!existing && release) {
       throw new Error(
         `Offline replica remoteId release requires an existing row for ${row.sourceKey}/${canonicalOfflineReplicaIdentity(row.identity)}.`,

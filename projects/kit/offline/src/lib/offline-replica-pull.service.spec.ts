@@ -145,14 +145,14 @@ describe('OfflineReplicaPullService', () => {
     storage.values.set('offline:replica:cursors', {});
   }
 
-  function configureTestBed(): void {
+  function configureTestBed(mode: 'synchronized' | 'readCacheOnly' = 'synchronized'): void {
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
       providers: [
         OfflineReplicaPullService,
         IonicOfflineRepository,
         { provide: KitStorageService, useValue: storage },
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema, mode } },
         { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
         { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
         { provide: OFFLINE_REPLICA_PROJECTOR, useValue: projector },
@@ -199,6 +199,20 @@ describe('OfflineReplicaPullService', () => {
       schemaHash,
       reconciliationTargets: [],
     });
+  });
+
+  it('readCacheOnlyでもprefetched authoritative changesは永続cacheへ適用する', async () => {
+    configureTestBed('readCacheOnly');
+    repository = TestBed.inject(OFFLINE_REPOSITORY);
+    service = TestBed.inject(OfflineReplicaPullService);
+    await repository.initialize();
+
+    await service.applyChanges(scope, [itemChange(42, 'Web foreground')]);
+
+    await expect(repository.getReplicaRowByRemoteId(scope, 'test_items', 42)).resolves.toMatchObject({
+      confirmedValues: { title: 'Web foreground' },
+    });
+    expect(pull).not.toHaveBeenCalled();
   });
 
   it('applies rebaseline reset, derived projection, base rows, and cursor in one transaction', async () => {
@@ -1106,6 +1120,47 @@ describe('OfflineReplicaPullService', () => {
       });
       expect(await repository.getCommands(scope)).toEqual([]);
       expect(await repository.getReplicaRows(scope, 'test_items')).toHaveLength(1);
+    });
+
+    it('prefetched authoritative changeもpullと同じ境界でACKしcursorを変更しない', async () => {
+      await seedPendingCreate();
+      await repository.transactReplica({ putCursors: [{ ...scope, cursor: 'cursor-before-prefetch' }] });
+
+      await service.applyChanges(scope, async (transactionRepository) => {
+        await expect(transactionRepository.getReplicaCursor(scope)).resolves.toEqual({
+          ...scope,
+          cursor: 'cursor-before-prefetch',
+        });
+        return [
+          itemChange(42, 'Created from foreground response', {
+            serverRevision: 1,
+            acknowledgedCommandIds: ['cmd-create'],
+          }),
+        ];
+      });
+
+      expect(pull).not.toHaveBeenCalled();
+      await expect(repository.getReplicaCursor(scope)).resolves.toEqual({ ...scope, cursor: 'cursor-before-prefetch' });
+      await expect(repository.getCommands(scope)).resolves.toEqual([]);
+      await expect(repository.getReplicaRow(scope, 'test_items', generatedCommandIdentity('019d-create'))).resolves.toMatchObject({
+        identity: { kind: 'generated', localId: '019d-create', remoteId: 42 },
+        confirmedValues: { title: 'Created from foreground response' },
+        syncState: 'confirmed',
+      });
+    });
+
+    it('prefetched pageはsource単位にbulk preloadしchange単位lookupを行わない', async () => {
+      const bulkRead = vi.spyOn(repository, 'getReplicaRowsIncludingPendingDelete');
+      const remoteLookup = vi.spyOn(repository, 'getReplicaRowByRemoteIdentity');
+
+      await service.applyChanges(
+        scope,
+        Array.from({ length: 25 }, (_, index) => itemChange(index + 1, `Item ${index + 1}`)),
+      );
+
+      expect(bulkRead).toHaveBeenCalledOnce();
+      expect(remoteLookup).not.toHaveBeenCalled();
+      await expect(repository.getReplicaRows(scope, 'test_items')).resolves.toHaveLength(25);
     });
 
     it('journal retention後のrebaselineでもawaiting-pull targetをhydrateしACK changeと同じtransactionで除去する', async () => {

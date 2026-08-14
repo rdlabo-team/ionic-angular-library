@@ -74,6 +74,16 @@ interface OfflineCommandBase<T> extends OfflineScope {
   /** Opaque product payload. Kit never mutates this after enqueue. */
   payload: T;
   /**
+   * Read-only compatibility image retained when upgrading schema-v1 commands.
+   * New commands never write this field; products may use it only to normalize
+   * a released legacy payload into their current versioned intent contract.
+   */
+  readonly legacyOptimisticValue?: unknown;
+  /** Released schema-v1 companion images retained for product-owned normalization. */
+  readonly legacyOptimisticCompanions?: unknown;
+  /** Released schema-v1 integrity value retained while a legacy command remains durable. */
+  readonly legacyPayloadHash?: string;
+  /**
    * Declared localOnly projection rows this intent may create, update, or remove.
    * Kit persists keys only; before/after images are not durable truth.
    */
@@ -193,6 +203,8 @@ export interface OfflineRepositoryReader {
     identity: OfflineReplicaAddress,
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
+  /** Internal synchronization bulk read that also returns pending-delete tombstones. */
+  getReplicaRowsIncludingPendingDelete?<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
   getReplicaRowByRemoteId<TValues = unknown>(
     scope: OfflineScope,
     sourceKey: string,
@@ -228,6 +240,8 @@ export interface OfflineRepository {
     identity: OfflineReplicaAddress,
   ): Promise<OfflineReplicaRow<TValues> | null>;
   getReplicaRows<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
+  /** Internal synchronization bulk read that also returns pending-delete tombstones. */
+  getReplicaRowsIncludingPendingDelete?<TValues = unknown>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]>;
   getReplicaRowByRemoteId<TValues = unknown>(
     scope: OfflineScope,
     sourceKey: string,
@@ -383,6 +397,13 @@ export class IonicOfflineRepository implements OfflineRepository {
     return this.#withCommittedRead(() => this.#readReplicaRows(scope, sourceKey));
   }
 
+  async getReplicaRowsIncludingPendingDelete<TValues = unknown>(
+    scope: OfflineScope,
+    sourceKey: string,
+  ): Promise<OfflineReplicaRow<TValues>[]> {
+    return this.#withCommittedRead(() => this.#readReplicaRows(scope, sourceKey, true));
+  }
+
   async getReplicaRowByRemoteId<TValues = unknown>(
     scope: OfflineScope,
     sourceKey: string,
@@ -450,13 +471,17 @@ export class IonicOfflineRepository implements OfflineRepository {
     return this.#rowForScope(row, schema, scope) as OfflineReplicaRow<TValues>;
   }
 
-  async #readReplicaRows<TValues>(scope: OfflineScope, sourceKey: string): Promise<OfflineReplicaRow<TValues>[]> {
+  async #readReplicaRows<TValues>(
+    scope: OfflineScope,
+    sourceKey: string,
+    includePendingDelete = false,
+  ): Promise<OfflineReplicaRow<TValues>[]> {
     const schema = this.#resolveReplicaEntitySchema(sourceKey);
     const rows = await this.#readRowPartition<TValues>(scope, sourceKey, schema);
     return Object.values(rows)
       .filter((row) => {
         if (row.sourceKey !== sourceKey || row.userId !== scope.userId) return false;
-        if ((row.visibility ?? 'present') === 'pending_delete') return false;
+        if (!includePendingDelete && (row.visibility ?? 'present') === 'pending_delete') return false;
         return schema.scope === 'partition' ? row.scopeId === scope.scopeId : true;
       })
       .map((row) => this.#rowForScope(row, schema, scope))
@@ -516,6 +541,7 @@ export class IonicOfflineRepository implements OfflineRepository {
       getReplicaRow: (scope, sourceKey, identity) => this.#readReplicaRow(scope, sourceKey, identity, false),
       getReplicaRowIncludingPendingDelete: (scope, sourceKey, identity) => this.#readReplicaRow(scope, sourceKey, identity, true),
       getReplicaRows: (scope, sourceKey) => this.#readReplicaRows(scope, sourceKey),
+      getReplicaRowsIncludingPendingDelete: (scope, sourceKey) => this.#readReplicaRows(scope, sourceKey, true),
       getReplicaRowByRemoteId: async (scope, sourceKey, remoteId) => {
         if (this.#resolveReplicaEntitySchema(sourceKey).identity.kind !== 'generated') return null;
         return this.#readReplicaRowByRemoteIdentity(scope, sourceKey, { remoteId });
@@ -647,7 +673,9 @@ export class IonicOfflineRepository implements OfflineRepository {
 
   async #migrate(): Promise<void> {
     const metadata = await this.#storage.get<Partial<OfflineMetadata>>(METADATA_KEY);
-    if (metadata?.schemaVersion !== undefined && metadata.schemaVersion !== OFFLINE_SCHEMA_VERSION) {
+    if (metadata?.schemaVersion === 1) {
+      await this.#migrateCoreSchemaV1();
+    } else if (metadata?.schemaVersion !== undefined && metadata.schemaVersion !== OFFLINE_SCHEMA_VERSION) {
       throw new Error(
         `Unsupported offline storage schema version ${metadata.schemaVersion}; expected ${OFFLINE_SCHEMA_VERSION}. ` +
           'A lossless core schema migration is required before this database can be opened.',
@@ -664,6 +692,29 @@ export class IonicOfflineRepository implements OfflineRepository {
 
     const interrupted = await this.#storage.get<OfflineReplicaTransaction>(REPLICA_TRANSACTION_KEY);
     if (interrupted) await this.#applyReplicaTransaction(interrupted, false);
+  }
+
+  async #migrateCoreSchemaV1(): Promise<void> {
+    const commands = await this.#readRecord<
+      OfflineCommand & { optimisticValue?: unknown; optimisticCompanions?: unknown; payloadHash?: string }
+    >(OUTBOX_KEY);
+    const migratedCommands = Object.fromEntries(
+      Object.entries(commands).map(([key, command]) => {
+        const { optimisticValue, optimisticCompanions, payloadHash, ...current } = command;
+        return [
+          key,
+          {
+            ...current,
+            ...(optimisticValue === undefined ? {} : { legacyOptimisticValue: structuredClone(optimisticValue) }),
+            ...(optimisticCompanions === undefined ? {} : { legacyOptimisticCompanions: structuredClone(optimisticCompanions) }),
+            ...(payloadHash === undefined ? {} : { legacyPayloadHash: payloadHash }),
+          },
+        ];
+      }),
+    );
+    const metadata = await this.#metadata();
+    await this.#storage.set(OUTBOX_KEY, migratedCommands);
+    await this.#storage.set<OfflineMetadata>(METADATA_KEY, { ...metadata, schemaVersion: OFFLINE_SCHEMA_VERSION });
   }
 
   async #initializeReplicaSchema(storedVersion: number | null, storedHash: string | null): Promise<void> {
