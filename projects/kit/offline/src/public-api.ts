@@ -10,7 +10,14 @@ export * from './lib/offline-command-hooks';
 export * from './lib/offline-auth-bridge';
 export * from './lib/offline-coordinator.service';
 export * from './lib/offline-kit-options';
+export * from './lib/offline-local-reset';
 export * from './lib/offline-mutation-envelope';
+export { OfflineMutationPersistenceDisabledError } from './lib/offline-mutation-admission.service';
+export {
+  OfflineMutationPersistencePendingError,
+  OfflineMutationPersistenceRequiresOnlineError,
+  OfflineMutationPersistenceService,
+} from './lib/offline-mutation-persistence.service';
 export * from './lib/offline-network.service';
 export * from './lib/offline-provider';
 export * from './lib/offline-repository';

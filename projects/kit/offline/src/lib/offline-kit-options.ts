@@ -1,4 +1,4 @@
-import { InjectionToken } from '@angular/core';
+import { InjectionToken, type Type } from '@angular/core';
 import type { OfflineReplicaSchemaBundle } from './offline-replica-schema';
 import type { OfflineStorageUnavailableError } from './offline-storage';
 
@@ -8,6 +8,22 @@ export interface OfflineOutboxLimits {
   maxCommandsPerUser?: number;
   /** Maximum serialized size retained for one user. Defaults to 10 MiB. */
   maxBytesPerUser?: number;
+}
+
+/** Product persistence adapter for the device-local offline mutation preference. */
+export interface OfflineMutationPersistenceAdapter {
+  /** Loads the last durable preference. `null` or `undefined` uses the configured default. */
+  loadEnabled(): Promise<boolean | null | undefined>;
+  /** Persists a completed enable or disable transition. */
+  saveEnabled(enabled: boolean): Promise<void>;
+}
+
+/** Configuration for device-local mutation persistence control. */
+export interface OfflineMutationPersistenceOptions {
+  /** Injectable product adapter for the durable preference store. */
+  adapter: Type<OfflineMutationPersistenceAdapter>;
+  /** Initial value when no durable preference exists. Defaults to `true`. */
+  defaultEnabled?: boolean;
 }
 
 /** Product-independent native offline persistence settings. */
@@ -31,6 +47,13 @@ export interface OfflineKitOptions {
   /** Optional durable Outbox backpressure policy. */
   outboxLimits?: OfflineOutboxLimits;
   /**
+   * Optional device-local control for accepting new durable Outbox mutations.
+   *
+   * Replica reads remain enabled while mutation persistence is disabled. When omitted,
+   * Kit preserves the historical always-enabled mutation behavior.
+   */
+  mutationPersistence?: OfflineMutationPersistenceOptions;
+  /**
    * Optional product callback invoked when local storage initialization fails.
    *
    * Providing this callback opts the application into online-only startup degradation:
@@ -39,7 +62,8 @@ export interface OfflineKitOptions {
    * When omitted, initialization throws {@link OfflineStorageUnavailableError} as before.
    * If the callback throws or rejects, initialization still fails.
    *
-   * Kit never deletes Outbox or replica data in response to storage failure; any reset is product-owned.
+   * Kit never deletes Outbox or replica data in response to storage failure. Products may invoke
+   * `recoverOfflineLocalReset` only after an explicit destructive reset request.
    */
   onStorageUnavailable?: (error: OfflineStorageUnavailableError) => void | Promise<void>;
 }

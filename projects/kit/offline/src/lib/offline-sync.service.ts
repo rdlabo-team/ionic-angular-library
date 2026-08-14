@@ -12,6 +12,7 @@ import {
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
+import { OfflineMutationAdmissionService } from './offline-mutation-admission.service';
 import { OfflineReplicaPullService, OfflineReplicaSchemaMismatchError } from './offline-replica-pull.service';
 import { isOfflineAggregateIntentConflict, offlineAggregateIntentMutations } from './offline-aggregate-intent-projector';
 import { commandFootprintKeys, OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
@@ -150,6 +151,7 @@ export function offlineRetryDelayMs(attempts: number, random: () => number = Mat
 @Injectable({ providedIn: 'root' })
 export class OfflineSyncService {
   readonly #network = inject(OfflineNetworkService);
+  readonly #mutationAdmission = inject(OfflineMutationAdmissionService);
   readonly #repository = inject(OFFLINE_REPOSITORY);
   readonly #executor = inject(OFFLINE_COMMAND_EXECUTOR);
   readonly #context = inject(OFFLINE_SYNC_CONTEXT);
@@ -270,8 +272,10 @@ export class OfflineSyncService {
   }
 
   enqueue<T>(request: EnqueueOfflineCommand<T>, options: { flush?: boolean } = {}): Promise<string> {
-    const generation = this.#generation;
-    return this.#serializeReplicaMutation((repository) => this.#enqueue(request, options, generation, undefined, repository));
+    return this.#mutationAdmission.run(() => {
+      const generation = this.#generation;
+      return this.#serializeReplicaMutation((repository) => this.#enqueue(request, options, generation, undefined, repository));
+    });
   }
 
   /**
@@ -282,12 +286,14 @@ export class OfflineSyncService {
     prepare: (repository: OfflineRepository) => Promise<PreparedOfflineCommand<T>>,
     options: { flush?: boolean } = {},
   ): Promise<string> {
-    const generation = this.#generation;
-    return this.#serializeReplicaMutation(async (repository) => {
-      await this.initialize();
-      if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared enqueue.');
-      const prepared = await prepare(repository);
-      return this.#enqueue(prepared.request, options, generation, undefined, repository);
+    return this.#mutationAdmission.run(() => {
+      const generation = this.#generation;
+      return this.#serializeReplicaMutation(async (repository) => {
+        await this.initialize();
+        if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared enqueue.');
+        const prepared = await prepare(repository);
+        return this.#enqueue(prepared.request, options, generation, undefined, repository);
+      });
     });
   }
 
@@ -303,12 +309,14 @@ export class OfflineSyncService {
     prepare: (repository: OfflineRepository) => Promise<readonly PreparedOfflineCommand<T>[]>,
     options: PreparedOfflineBatchOptions = {},
   ): Promise<readonly string[]> {
-    const generation = this.#generation;
-    return this.#serializeReplicaMutation(async (repository) => {
-      await this.initialize();
-      if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared batch enqueue.');
-      const prepared = await prepare(repository);
-      return this.#enqueuePreparedBatch(prepared, options, generation, repository);
+    return this.#mutationAdmission.run(() => {
+      const generation = this.#generation;
+      return this.#serializeReplicaMutation(async (repository) => {
+        await this.initialize();
+        if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared batch enqueue.');
+        const prepared = await prepare(repository);
+        return this.#enqueuePreparedBatch(prepared, options, generation, repository);
+      });
     });
   }
 

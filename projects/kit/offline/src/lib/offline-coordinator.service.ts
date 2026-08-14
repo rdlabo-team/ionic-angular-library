@@ -2,6 +2,7 @@ import { computed, inject, Injectable, signal } from '@angular/core';
 import type { OfflinePrincipalId } from './offline-identity';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineNetworkService } from './offline-network.service';
+import { OfflineMutationPersistenceService } from './offline-mutation-persistence.service';
 import { OFFLINE_REPOSITORY } from './offline-repository';
 import { OfflineSessionService } from './offline-session.service';
 import type { OfflineSessionManifest, OfflineSessionTransitionLease } from './offline-session.service';
@@ -23,6 +24,7 @@ export interface OfflineResumeRemoteSessionOptions {
 export class OfflineCoordinatorService {
   readonly #repository = inject(OFFLINE_REPOSITORY);
   readonly #network = inject(OfflineNetworkService);
+  readonly #mutationPersistence = inject(OfflineMutationPersistenceService);
   readonly #sync = inject(OfflineSyncService);
   readonly #session = inject(OfflineSessionService);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
@@ -47,6 +49,8 @@ export class OfflineCoordinatorService {
   readonly syncState = this.#sync.syncState;
   readonly pendingCount = this.#sync.pendingCount;
   readonly conflicts = this.#sync.conflicts;
+  /** Device-local control for accepting new durable Outbox mutations. */
+  readonly mutationPersistence = this.#mutationPersistence;
 
   /**
    * Opens local storage, then session and sync.
@@ -56,6 +60,7 @@ export class OfflineCoordinatorService {
    * resolves with {@link storageState} `unavailable` and skips session/sync initialization.
    */
   async initialize(): Promise<void> {
+    await this.#mutationPersistence.initialize();
     const networkReady = this.#network.initialize();
     const initializeRepository = async (): Promise<void> => this.#repository.initialize();
     const repositoryReady = await initializeRepository().then(
@@ -109,7 +114,10 @@ export class OfflineCoordinatorService {
   /**
    * Activates a restored identity for local replica/outbox use without enabling transport sync.
    */
-  async activateOfflineSession(authSubject?: string | null, authLease?: OfflineSessionTransitionLease): Promise<OfflineSessionManifest | null> {
+  async activateOfflineSession(
+    authSubject?: string | null,
+    authLease?: OfflineSessionTransitionLease,
+  ): Promise<OfflineSessionManifest | null> {
     if (this.#storageUnavailable()) return null;
     const revision = ++this.#transitionRevision;
     const lease = this.#lease(revision, authLease);
