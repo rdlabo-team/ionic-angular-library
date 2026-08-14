@@ -29,8 +29,8 @@ class FakeStorageEngine {
 // We do NOT vi.mock the module; instead we provide this value directly as the DI token
 // to avoid ESM/transform issues with the real package.
 class FakeStorage {
-  create() {
-    return Promise.resolve(new FakeStorageEngine());
+  async create() {
+    return new FakeStorageEngine();
   }
 }
 

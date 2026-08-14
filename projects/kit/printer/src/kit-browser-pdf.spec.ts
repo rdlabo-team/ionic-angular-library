@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { KitBrowserPdfDependencies } from './kit-browser-pdf';
 import { kitDownloadPdf, kitPreviewGeneratedPdf } from './kit-browser-pdf';
+
+afterEach(() => vi.restoreAllMocks());
 
 interface BrowserPdfTestHarness {
   readonly dependencies: KitBrowserPdfDependencies;
@@ -128,15 +130,11 @@ describe('kitDownloadPdf', () => {
       },
     };
 
-    try {
-      expect(() => kitDownloadPdf(Uint8Array.from([1]), { filename: 'label.pdf', dependencies })).not.toThrow();
-      expect(harness.click).toHaveBeenCalledOnce();
-      cleanup?.();
-      expect(harness.remove).toHaveBeenCalledOnce();
-      expect(harness.revokeObjectURL).toHaveBeenCalledWith('blob:generated-pdf');
-    } finally {
-      setTimeoutSpy.mockRestore();
-    }
+    expect(() => kitDownloadPdf(Uint8Array.from([1]), { filename: 'label.pdf', dependencies })).not.toThrow();
+    expect(harness.click).toHaveBeenCalledOnce();
+    cleanup?.();
+    expect(harness.remove).toHaveBeenCalledOnce();
+    expect(harness.revokeObjectURL).toHaveBeenCalledWith('blob:generated-pdf');
   });
 });
 
@@ -325,20 +323,16 @@ describe('kitPreviewGeneratedPdf', () => {
       },
     };
 
-    try {
-      await expect(
-        kitPreviewGeneratedPdf(async () => Uint8Array.from([1]), {
-          title: 'PDF generating',
-          pendingText: 'Please wait',
-          fallbackFilename: 'document.pdf',
-          dependencies,
-        }),
-      ).resolves.toBeUndefined();
-      expect(replace).toHaveBeenCalledWith('blob:generated-pdf');
-      expect(target.close).not.toHaveBeenCalled();
-    } finally {
-      setTimeoutSpy.mockRestore();
-    }
+    await expect(
+      kitPreviewGeneratedPdf(async () => Uint8Array.from([1]), {
+        title: 'PDF generating',
+        pendingText: 'Please wait',
+        fallbackFilename: 'document.pdf',
+        dependencies,
+      }),
+    ).resolves.toBeUndefined();
+    expect(replace).toHaveBeenCalledWith('blob:generated-pdf');
+    expect(target.close).not.toHaveBeenCalled();
   });
 
   it('downloads when navigating the prepared preview fails', async () => {

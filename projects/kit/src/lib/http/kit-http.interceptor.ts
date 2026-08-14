@@ -396,15 +396,18 @@ const shouldRevokeAuthAccess = (config: KitHttpConfig, req: HttpRequest<unknown>
  *
  * @internal
  */
-const tryRecoverAuthAccess = async (config: KitHttpConfig, request: HttpRequest<unknown>, error: HttpErrorResponse): Promise<boolean> => {
+const tryRecoverAuthAccess = async (
+  config: KitHttpConfig,
+  request: HttpRequest<unknown>,
+  error: HttpErrorResponse,
+): Promise<boolean> => {
   if (!config.recoverAuthAccess) {
     return false;
   }
-  try {
-    return (await config.recoverAuthAccess(request, error)) === true;
-  } catch {
-    return false;
-  }
+  const recover = async (): Promise<boolean | void> => config.recoverAuthAccess?.(request, error);
+  return recover()
+    .then((recovered) => recovered === true)
+    .catch(() => false);
 };
 
 /**
@@ -528,7 +531,7 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
   }
 
   const sendAuthenticated = (outgoing: HttpRequest<unknown>, allowAuthRecovery: boolean): Observable<HttpEvent<unknown>> =>
-    from(Promise.resolve(config.getAuthHeaders(outgoing))).pipe(
+    from(config.getAuthHeaders(outgoing)).pipe(
       catchError((headerError: unknown) => {
         // getAuthHeaders failed → the request is never sent; classify it instead of failing silently.
         if (config.enforceAuthAccessMode && isExplicitAuthDenial(headerError) && shouldRevokeAuthAccess(config, outgoing, headerError)) {
@@ -585,7 +588,10 @@ export const kitAuthInterceptor: HttpInterceptorFn = (request, next) => {
           }),
           catchError((error: HttpErrorResponse) => {
             const mayRecover =
-              allowAuthRecovery && isExplicitAuthDenial(error) && !outgoing.context.get(KIT_AUTH_RECOVERY_REPLAY) && config.recoverAuthAccess;
+              allowAuthRecovery &&
+              isExplicitAuthDenial(error) &&
+              !outgoing.context.get(KIT_AUTH_RECOVERY_REPLAY) &&
+              config.recoverAuthAccess;
 
             if (mayRecover) {
               return from(tryRecoverAuthAccess(config, outgoing, error)).pipe(

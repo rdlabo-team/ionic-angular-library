@@ -37,6 +37,14 @@ interface PdfPreview {
   readonly close: () => void;
 }
 
+interface DownloadResource {
+  link?: HTMLAnchorElement;
+}
+
+interface PreviewResource {
+  target: Window | null;
+}
+
 const defaultDependencies = (): KitBrowserPdfDependencies => ({
   document,
   url: URL,
@@ -52,13 +60,13 @@ const createPdfUrl = (pdfBytes: Uint8Array, dependencies: KitBrowserPdfDependenc
 
 const cleanupDelay = (value: number | undefined): number => (value !== undefined && Number.isFinite(value) && value >= 0 ? value : 60_000);
 
-const createCleanup = (pdfUrl: string, dependencies: KitBrowserPdfDependencies, link?: HTMLAnchorElement): (() => void) => {
+const createCleanup = (pdfUrl: string, dependencies: KitBrowserPdfDependencies, resource?: DownloadResource): (() => void) => {
   let cleaned = false;
   return (): void => {
     if (cleaned) return;
     cleaned = true;
     try {
-      link?.remove();
+      resource?.link?.remove();
     } catch {
       // Cleanup is best-effort and must not turn successful PDF output into a failure.
     } finally {
@@ -69,6 +77,35 @@ const createCleanup = (pdfUrl: string, dependencies: KitBrowserPdfDependencies, 
       }
     }
   };
+};
+
+const prepareDownloadLink = (
+  resource: DownloadResource,
+  pdfUrl: string,
+  filename: string,
+  dependencies: KitBrowserPdfDependencies,
+): HTMLAnchorElement => {
+  const link = dependencies.document.createElement('a');
+  resource.link = link;
+  link.href = pdfUrl;
+  link.download = filename;
+  link.style.display = 'none';
+  dependencies.document.body.appendChild(link);
+  return link;
+};
+
+const openPreviewWindow = (
+  resource: PreviewResource,
+  options: KitPreviewGeneratedPdfOptions,
+  dependencies: KitBrowserPdfDependencies,
+): Window | null => {
+  const target = dependencies.document.defaultView?.open('', '_blank') ?? null;
+  resource.target = target;
+  if (!target) return null;
+  target.opener = null;
+  target.document.title = options.title;
+  target.document.body.textContent = options.pendingText;
+  return target;
 };
 
 const scheduleCleanup = (cleanup: () => void, delay: number, dependencies: KitBrowserPdfDependencies): boolean => {
@@ -113,20 +150,18 @@ const closeWindow = (target: Window | null): void => {
 export const kitDownloadPdf = (pdfBytes: Uint8Array, options: KitDownloadPdfOptions): void => {
   const dependencies = options.dependencies ?? defaultDependencies();
   const pdfUrl = createPdfUrl(pdfBytes, dependencies);
-  let link: HTMLAnchorElement | undefined;
-  let cleanup = createCleanup(pdfUrl, dependencies);
-  let cleanupScheduled = false;
+  const resource: DownloadResource = {};
+  const cleanup = createCleanup(pdfUrl, dependencies, resource);
+  let link: HTMLAnchorElement;
 
   try {
-    link = dependencies.document.createElement('a');
-    cleanup = createCleanup(pdfUrl, dependencies, link);
-    link.href = pdfUrl;
-    link.download = options.filename;
-    link.style.display = 'none';
-    dependencies.document.body.appendChild(link);
-    cleanupScheduled = scheduleCleanup(cleanup, cleanupDelay(options.cleanupDelayMs), dependencies);
-
-    // Keep this as the final synchronous output operation: the browser may start immediately.
+    link = prepareDownloadLink(resource, pdfUrl, options.filename, dependencies);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+  const cleanupScheduled = scheduleCleanup(cleanup, cleanupDelay(options.cleanupDelayMs), dependencies);
+  try {
     link.click();
   } catch (error) {
     cleanup();
@@ -145,22 +180,18 @@ export const kitDownloadPdf = (pdfBytes: Uint8Array, options: KitDownloadPdfOpti
  */
 const preparePdfPreview = (options: KitPreviewGeneratedPdfOptions): PdfPreview => {
   const dependencies = options.dependencies ?? defaultDependencies();
-  let target: Window | null = null;
+  const resource: PreviewResource = { target: null };
 
   try {
-    target = dependencies.document.defaultView?.open('', '_blank') ?? null;
-    if (target) {
-      target.opener = null;
-      target.document.title = options.title;
-      target.document.body.textContent = options.pendingText;
-    }
+    openPreviewWindow(resource, options, dependencies);
   } catch {
-    closeWindow(target);
-    target = null;
+    closeWindow(resource.target);
+    resource.target = null;
   }
 
   return {
     show: (pdfBytes): void => {
+      const target = resource.target;
       if (!target || isWindowClosed(target)) {
         kitDownloadPdf(pdfBytes, {
           filename: options.fallbackFilename,
@@ -188,7 +219,7 @@ const preparePdfPreview = (options: KitPreviewGeneratedPdfOptions): PdfPreview =
         if (!cleanupScheduled) cleanup();
       }
     },
-    close: (): void => closeWindow(target),
+    close: (): void => closeWindow(resource.target),
   };
 };
 
@@ -204,10 +235,9 @@ export const kitPreviewGeneratedPdf = async (
   options: KitPreviewGeneratedPdfOptions,
 ): Promise<void> => {
   const preview = preparePdfPreview(options);
-  try {
-    preview.show(await buildPdf());
-  } catch (error) {
+  const buildAndShow = async (): Promise<void> => preview.show(await buildPdf());
+  await buildAndShow().catch((error: unknown) => {
     preview.close();
     throw error;
-  }
+  });
 };

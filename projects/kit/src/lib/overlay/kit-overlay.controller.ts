@@ -129,9 +129,7 @@ function findVisibleBottomTabBar(): HTMLElement | undefined {
     if (rect.height <= 0) continue;
 
     const slot = tabBar.getAttribute('slot');
-    const isBottom =
-      slot === 'bottom' ||
-      (slot === null && rect.bottom >= window.innerHeight - BOTTOM_TAB_BAR_VIEWPORT_MARGIN_PX);
+    const isBottom = slot === 'bottom' || (slot === null && rect.bottom >= window.innerHeight - BOTTOM_TAB_BAR_VIEWPORT_MARGIN_PX);
     if (!isBottom) continue;
 
     if (rect.bottom > bestBottom) {
@@ -352,7 +350,7 @@ export class KitOverlayController {
       return;
     }
     this.#alertPresenting = true;
-    try {
+    const present = async (): Promise<void> => {
       const alert = await this.#alertCtrl.create({
         header: options.header,
         subHeader: options.subHeader,
@@ -361,9 +359,8 @@ export class KitOverlayController {
       });
       await alert.present();
       await alert.onWillDismiss();
-    } finally {
-      this.#alertPresenting = false;
-    }
+    };
+    await present().finally(() => (this.#alertPresenting = false));
   }
 
   /**
@@ -391,7 +388,7 @@ export class KitOverlayController {
       return false;
     }
     this.#alertPresenting = true;
-    try {
+    const present = async (): Promise<boolean> => {
       const alert = await this.#alertCtrl.create({
         header: options.header,
         subHeader: options.subHeader,
@@ -404,8 +401,7 @@ export class KitOverlayController {
       await alert.present();
       const { role } = await alert.onWillDismiss();
       return role === 'confirm';
-    } finally {
-      this.#alertPresenting = false;
-    }
+    };
+    return present().finally(() => (this.#alertPresenting = false));
   }
 }

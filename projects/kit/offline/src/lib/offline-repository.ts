@@ -47,6 +47,8 @@ export {
 /** Current durable storage schema used by both web and native repositories. */
 export const OFFLINE_SCHEMA_VERSION = 2;
 
+const settledRepositoryOperation = async (): Promise<void> => undefined;
+
 /** User and partition scope of all local offline data. */
 export interface OfflineScope {
   userId: OfflinePrincipalId;
@@ -322,9 +324,9 @@ export class IonicOfflineRepository implements OfflineRepository {
   readonly #storage = inject(KitStorageService);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   #initialization: Promise<void> | null = null;
-  #writes: Promise<void> = Promise.resolve();
+  #writes: Promise<void> = settledRepositoryOperation();
   #activeReaders = 0;
-  #readersIdle: Promise<void> = Promise.resolve();
+  #readersIdle: Promise<void> = settledRepositoryOperation();
   #resolveReadersIdle: (() => void) | null = null;
   #rowIndexBuild: Promise<void> | null = null;
 
@@ -533,11 +535,8 @@ export class IonicOfflineRepository implements OfflineRepository {
     await this.#ensureRowPartitionsReady();
     await this.#writes;
     this.#beginReaders();
-    try {
-      return await operation();
-    } finally {
-      this.#endReaders();
-    }
+    const read = async (): Promise<T> => operation();
+    return read().finally(() => this.#endReaders());
   }
 
   #beginReaders(): void {
@@ -554,7 +553,7 @@ export class IonicOfflineRepository implements OfflineRepository {
     if (this.#activeReaders === 0) {
       this.#resolveReadersIdle?.();
       this.#resolveReadersIdle = null;
-      this.#readersIdle = Promise.resolve();
+      this.#readersIdle = settledRepositoryOperation();
     }
   }
 
@@ -736,7 +735,7 @@ export class IonicOfflineRepository implements OfflineRepository {
         targetHash,
       });
 
-      try {
+      const commitMigration = async (): Promise<void> => {
         const transformedRows: Record<string, OfflineReplicaRow> = {};
         for (const row of Object.values(rows)) {
           let current: OfflineReplicaWebMigrationRow | null = this.#toWebMigrationRow(row);
@@ -781,7 +780,8 @@ export class IonicOfflineRepository implements OfflineRepository {
           replicaSchemaHash: targetHash,
         });
         await this.#storage.remove(REPLICA_SCHEMA_MIGRATION_KEY);
-      } catch (error) {
+      };
+      await commitMigration().catch(async (error: unknown) => {
         await this.#recoverReplicaSchemaMigration({
           originalRows,
           fromVersion,
@@ -790,7 +790,7 @@ export class IonicOfflineRepository implements OfflineRepository {
           targetHash,
         });
         throw error;
-      }
+      });
     });
   }
 

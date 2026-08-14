@@ -190,14 +190,10 @@ export class KitAuthRecoveryService {
   }
 
   /** Run one ordered remote recovery attempt, coalescing concurrent triggers. */
-  recover(): Promise<void> {
-    if (this.#destroyed) return Promise.resolve();
+  async recover(): Promise<void> {
+    if (this.#destroyed) return;
     if (this.#recovery) {
-      if (
-        this.#access.mode === 'local' &&
-        this.#recoveryRevision !== null &&
-        this.#access.revision > this.#recoveryRevision
-      ) {
+      if (this.#access.mode === 'local' && this.#recoveryRevision !== null && this.#access.revision > this.#recoveryRevision) {
         this.#retryRequested = true;
       }
       return this.#recovery;
@@ -228,7 +224,7 @@ export class KitAuthRecoveryService {
     const lease = this.#access.beginTransition();
     let currentLease = lease;
     const isCurrent = (): boolean => currentLease.isCurrent();
-    try {
+    const executeRecovery = async (): Promise<void> => {
       const result = await recovery.reauthenticate(lease);
       if (this.#destroyed || !isCurrent() || this.#access.mode !== 'local') return;
       if (result === false) {
@@ -236,19 +232,15 @@ export class KitAuthRecoveryService {
         this.#access.clear();
         return;
       }
-      if (
-        !(await result.activate(lease)) ||
-        this.#destroyed ||
-        !isCurrent() ||
-        this.#access.mode !== 'local'
-      ) {
+      if (!(await result.activate(lease)) || this.#destroyed || !isCurrent() || this.#access.mode !== 'local') {
         return;
       }
       this.#clearRetry();
       currentLease = this.#access.grantRemote();
       if (!currentLease.isCurrent()) return;
       await result.resume(currentLease);
-    } catch (error) {
+    };
+    await executeRecovery().catch((error: unknown) => {
       if (this.#destroyed || !isCurrent()) return;
       if (isExplicitAuthDenial(error)) {
         this.#clearRetry();
@@ -258,7 +250,7 @@ export class KitAuthRecoveryService {
       } else {
         this.#errorHandler.handleError(error);
       }
-    }
+    });
   }
 
   #scheduleRetry(): void {

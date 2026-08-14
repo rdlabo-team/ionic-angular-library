@@ -58,6 +58,7 @@ function runInterceptor(req: HttpRequest<unknown>, next: (r: HttpRequest<unknown
 // ---------------------------------------------------------------------------
 describe('kitAuthInterceptor', () => {
   afterEach(() => {
+    vi.useRealTimers();
     TestBed.resetTestingModule();
   });
 
@@ -901,15 +902,11 @@ describe('kitAuthInterceptor — timeoutMs & treatAsError', () => {
 
   it('times out a hung request with a synthetic 408 after the default timeout', async () => {
     vi.useFakeTimers();
-    try {
-      setupInterceptor(makeConfig());
-      const next = vi.fn().mockReturnValue(new Observable<never>(() => {})); // never emits
-      const result = firstValueFrom(runInterceptor(postReq, next));
-      const assertion = expect(result).rejects.toMatchObject({ status: 408 });
-      await vi.advanceTimersByTimeAsync(60_000);
-      await assertion;
-    } finally {
-      vi.useRealTimers();
-    }
+    setupInterceptor(makeConfig());
+    const next = vi.fn().mockReturnValue(new Observable<never>(() => {})); // never emits
+    const result = firstValueFrom(runInterceptor(postReq, next));
+    const assertion = expect(result).rejects.toMatchObject({ status: 408 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await assertion;
   });
 });

@@ -224,19 +224,18 @@ const replicaSchemaV1HashDrift = defineOfflineReplicaSchema({
 
 class MemoryStorage {
   readonly values = new Map<string, unknown>();
-  get<T>(key: string): Promise<T | null> {
-    return Promise.resolve((this.values.get(key) as T | undefined) ?? null);
+  async get<T>(key: string): Promise<T | null> {
+    return (this.values.get(key) as T | undefined) ?? null;
   }
-  set<T>(key: string, value: T): Promise<T> {
+  async set<T>(key: string, value: T): Promise<T> {
     this.values.set(key, structuredClone(value));
-    return Promise.resolve(value);
+    return value;
   }
-  remove(key: string): Promise<void> {
+  async remove(key: string): Promise<void> {
     this.values.delete(key);
-    return Promise.resolve();
   }
-  keys(): Promise<string[]> {
-    return Promise.resolve([...this.values.keys()]);
+  async keys(): Promise<string[]> {
+    return [...this.values.keys()];
   }
 }
 
@@ -1904,8 +1903,8 @@ describe('IonicOfflineRepository', () => {
         () => undefined,
         () => undefined,
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(writeFinished).toBe(false);
       const rowsBeforeRelease = storage.values.get('offline:replica:rows') as Record<string, OfflineReplicaRow>;
       expect(Object.values(rowsBeforeRelease)).toEqual([expect.objectContaining({ values: expect.objectContaining({ title: 'Before' }) })]);
@@ -2005,8 +2004,8 @@ describe('IonicOfflineRepository', () => {
       await writeStarted;
 
       releaseReadyCheck();
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(writeFinished).toBe(false);
       // Reader must still be waiting on the write tail — not overlapping the in-flight write.
       let readSettled = false;
@@ -2018,7 +2017,7 @@ describe('IonicOfflineRepository', () => {
           readSettled = true;
         },
       );
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(readSettled).toBe(false);
 
       releaseWrite();
@@ -2086,7 +2085,7 @@ describe('IonicOfflineRepository', () => {
       });
 
       await writeBegan;
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(storage.values.get('offline:outbox:commands')).toEqual(
         expect.objectContaining({
           'cmd-snap': expect.objectContaining({ state: 'pending' }),
@@ -2150,13 +2149,13 @@ describe('IonicOfflineRepository', () => {
         () => undefined,
         () => undefined,
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(writeFinished).toBe(false);
 
       releaseA?.();
       await snapshotA;
-      await Promise.resolve();
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(writeFinished).toBe(false);
 
       releaseB?.();

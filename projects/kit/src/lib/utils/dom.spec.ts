@@ -1,5 +1,7 @@
 import { disableHandler } from './dom';
 
+const nextMicrotask = (): Promise<void> => new Promise((resolve) => queueMicrotask(resolve));
+
 describe('disableHandler', () => {
   function clickEvent() {
     const button = document.createElement('button');
@@ -9,9 +11,10 @@ describe('disableHandler', () => {
   it('disables the button while the work runs and re-enables it after', async () => {
     const { button, event } = clickEvent();
     let disabledDuringWork = false;
-    const work = Promise.resolve().then(() => {
+    const work = (async () => {
+      await nextMicrotask();
       disabledDuringWork = button.disabled;
-    });
+    })();
     await disableHandler(event, work);
     expect(disabledDuringWork).toBe(true);
     expect(button.disabled).toBe(false);
@@ -38,10 +41,11 @@ describe('disableHandler', () => {
     } as unknown as SubmitEvent;
     let disabledDuringWork = false;
 
-    await disableHandler(
-      event,
-      Promise.resolve().then(() => (disabledDuringWork = button.disabled)),
-    );
+    const work = (async () => {
+      await nextMicrotask();
+      disabledDuringWork = button.disabled;
+    })();
+    await disableHandler(event, work);
 
     expect(preventDefault).toHaveBeenCalledOnce();
     expect(disabledDuringWork).toBe(true);
@@ -71,10 +75,11 @@ describe('disableHandler', () => {
     } as unknown as SubmitEvent;
     let disabledDuringWork = false;
 
-    await disableHandler(
-      event,
-      Promise.resolve().then(() => (disabledDuringWork = ionButton.disabled)),
-    );
+    const work = (async () => {
+      await nextMicrotask();
+      disabledDuringWork = ionButton.disabled;
+    })();
+    await disableHandler(event, work);
 
     expect(disabledDuringWork).toBe(true);
     expect(ionButton.disabled).toBe(false);
@@ -103,7 +108,7 @@ describe('disableHandler', () => {
       preventDefault: vi.fn(),
     } as unknown as SubmitEvent;
 
-    await disableHandler(event, Promise.resolve());
+    await disableHandler(event, nextMicrotask());
 
     expect(first.disabled).toBe(false);
     expect(second.disabled).toBe(true);

@@ -95,7 +95,7 @@ describe('KitMaintenanceController', () => {
     const { controller, alert, source } = setup();
     await controller.present(OPTS);
     source.trigger('ended');
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     expect(alert.dismiss).toHaveBeenCalledTimes(1);
     expect(source.close).toHaveBeenCalled();
   });
@@ -111,9 +111,9 @@ describe('KitMaintenanceController', () => {
     const { controller, alertCtrl, source } = setup(first);
     await controller.present(OPTS);
     source.trigger('ended');
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     first.triggerDismiss();
-    await Promise.resolve();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
     await controller.present(OPTS);
     expect(alertCtrl.create).toHaveBeenCalledTimes(2);
   });

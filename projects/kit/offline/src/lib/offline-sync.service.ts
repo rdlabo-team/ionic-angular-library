@@ -865,7 +865,7 @@ export class OfflineSyncService {
   }
 
   #flushInBackground(): void {
-    void this.#beginFlush(false).catch((error) => this.#errorHandler.handleError(error));
+    void this.#beginFlush(false).catch((error) => this.#reportError(error));
   }
 
   flush(): Promise<void> {
@@ -927,16 +927,21 @@ export class OfflineSyncService {
     const pulledScopeKeys = new Set<string>();
     for (const scope of pullScopes) {
       if (!this.#isCurrent(generation) || !this.#network.connected()) return;
-      try {
+      const pullScope = async (): Promise<void> => {
         await this.#pull.pull(scope);
         await this.#markScopeReconciled(scope, generation);
         pulledScopeKeys.add(this.#scopeKey(scope));
-      } catch (error) {
-        prePullFailures.push(error);
-        if (this.#isFatalPullFailure(error)) {
+      };
+      const pull = await pullScope().then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      if (pull.status === 'rejected') {
+        prePullFailures.push(pull.error);
+        if (this.#isFatalPullFailure(pull.error)) {
           // Auth/upgrade-driven recovery only: stop remaining scopes immediately.
-          fatalPullFailure = fatalPullFailure ?? error;
-          await this.#persistFatalPullAttentions(error, scope, pullScopes, generation);
+          fatalPullFailure = fatalPullFailure ?? pull.error;
+          await this.#persistFatalPullAttentions(pull.error, scope, pullScopes, generation);
           break;
         }
         if (this.#pendingPullScopes.has(this.#scopeKey(scope))) {
@@ -986,19 +991,23 @@ export class OfflineSyncService {
       const postPullScopes = [...this.#pendingPullScopes.values()];
       for (const scope of postPullScopes) {
         if (!this.#isCurrent(generation) || !this.#network.connected()) break;
-        try {
-          // A command response may contain only the aggregate's base row. Pull
-          // once per dirty scope so sibling-table journal entries are visible
-          // before the completed Outbox state is exposed to product UI.
+        // A command response may contain only the aggregate's base row. Pull once per dirty scope so
+        // sibling-table journal entries are visible before completed Outbox state reaches product UI.
+        const pullScope = async (): Promise<void> => {
           await this.#pull.pull(scope);
           await this.#markScopeReconciled(scope, generation);
-        } catch (error) {
-          if (this.#isFatalPullFailure(error)) {
-            fatalPullFailure = fatalPullFailure ?? error;
-            await this.#persistFatalPullAttentions(error, scope, postPullScopes, generation);
+        };
+        const pull = await pullScope().then(
+          () => ({ status: 'fulfilled' as const }),
+          (error: unknown) => ({ status: 'rejected' as const, error }),
+        );
+        if (pull.status === 'rejected') {
+          if (this.#isFatalPullFailure(pull.error)) {
+            fatalPullFailure = fatalPullFailure ?? pull.error;
+            await this.#persistFatalPullAttentions(pull.error, scope, postPullScopes, generation);
             break;
           }
-          postPullFailures.push(error);
+          postPullFailures.push(pull.error);
         }
       }
     }
@@ -1131,14 +1140,18 @@ export class OfflineSyncService {
       if (!this.#isCurrent(generation)) return;
       await this.#refreshState(generation);
       if (!this.#isCurrent(generation)) return;
-      let row: OfflineReplicaRow | null;
-      try {
-        row = await this.#rowForCommand(sending);
-      } catch (error) {
+      const claimedCommand = sending;
+      const readRow = async (): Promise<OfflineReplicaRow | null> => this.#rowForCommand(claimedCommand);
+      const rowResult = await readRow().then(
+        (row) => ({ status: 'fulfilled' as const, row }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      if (rowResult.status === 'rejected') {
         if (!this.#isCurrent(generation)) return;
-        await this.#persistFailedCommand(sending, error, generation, null, sending.serverCommitUnknown === true);
-        throw error;
+        await this.#persistFailedCommand(sending, rowResult.error, generation, null, sending.serverCommitUnknown === true);
+        throw rowResult.error;
       }
+      const row = rowResult.row;
       if (!row) {
         const error = new Error(
           `Offline replica row not found: ${sending.aggregateType}/${canonicalOfflineCommandIdentity(sending.identity)}`,
@@ -1150,25 +1163,32 @@ export class OfflineSyncService {
       const transportCommand = await this.#markTransportStarted(sending, generation);
       if (!transportCommand) return;
       sending = transportCommand;
-      let result: OfflineCommandResult;
-      try {
-        result = await this.#executor.execute(sending, offlineCommandTargetFromReplicaRow(row));
-      } catch (error) {
+      const executeCommand = async (): Promise<OfflineCommandResult> =>
+        this.#executor.execute(sending, offlineCommandTargetFromReplicaRow(row));
+      const execution = await executeCommand().then(
+        (result) => ({ status: 'fulfilled' as const, result }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      if (execution.status === 'rejected') {
         if (!this.#isCurrent(generation)) return;
-        const commitUnknown = this.#executor.provesCommandNotCommitted?.(error, sending)
+        const commitUnknown = this.#executor.provesCommandNotCommitted?.(execution.error, sending)
           ? false
-          : priorCommitUnknown || this.#serverCommitCouldBeUnknown(error);
-        await this.#persistFailedCommand(sending, error, generation, row, commitUnknown);
-        if (!this.#isClassifiableTransportError(error)) throw error;
+          : priorCommitUnknown || this.#serverCommitCouldBeUnknown(execution.error);
+        await this.#persistFailedCommand(sending, execution.error, generation, row, commitUnknown);
+        if (!this.#isClassifiableTransportError(execution.error)) throw execution.error;
         break;
       }
+      const result = execution.result;
       if (!this.#isCurrent(generation)) return;
-      try {
-        await this.#completeCommand(commands, sending, result, generation);
-      } catch (error) {
+      const completeCommand = async (): Promise<void> => this.#completeCommand(commands, sending, result, generation);
+      const completion = await completeCommand().then(
+        () => ({ status: 'fulfilled' as const }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      if (completion.status === 'rejected') {
         if (!this.#isCurrent(generation)) return;
-        await this.#persistFailedCommand(sending, error, generation, row, true);
-        throw error;
+        await this.#persistFailedCommand(sending, completion.error, generation, row, true);
+        throw completion.error;
       }
       if (this.#isCurrent(generation)) {
         const scope = { userId: sending.userId, scopeId: sending.scopeId };
@@ -1466,9 +1486,19 @@ export class OfflineSyncService {
   }
 
   #reportError(error: unknown): void {
-    void Promise.resolve()
-      .then(() => this.#errorHandler.handleError(error))
-      .catch(() => undefined);
+    queueMicrotask(() => this.#dispatchError(error));
+  }
+
+  #dispatchError(error: unknown): void {
+    let result: unknown;
+    try {
+      result = (this.#errorHandler.handleError as (reportedError: unknown) => unknown)(error);
+    } catch {
+      return;
+    }
+    if (result instanceof Promise) {
+      void result.catch(() => undefined);
+    }
   }
 
   #assertServerRevision(revision: string | number | undefined): void {

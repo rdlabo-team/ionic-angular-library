@@ -28,16 +28,15 @@ import { naturalCommandIdentity, naturalReplicaIdentity, rematerializeTestAggreg
 
 class MemoryStorage {
   readonly values = new Map<string, unknown>();
-  get<T>(key: string): Promise<T | null> {
-    return Promise.resolve((this.values.get(key) as T | undefined) ?? null);
+  async get<T>(key: string): Promise<T | null> {
+    return (this.values.get(key) as T | undefined) ?? null;
   }
-  set<T>(key: string, value: T): Promise<T> {
+  async set<T>(key: string, value: T): Promise<T> {
     this.values.set(key, structuredClone(value));
-    return Promise.resolve(value);
+    return value;
   }
-  remove(key: string): Promise<void> {
+  async remove(key: string): Promise<void> {
     this.values.delete(key);
-    return Promise.resolve();
   }
 }
 

@@ -58,18 +58,19 @@ export interface KitSignOutOptions {
 }
 
 /** Run a value-returning op through the {@link KitAuthHooks} lifecycle; resolve `null` on failure. */
-const runAuthFlow = async <T>(op: () => Promise<T>, hooks?: KitAuthHooks): Promise<T | null> => {
-  try {
+const runAuthFlow = <T>(op: () => Promise<T>, hooks?: KitAuthHooks): Promise<T | null> => {
+  const execute = async (): Promise<T> => {
     await hooks?.before?.();
     const result = await op();
     await hooks?.success?.();
     return result;
-  } catch (e) {
-    await hooks?.error?.(e);
-    return null;
-  } finally {
-    await hooks?.finally?.();
-  }
+  };
+  return execute()
+    .catch(async (error: unknown) => {
+      await hooks?.error?.(error);
+      return null;
+    })
+    .finally(() => hooks?.finally?.());
 };
 
 /** Run a void op through the lifecycle; resolve `true` on success, `false` on a (hooked) failure. */
@@ -113,25 +114,20 @@ export const kitSignUp = (auth: Auth, email: string, password: string, hooks?: K
  * App-specific cleanup (clearing stores, toasts, navigation, third-party logout) is the caller's,
  * done via the hooks — the kit only owns the Firebase op. `true` on success, `false` on failure.
  */
-export const kitSignOut = async (
-  auth: Auth,
-  hooks?: KitAuthHooks,
-  options?: KitSignOutOptions,
-): Promise<boolean> => {
-  try {
+export const kitSignOut = async (auth: Auth, hooks?: KitAuthHooks, options?: KitSignOutOptions): Promise<boolean> => {
+  const execute = async (): Promise<boolean> => {
     await hooks?.before?.();
-    if (options?.expectedUser !== undefined && auth.currentUser !== options.expectedUser) {
-      return false;
-    }
+    if (options?.expectedUser !== undefined && auth.currentUser !== options.expectedUser) return false;
     await signOut(auth);
     await hooks?.success?.();
     return true;
-  } catch (error) {
-    await hooks?.error?.(error);
-    return false;
-  } finally {
-    await hooks?.finally?.();
-  }
+  };
+  return execute()
+    .catch(async (error: unknown) => {
+      await hooks?.error?.(error);
+      return false;
+    })
+    .finally(() => hooks?.finally?.());
 };
 
 /** Send a password-reset email. `true` on success, `false` on failure. */
@@ -258,9 +254,9 @@ export const kitAuthState = (auth: Auth): Observable<User | null> =>
  * @returns the ID token, or `null` if there is no signed-in user
  * @throws if the token fetch fails for a signed-in user
  */
-export const kitGetIdToken = (auth: Auth, forceRefresh = false): Promise<string | null> => {
+export const kitGetIdToken = async (auth: Auth, forceRefresh = false): Promise<string | null> => {
   const user = auth.currentUser;
-  return user ? user.getIdToken(forceRefresh) : Promise.resolve(null);
+  return user ? user.getIdToken(forceRefresh) : null;
 };
 
 /**
@@ -330,11 +326,12 @@ export const kitReauthenticateThenMutate = async (
   if (!user) {
     throw new KitReauthError('no current user');
   }
-  try {
+  const reauthenticate = async (): Promise<void> => {
     await reauthenticateWithCredential(user, EmailAuthProvider.credential(currentEmail, currentPassword));
-  } catch (e) {
-    throw new KitReauthError(e);
-  }
+  };
+  await reauthenticate().catch((error: unknown) => {
+    throw new KitReauthError(error);
+  });
   await mutate(user);
 };
 
@@ -402,16 +399,19 @@ export const kitReauthWithRetry = async (auth: Auth, currentEmail: string, optio
     if (password === null) {
       return false;
     }
-    try {
-      await run(() => kitReauthenticateThenMutate(auth, currentEmail, password, options.mutate));
-      return true;
-    } catch (e) {
-      if (kitIsWrongPasswordError(e)) {
+    const executeAttempt = async (): Promise<void> => run(() => kitReauthenticateThenMutate(auth, currentEmail, password, options.mutate));
+    const attempt = await executeAttempt().then(
+      () => ({ success: true as const }),
+      (error: unknown) => ({ success: false as const, error }),
+    );
+    if (!attempt.success) {
+      if (kitIsWrongPasswordError(attempt.error)) {
         wrongPasswordRetry = true;
         continue;
       }
-      throw e instanceof KitReauthError && e.cause instanceof Error ? e.cause : e;
+      throw attempt.error instanceof KitReauthError && attempt.error.cause instanceof Error ? attempt.error.cause : attempt.error;
     }
+    return true;
   }
 };
 

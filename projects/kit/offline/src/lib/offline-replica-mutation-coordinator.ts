@@ -20,6 +20,8 @@ import {
 } from './offline-repository';
 import type { OfflineReplicaEntitySchema } from './offline-replica-schema';
 
+const settledMutation = async (): Promise<void> => undefined;
+
 /**
  * Serializes only local replica read/derive/write critical sections. Network
  * transport must stay outside this coordinator so synchronization never holds
@@ -34,7 +36,7 @@ export class OfflineReplicaMutationCoordinator {
   readonly #repository = inject(OFFLINE_REPOSITORY, { optional: true });
   readonly #projector = inject(OFFLINE_AGGREGATE_INTENT_PROJECTOR, { optional: true });
   readonly #options = inject(OFFLINE_KIT_OPTIONS, { optional: true });
-  #tail: Promise<void> = Promise.resolve();
+  #tail: Promise<void> = settledMutation();
 
   /** Enqueues one local replica critical section behind any in-flight mutation. */
   run<T>(operation: (repository: OfflineRepository) => Promise<T>): Promise<T> {

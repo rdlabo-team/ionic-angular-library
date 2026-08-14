@@ -280,7 +280,7 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
     return false;
   };
   const resolveUnavailable = async (error?: unknown): Promise<boolean | UrlTree> => {
-    try {
+    const resolveFallback = async (): Promise<boolean | UrlTree> => {
       const fallback = onUnavailable ? await onUnavailable(state, error, lease) : false;
       if (!lease.isCurrent()) return false;
       if (fallback === true) {
@@ -290,30 +290,29 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
       if (fallback === false) return redirectUnauthorized();
       access.clear();
       return fallback;
-    } catch (fallbackError) {
+    };
+    return resolveFallback().catch((fallbackError: unknown) => {
       if (!lease.isCurrent()) return false;
       access.clear();
       throw fallbackError;
-    }
+    });
   };
-  const resolveRemote = async (
-    result: boolean | UrlTree | KitRemoteAccessRecovery,
-  ): Promise<boolean | UrlTree> => {
+  const resolveRemote = async (result: boolean | UrlTree | KitRemoteAccessRecovery): Promise<boolean | UrlTree> => {
     if (!lease.isCurrent()) return false;
     if (isRemoteAccessActivation(result)) {
       if (!(await result.activate(lease)) || !lease.isCurrent()) return false;
       const resumeLease = access.grantRemote();
       if (!resumeLease.isCurrent()) return false;
-      try {
-        await result.resume(resumeLease);
-      } catch (error) {
-        if (!resumeLease.isCurrent()) return false;
+      const resume = async (): Promise<void> => result.resume(resumeLease);
+      await resume().catch((error: unknown) => {
+        if (!resumeLease.isCurrent()) return;
         if (isExplicitAuthDenial(error)) {
           access.clear();
           throw error;
         }
         if (!isUnavailableError?.(error)) throw error;
-      }
+        return;
+      });
       return resumeLease.isCurrent();
     }
     if (result === true) access.grantRemote();
@@ -344,11 +343,12 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
           access.grantRemote();
           return true;
         }
-        try {
+        const resolveAuthorized = async (): Promise<boolean | UrlTree> => {
           const result = await onAuthorized(state, lease);
           if (!lease.isCurrent()) return false;
-          return await resolveRemote(result);
-        } catch (error) {
+          return resolveRemote(result);
+        };
+        return resolveAuthorized().catch((error: unknown) => {
           if (!lease.isCurrent()) return false;
           if (isExplicitAuthDenial(error)) {
             access.clear();
@@ -356,7 +356,7 @@ export const kitRequireAuthorizedGuard: CanActivateFn = (_route, state) => {
           }
           if (!isUnavailableError?.(error)) throw error;
           return resolveUnavailable(error);
-        }
+        });
       }
       if (data === 'anonymous') {
         if (!lease.isCurrent()) return false;

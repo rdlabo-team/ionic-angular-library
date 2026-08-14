@@ -4,14 +4,12 @@ const fakeStore = (): KitClearableStore & { map: Map<string, unknown> } => {
   const map = new Map<string, unknown>();
   return {
     map,
-    get: <T>(key: string) => Promise.resolve((map.get(key) ?? null) as T | null),
-    set: <T>(key: string, value: T) => {
+    get: async <T>(key: string) => (map.get(key) ?? null) as T | null,
+    set: async <T>(key: string, value: T) => {
       map.set(key, value);
-      return Promise.resolve();
     },
-    clear: () => {
+    clear: async () => {
       map.clear();
-      return Promise.resolve();
     },
   };
 };

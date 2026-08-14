@@ -29,9 +29,9 @@ describe('kitKeyboardInit', () => {
 
   beforeEach(() => {
     listeners.clear();
-    addListener.mockImplementation((event: KeyboardEventName, callback: KeyboardCallback) => {
+    addListener.mockImplementation(async (event: KeyboardEventName, callback: KeyboardCallback) => {
       listeners.set(event, callback);
-      return Promise.resolve({ remove: vi.fn().mockResolvedValue(undefined) });
+      return { remove: vi.fn().mockResolvedValue(undefined) };
     });
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);

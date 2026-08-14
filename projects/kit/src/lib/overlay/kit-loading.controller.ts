@@ -2,6 +2,8 @@ import { inject, Injectable } from '@angular/core';
 import type { LoadingOptions } from '@ionic/angular/standalone';
 import { LoadingController } from '@ionic/angular/standalone';
 
+const settledLoadingOperation = async (): Promise<void> => undefined;
+
 /**
  * Reference-counted wrapper around Ionic's `LoadingController` that keeps at most one loading
  * indicator on screen across concurrent async work.
@@ -50,7 +52,7 @@ export class KitLoadingController {
    * Serializes present/dismiss operations. Each call chains onto this promise, runs after the
    * previous operation has fully settled, then reads {@link #count} and acts accordingly.
    */
-  #queue: Promise<void> = Promise.resolve();
+  #queue: Promise<void> = settledLoadingOperation();
 
   /**
    * Show the loading indicator, or join the one already on screen.
@@ -59,24 +61,22 @@ export class KitLoadingController {
    *   indicator (the `0 → 1` transition). Ignored while an indicator is already present.
    * @returns a Promise that resolves once the indicator is on screen (or immediately when one already is)
    */
-  async presentLoading(options: LoadingOptions = {}): Promise<void> {
+  presentLoading(options: LoadingOptions = {}): Promise<void> {
     this.#count++;
-    try {
-      await this.#enqueue(async () => {
-        // Create only on the transition into "something is loading"; concurrent callers ride the same
-        // element. Re-check the count in case a dismiss already balanced this call while queued.
-        if (this.#count > 0 && this.#loading === null) {
-          const loading = await this.#loadingCtrl.create(options);
-          await loading.present();
-          this.#loading = loading;
-        }
-      });
-    } catch (error) {
+    return this.#enqueue(async () => {
+      // Create only on the transition into "something is loading"; concurrent callers ride the same
+      // element. Re-check the count in case a dismiss already balanced this call while queued.
+      if (this.#count > 0 && this.#loading === null) {
+        const loading = await this.#loadingCtrl.create(options);
+        await loading.present();
+        this.#loading = loading;
+      }
+    }).catch((error: unknown) => {
       // Roll back the reference this call took: a failed create/present must not leave the counter
       // elevated, otherwise a later cycle never reaches N → 0 and the spinner stays stuck on screen.
       this.#count--;
       throw error;
-    }
+    });
   }
 
   /**

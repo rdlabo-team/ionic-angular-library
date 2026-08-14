@@ -91,6 +91,17 @@ const classifyOAuthError = (e: unknown): KitOAuthErrorCategory => {
   return 'other';
 };
 
+type Settled<T> = { status: 'fulfilled'; value: T } | { status: 'rejected'; reason: unknown };
+
+/** Convert a possibly synchronously-throwing Promise producer into an explicit result. */
+const settle = <T>(operation: () => Promise<T>): Promise<Settled<T>> => {
+  const execute = async (): Promise<T> => operation();
+  return execute().then(
+    (value) => ({ status: 'fulfilled', value }),
+    (reason: unknown) => ({ status: 'rejected', reason }),
+  );
+};
+
 /**
  * The shared 3-mode credential state machine (internal).
  *
@@ -109,7 +120,7 @@ const applyOAuthCredential = async (
     error: (category: KitOAuthErrorCategory, error: unknown) => void | Promise<unknown>;
   },
 ): Promise<boolean> => {
-  try {
+  const result = await settle(async () => {
     if (mode.mode === 'new') {
       await signInWithCredential(auth, credential);
     } else {
@@ -124,8 +135,9 @@ const applyOAuthCredential = async (
         await linkWithCredential(user, EmailAuthProvider.credential(mode.emailLogin.email, mode.emailLogin.password));
       }
     }
-  } catch (e) {
-    await effects.error(classifyOAuthError(e), e);
+  });
+  if (result.status === 'rejected') {
+    await effects.error(classifyOAuthError(result.reason), result.reason);
     return false;
   }
   await effects.success();
@@ -164,27 +176,17 @@ const isFacebookCancellation = (error: unknown): boolean => {
  * hooks).
  */
 export const kitFacebookLogin = async (auth: Auth, options: KitFacebookLoginOptions): Promise<{ status: boolean }> => {
-  try {
+  const execute = async (): Promise<{ status: boolean }> => {
     await options.before?.();
     const nonce = generateNonce();
-    let pluginFailed = false;
-    let pluginError: unknown;
-    const event = await FacebookLogin.login({ permissions: options.permissions, nonce }).catch((error: unknown) => {
-      pluginFailed = true;
-      pluginError = error;
-      return undefined;
-    });
+    const login = await settle(() => FacebookLogin.login({ permissions: options.permissions, nonce }));
     await nextFrame();
-    if (pluginFailed) {
-      if (isFacebookCancellation(pluginError)) {
-        return { status: false };
-      }
-      await options.error?.('other', pluginError);
+    if (login.status === 'rejected') {
+      if (!isFacebookCancellation(login.reason)) await options.error?.('other', login.reason);
       return { status: false };
     }
-    if (!event || !event.accessToken?.token) {
-      return { status: false };
-    }
+    const event = login.value;
+    if (!event?.accessToken?.token) return { status: false };
     const accessToken = event.accessToken.token;
     const credential: AuthCredential =
       Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
@@ -196,9 +198,8 @@ export const kitFacebookLogin = async (auth: Auth, options: KitFacebookLoginOpti
       error: (category, error) => options.error?.(category, error),
     });
     return { status };
-  } finally {
-    await options.finally?.();
-  }
+  };
+  return execute().finally(() => options.finally?.());
 };
 
 /**
@@ -231,13 +232,11 @@ export const kitFacebookLogout = async (): Promise<void> => {
  * Every failure path (including popup errors) is routed through `onError`.
  */
 export const kitAppleLogin = async (auth: Auth, options: KitAppleLoginOptions): Promise<{ status: boolean }> => {
-  try {
+  const execute = async (): Promise<{ status: boolean }> => {
     await options.before?.();
     if (Capacitor.isNativePlatform()) {
       const authorize = await SignInWithApple.authorize().catch(() => undefined);
-      if (!authorize) {
-        return { status: false };
-      }
+      if (!authorize) return { status: false };
       const r = authorize.response;
       const response: KitAppleResponse = {
         user: r.user ?? null,
@@ -261,28 +260,27 @@ export const kitAppleLogin = async (auth: Auth, options: KitAppleLoginOptions): 
     provider.addScope('name');
 
     if (options.mode === 'credential') {
-      const user = auth.currentUser;
-      try {
-        if (!user) {
-          throw new Error('kit social: no signed-in user to re-authenticate');
-        }
+      const operation = await settle(async () => {
+        const user = requireUser(auth);
         await reauthenticateWithPopup(user, provider);
         await linkWithCredential(user, EmailAuthProvider.credential(options.emailLogin.email, options.emailLogin.password));
-      } catch (e) {
-        await options.error?.(classifyOAuthError(e), e);
+      });
+      if (operation.status === 'rejected') {
+        await options.error?.(classifyOAuthError(operation.reason), operation.reason);
         return { status: false };
       }
       await options.success?.({ response: emptyAppleResponse(), mode: 'credential' });
       return { status: true };
     }
 
-    let result;
-    try {
-      result = options.mode === 'new' ? await signInWithPopup(auth, provider) : await linkWithPopup(requireUser(auth), provider);
-    } catch (e) {
-      await options.error?.(classifyOAuthError(e), e);
+    const popup = await settle(() =>
+      options.mode === 'new' ? signInWithPopup(auth, provider) : linkWithPopup(requireUser(auth), provider),
+    );
+    if (popup.status === 'rejected') {
+      await options.error?.(classifyOAuthError(popup.reason), popup.reason);
       return { status: false };
     }
+    const result = popup.value;
     const credential = OAuthProvider.credentialFromResult(result);
     const response: KitAppleResponse = {
       ...emptyAppleResponse(),
@@ -292,9 +290,8 @@ export const kitAppleLogin = async (auth: Auth, options: KitAppleLoginOptions): 
     };
     await options.success?.({ response, mode: options.mode });
     return { status: true };
-  } finally {
-    await options.finally?.();
-  }
+  };
+  return execute().finally(() => options.finally?.());
 };
 
 const emptyAppleResponse = (): KitAppleResponse => ({
