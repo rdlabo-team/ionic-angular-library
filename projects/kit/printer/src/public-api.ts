@@ -3,3 +3,4 @@
 // and `dom-to-image-more`; the core entry stays free of those native peers.
 export * from './kit-printer';
 export * from './kit-pdf-printer';
+export * from './kit-browser-pdf';
