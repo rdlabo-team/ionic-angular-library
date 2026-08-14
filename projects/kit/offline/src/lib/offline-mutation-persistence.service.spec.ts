@@ -13,7 +13,7 @@ import { OfflineNetworkService } from './offline-network.service';
 import { OfflineSyncService } from './offline-sync.service';
 
 describe('OfflineMutationPersistenceService', () => {
-  const networkState = signal<'online' | 'offline'>('online');
+  const networkState = signal<'online' | 'offline' | 'unverified'>('online');
   const pendingCount = signal(0);
   const flush = vi.fn(async () => undefined);
   const handleError = vi.fn();
@@ -152,6 +152,23 @@ describe('OfflineMutationPersistenceService', () => {
 
     expect(service.enabled()).toBe(true);
     await expect(admission.run(async () => 'accepted')).resolves.toBe('accepted');
+  });
+
+  it('attempts to flush pending commands while network reachability is unverified', async () => {
+    const saveEnabled = vi.fn(async () => undefined);
+    const { service } = setup(options(async () => true, saveEnabled));
+    await service.initialize();
+    networkState.set('unverified');
+    pendingCount.set(1);
+    flush.mockImplementationOnce(async () => {
+      pendingCount.set(0);
+    });
+
+    await expect(service.setEnabled(false)).resolves.toBeUndefined();
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(saveEnabled).toHaveBeenCalledExactlyOnceWith(false);
+    expect(service.enabled()).toBe(false);
   });
 
   it('does not persist OFF when commands remain after flush', async () => {

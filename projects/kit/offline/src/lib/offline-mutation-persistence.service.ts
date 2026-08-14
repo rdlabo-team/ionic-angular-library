@@ -153,7 +153,7 @@ export class OfflineMutationPersistenceService {
     if (revision !== this.#transitionRevision) return;
     const pendingBeforeFlush = this.#sync.pendingCount();
     if (pendingBeforeFlush > 0) {
-      if (this.#network.state() !== 'online') throw new OfflineMutationPersistenceRequiresOnlineError();
+      if (this.#network.state() === 'offline') throw new OfflineMutationPersistenceRequiresOnlineError();
       await this.#sync.flush();
     }
     if (revision !== this.#transitionRevision) return;
