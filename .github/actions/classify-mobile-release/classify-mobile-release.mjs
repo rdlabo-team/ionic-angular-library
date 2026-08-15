@@ -80,24 +80,6 @@ export function hasNativeDependencyChanges(previousPackage, currentPackage) {
   return JSON.stringify(nativeDependencies(previousPackage)) !== JSON.stringify(nativeDependencies(currentPackage));
 }
 
-/** Tag base marketing version (`major.minor.patch`), ignoring any numeric prerelease suffix. */
-export function tagMarketingVersion(tagMatch) {
-  const [, major, minor, patch] = tagMatch;
-  return `${major}.${minor}.${patch}`;
-}
-
-export function assertStoreNativeAlignment(tagMatch, native, previousNative) {
-  const expected = tagMarketingVersion(tagMatch);
-  if (native.marketingVersion !== expected) {
-    throw new Error(`Store release ${expected} must match native marketing version ${native.marketingVersion}.`);
-  }
-  if (previousNative && Number(native.buildNumber) <= Number(previousNative.buildNumber)) {
-    throw new Error(
-      `Store release must increment the native build number above ${previousNative.buildNumber}; got ${native.buildNumber}.`,
-    );
-  }
-}
-
 export function classifyRelease({
   tagMatch,
   native,
@@ -112,13 +94,23 @@ export function classifyRelease({
 
   const sameMajorMinor = previousMatch?.[1] === major && previousMatch?.[2] === minor;
   if (!previousTag || !sameMajorMinor) {
-    assertStoreNativeAlignment(tagMatch, native, previousNative);
+    const tagMarketingVersion = `${major}.${minor}.${patch}`;
+    if (native.marketingVersion !== tagMarketingVersion) {
+      throw new Error(`Store release ${tagMarketingVersion} must match native marketing version ${native.marketingVersion}.`);
+    }
+    if (previousNative && Number(native.buildNumber) <= Number(previousNative.buildNumber)) {
+      throw new Error(
+        `Store release must increment the native build number above ${previousNative.buildNumber}; got ${native.buildNumber}.`,
+      );
+    }
     return 'store';
   }
 
   if (nativeDependencyChanges || nativeFilesChanged.length > 0) {
-    assertStoreNativeAlignment(tagMatch, native, previousNative);
-    return 'store';
+    const reasons = [...(nativeDependencyChanges ? ['Capacitor/native dependency changes'] : []), ...nativeFilesChanged];
+    throw new Error(
+      `Patch/prerelease tags cannot contain native changes; bump the major or minor version for a store release:\n${reasons.join('\n')}`,
+    );
   }
 
   const [nativeMajor, nativeMinor, nativePatch] = native.marketingVersion.split('.').map(Number);

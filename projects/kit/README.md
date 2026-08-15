@@ -1283,7 +1283,7 @@ export const appConfig: ApplicationConfig = {
 
 #### Release and channel model
 
-Each app's release workflow runs when a `vX.Y.Z` or `vX.Y.Z-N` tag is pushed. The shared `classify-mobile-release` composite action in [`ionic-angular-library/.github/actions`](https://github.com/rdlabo-dev/ionic-angular-library/tree/main/.github/actions) compares the tag with the previous release and selects the delivery path. Web-only patch and prerelease updates within the same `major.minor` line use `publish-live-update`. Native changes—including patch-level store bugfixes—and major/minor bumps use Capawesome Cloud Native Builds and App Store Publishing.
+Each app's release workflow runs when a `vX.Y.Z` or `vX.Y.Z-N` tag is pushed. The shared `classify-mobile-release` composite action in [`ionic-angular-library/.github/actions`](https://github.com/rdlabo-dev/ionic-angular-library/tree/main/.github/actions) compares the tag with the previous release and selects the delivery path. Patch and prerelease updates within the same `major.minor` line use `publish-live-update`; major and minor updates use Capawesome Cloud Native Builds and App Store Publishing.
 
 Every delivery channel is named **`production-<native-build-number>`**, where the Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` must match. A Live Update replaces only the JS, HTML, and CSS on an existing native binary, so channels are isolated by build number and updates reach only compatible devices. The upload pins `--android-min/max` and `--ios-min/max` to that build number.
 
@@ -1292,8 +1292,8 @@ Every delivery channel is named **`production-<native-build-number>`**, where th
   Example: `9.0.0` (build `9000000`) followed by a web-only `9.0.1` update; both use `production-9000000`.
 
 - **New channel: store release required**
-  Ship a native marketing version that matches the tag's base `major.minor.patch` and increment the native build number. This covers major/minor bumps and same-line patch store bugfixes when `app/android/**`, `app/ios/**`, `capacitor.config.ts` (or `.json`), or Capacitor plugin versions change. The workflow submits iOS builds to TestFlight and Android builds to the Google Play Internal track; promotion to production happens in each store.
-  Example: a native bugfix to `9.0.1` (build `9000001`) creates `production-9000001`. Devices still on build `9000000` remain on `production-9000000` and are unaffected. A feature-level native update to `9.1.0` (build `9010000`) creates `production-9010000`.
+  Increment the major or minor version and the native build number. Include changes to `app/android/**`, `app/ios/**`, `capacitor.config.ts` (or `.json`), and Capacitor plugin versions in this release type. The workflow submits iOS builds to TestFlight and Android builds to the Google Play Internal track; promotion to production happens in each store.
+  Example: a native update to `9.1.0` (build `9010000`) creates `production-9010000`. Devices still running `9.0.x` remain on `production-9000000` and are unaffected.
 
 The build number encodes the major and minor versions at the front: `floor(buildNumber / 10000) === major * 100 + minor`.
 
@@ -1303,7 +1303,7 @@ The build number encodes the major and minor versions at the front: `floor(build
 | `9.1.x`  | `9010000`    | `production-9010000`  |
 | `10.2.x` | `10020000`   | `production-10020000` |
 
-`classify-mobile-release` routes web-only same-line patches to Live Update. When a patch or prerelease includes native, configuration, or Capacitor dependency changes, it classifies the release as store only if the native marketing version exactly matches the tag's base `major.minor.patch` (prerelease suffix ignored) and the build number is strictly greater than the previous native build; mismatches and non-incremented builds fail CI. For all store releases, it also verifies that Android and iOS versions and build numbers agree and that the encoding above is valid. `validate-live-update` remains available for compatibility with existing consumers.
+`classify-mobile-release` fails CI when a patch or prerelease contains native, configuration, or Capacitor dependency changes and requires a major or minor bump instead. For store releases, it verifies that the tag matches the native marketing version, the Android and iOS versions and build numbers agree, the build number increases, and the encoding above is valid. `validate-live-update` remains available for compatibility with existing consumers.
 
 ---
 

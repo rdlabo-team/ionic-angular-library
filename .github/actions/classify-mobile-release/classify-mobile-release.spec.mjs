@@ -140,7 +140,7 @@ describe('native dependency detection', () => {
 });
 
 describe('release classification', () => {
-  it('routes unchanged patch, prerelease progression, and stable promotion to Live Update', () => {
+  it('routes patch, prerelease progression, and stable promotion to Live Update', () => {
     assert.equal(classifyRelease(classification()), 'live-update');
     assert.equal(
       classifyRelease(
@@ -197,98 +197,6 @@ describe('release classification', () => {
     );
   });
 
-  it('routes a same-line patch with native file changes to store when marketing version matches and build increments', () => {
-    assert.equal(
-      classifyRelease(
-        classification({
-          tagMatch: match('9.0.1'),
-          native: { marketingVersion: '9.0.1', buildNumber: '9000001' },
-          nativeFilesChanged: ['app/ios/App/Podfile'],
-        }),
-      ),
-      'store',
-    );
-  });
-
-  it('routes a same-line patch with Capacitor/native dependency changes to store when aligned', () => {
-    assert.equal(
-      classifyRelease(
-        classification({
-          tagMatch: match('9.0.1'),
-          native: { marketingVersion: '9.0.1', buildNumber: '9000001' },
-          nativeDependencyChanges: true,
-        }),
-      ),
-      'store',
-    );
-  });
-
-  it('rejects same-line native store patches when marketing version mismatches the tag base', () => {
-    assert.throws(
-      () =>
-        classifyRelease(
-          classification({
-            tagMatch: match('9.0.1'),
-            native: { marketingVersion: '9.0.0', buildNumber: '9000001' },
-            nativeFilesChanged: ['app/android/app/build.gradle'],
-          }),
-        ),
-      /must match native marketing version/,
-    );
-  });
-
-  it('rejects same-line native store patches when the build number is not incremented', () => {
-    assert.throws(
-      () =>
-        classifyRelease(
-          classification({
-            tagMatch: match('9.0.1'),
-            native: { marketingVersion: '9.0.1', buildNumber: '9000000' },
-            nativeFilesChanged: ['app/ios/App/Podfile'],
-          }),
-        ),
-      /must increment/,
-    );
-  });
-
-  it('uses the tag base marketing version for prerelease store and live-update routing', () => {
-    assert.equal(
-      classifyRelease(
-        classification({
-          tagMatch: match('9.0.1-2'),
-          previousTag: 'v9.0.1-1',
-          previousMatch: releaseMatch('9.0.1-1'),
-          native: { marketingVersion: '9.0.1', buildNumber: '9000001' },
-          nativeFilesChanged: ['app/ios/App/Podfile'],
-        }),
-      ),
-      'store',
-    );
-    assert.equal(
-      classifyRelease(
-        classification({
-          tagMatch: match('9.0.1-2'),
-          previousTag: 'v9.0.1-1',
-          previousMatch: releaseMatch('9.0.1-1'),
-        }),
-      ),
-      'live-update',
-    );
-    assert.throws(
-      () =>
-        classifyRelease(
-          classification({
-            tagMatch: match('9.0.1-2'),
-            previousTag: 'v9.0.1-1',
-            previousMatch: releaseMatch('9.0.1-1'),
-            native: { marketingVersion: '9.0.0', buildNumber: '9000001' },
-            nativeDependencyChanges: true,
-          }),
-        ),
-      /must match native marketing version/,
-    );
-  });
-
   it('requires store tag/native version equality and an increased build number', () => {
     assert.throws(
       () => classifyRelease(classification({ tagMatch: match('9.1.0'), native: { marketingVersion: '9.1.1', buildNumber: '9010000' } })),
@@ -320,6 +228,14 @@ describe('release classification', () => {
         ),
       /must increment/,
     );
+  });
+
+  it('rejects native files or dependency changes on patch/prerelease tags', () => {
+    assert.throws(
+      () => classifyRelease(classification({ nativeFilesChanged: ['app/ios/App/Podfile'] })),
+      /bump the major or minor.*app\/ios\/App\/Podfile/s,
+    );
+    assert.throws(() => classifyRelease(classification({ nativeDependencyChanges: true })), /Capacitor\/native dependency changes/);
   });
 
   it('rejects a Live Update below the installed native patch', () => {
