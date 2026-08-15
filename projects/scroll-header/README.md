@@ -2,6 +2,8 @@
 
 This is directive for scroll with Header.
 
+**Documentation:** [Read the full documentation](https://docs.rdlabo.dev/projects/ionic-angular-scroll-header)
+
 ## Installation
 
 ```bash

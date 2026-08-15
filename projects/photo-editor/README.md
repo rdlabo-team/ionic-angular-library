@@ -2,6 +2,8 @@
 
 This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor.
 
+**Documentation:** [Read the full documentation](https://docs.rdlabo.dev/projects/ionic-angular-photo-editor)
+
 ## Installation
 
 ```bash

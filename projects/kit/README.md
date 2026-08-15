@@ -2,6 +2,8 @@
 
 A small ergonomic kit for Ionic Angular applications. It provides:
 
+**Documentation:** [Read the full documentation](https://docs.rdlabo.dev/projects/ionic-angular-kit)
+
 - **KitStorageService** — a typed, write-loss-safe wrapper around `@ionic/storage-angular`
 - **KitOverlayController** — a unified presenter for Ionic Modal, Toast, and Alert
 - **Auth guards** — functional guards plus shared `none` / `local` / `remote` runtime access
