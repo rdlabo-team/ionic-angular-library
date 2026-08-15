@@ -1664,8 +1664,10 @@ export class OfflineSyncService {
   }
 
   async #readKnownCommands(): Promise<OfflineCommand[]> {
-    const commands = (await Promise.all([...this.#knownScopes.values()].map((scope) => this.#repository.getCommands(scope))))
-      .flat()
+    const userId = this.#activeUserId;
+    if (userId === null) return [];
+    const commands = (await this.#commandsForUser(userId))
+      .filter((command) => this.#knownScopes.has(this.#scopeKey({ userId: command.userId, scopeId: command.scopeId })))
       .sort(compareOfflineCommands);
     this.#rememberCreatedAt(commands);
     return commands;

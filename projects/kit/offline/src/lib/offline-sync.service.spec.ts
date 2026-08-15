@@ -191,7 +191,10 @@ describe('OfflineSyncService', () => {
         await beforeGetCommands?.();
         return commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId);
       }),
-      getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId)),
+      getCommandsForUser: vi.fn(async (userId: number) => {
+        await beforeGetCommands?.();
+        return commands.filter((item) => item.userId === userId);
+      }),
       putCommand,
       replaceCommand: vi.fn(async (command: OfflineCommand) => {
         commands = commands.filter((item) => item.commandId !== command.commandId);
@@ -647,16 +650,12 @@ describe('OfflineSyncService', () => {
     it('2件の成功は1回のtransactReplicaでFIFO createdAtを永続化する', async () => {
       const repository = TestBed.inject(OFFLINE_REPOSITORY);
       const transactReplica = vi.mocked(repository.transactReplica);
-      const getCommandsForUser = vi.mocked(repository.getCommandsForUser!);
-      getCommandsForUser.mockClear();
-
       const commandIds = await service.enqueuePreparedBatch(async () => [prepared('batch-a', 'A'), prepared('batch-b', 'B')], {
         flush: false,
       });
 
       expect(commandIds).toHaveLength(2);
       expect(transactReplica).toHaveBeenCalledTimes(1);
-      expect(getCommandsForUser).toHaveBeenCalledTimes(1);
       expect(commands).toHaveLength(2);
       expect(commands.map((command) => (command.identity.kind === 'generated' ? command.identity.localId : ''))).toEqual([
         'batch-a',
@@ -842,15 +841,15 @@ describe('OfflineSyncService', () => {
 
     it('durable commit後のstate refreshが失敗してもIDを返し後続refreshで収束する', async () => {
       const repository = TestBed.inject(OFFLINE_REPOSITORY);
-      const getCommands = vi.mocked(repository.getCommands);
+      const getCommandsForUser = vi.mocked(repository.getCommandsForUser!);
       await service.initialize({ flush: false });
       let failRefresh = true;
-      getCommands.mockImplementation(async (scope) => {
+      getCommandsForUser.mockImplementation(async (userId) => {
         if (failRefresh && commands.length > 0) {
           failRefresh = false;
           throw new Error('postcommit read failed');
         }
-        return commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId);
+        return commands.filter((item) => item.userId === userId);
       });
 
       const commandIds = await service.enqueuePreparedBatch(async () => [prepared('committed-a', 'A'), prepared('committed-b', 'B')], {
@@ -2155,6 +2154,49 @@ describe('OfflineSyncService', () => {
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     await service.refreshSession();
     expect(service.pendingCommands()[0]).toMatchObject({ state: 'pending', serverCommitUnknown: true });
+  });
+
+  it('scope数に比例せずuser単位で既知scopeのcommandsを復元する', async () => {
+    session = {
+      userId: 1,
+      scopes: [
+        { userId: 1, scopeId: '10' },
+        { userId: 1, scopeId: '20' },
+      ],
+    };
+    const command: OfflineCommand = {
+      userId: 1,
+      scopeId: '10',
+      commandId: 'known-10',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'known' },
+      operation: 'documents.create',
+      payload: {},
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    };
+    commands.push(
+      command,
+      { ...command, scopeId: '20', commandId: 'known-20' },
+      { ...command, scopeId: '30', commandId: 'unknown-scope' },
+      { ...command, userId: 2, commandId: 'other-user' },
+    );
+    const repository = TestBed.inject(OFFLINE_REPOSITORY);
+    const getCommands = vi.mocked(repository.getCommands);
+    const getCommandsForUser = vi.mocked(repository.getCommandsForUser!);
+    getCommandsForUser.mockImplementation(async () => commands);
+
+    await service.initialize({ flush: false });
+
+    expect(getCommands).not.toHaveBeenCalled();
+    expect(getCommandsForUser).toHaveBeenCalledTimes(3);
+    expect(getCommandsForUser).toHaveBeenCalledWith(1);
+    expect(service.pendingCommands().map((item) => item.commandId)).toEqual(['known-10', 'known-20']);
   });
 
   it('shares restart restoration with an enqueue that arrives while initialization is in flight', async () => {
