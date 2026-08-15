@@ -151,6 +151,8 @@ export class OfflineMutationPersistenceService {
   async #disable(revision: number): Promise<void> {
     await this.#admission.close();
     if (revision !== this.#transitionRevision) return;
+    await this.#sync.initialize({ flush: false });
+    if (revision !== this.#transitionRevision) return;
     const pendingBeforeFlush = this.#sync.pendingCount();
     if (pendingBeforeFlush > 0) {
       if (this.#network.state() === 'offline') throw new OfflineMutationPersistenceRequiresOnlineError();

@@ -15,13 +15,16 @@ import { OfflineSyncService } from './offline-sync.service';
 describe('OfflineMutationPersistenceService', () => {
   const networkState = signal<'online' | 'offline' | 'unverified'>('online');
   const pendingCount = signal(0);
-  const flush = vi.fn(async () => undefined);
+  const initializeSync = vi.fn<() => Promise<void>>(async () => undefined);
+  const flush = vi.fn<() => Promise<void>>(async () => undefined);
   const handleError = vi.fn();
 
   beforeEach(() => {
     TestBed.resetTestingModule();
     networkState.set('online');
     pendingCount.set(0);
+    initializeSync.mockReset();
+    initializeSync.mockResolvedValue(undefined);
     flush.mockReset();
     handleError.mockReset();
   });
@@ -142,6 +145,35 @@ describe('OfflineMutationPersistenceService', () => {
     expect(service.enabled()).toBe(false);
   });
 
+  it('waits for restored commands before deciding that persistence can be disabled', async () => {
+    let releaseRestore!: () => void;
+    initializeSync.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseRestore = () => {
+            pendingCount.set(1);
+            resolve();
+          };
+        }),
+    );
+    flush.mockImplementationOnce(async () => {
+      pendingCount.set(0);
+    });
+    const saveEnabled = vi.fn(async () => undefined);
+    const { service } = setup(options(async () => true, saveEnabled));
+    await service.initialize();
+
+    const disabling = service.setEnabled(false);
+    await vi.waitFor(() => expect(initializeSync).toHaveBeenCalledOnce());
+    expect(saveEnabled).not.toHaveBeenCalled();
+    releaseRestore();
+    await disabling;
+
+    expect(initializeSync).toHaveBeenCalledExactlyOnceWith({ flush: false });
+    expect(flush).toHaveBeenCalledOnce();
+    expect(saveEnabled).toHaveBeenCalledExactlyOnceWith(false);
+  });
+
   it('reopens admission when an offline disable with pending commands fails', async () => {
     const { service, admission } = setup(options(async () => true, vi.fn()));
     await service.initialize();
@@ -218,7 +250,7 @@ describe('OfflineMutationPersistenceService', () => {
         OfflineMutationAdmissionService,
         { provide: OFFLINE_KIT_OPTIONS, useValue: kitOptions },
         { provide: OfflineNetworkService, useValue: { state: networkState } },
-        { provide: OfflineSyncService, useValue: { pendingCount, flush } },
+        { provide: OfflineSyncService, useValue: { initialize: initializeSync, pendingCount, flush } },
         { provide: ErrorHandler, useValue: { handleError } },
         ...(adapter ? [adapter, { provide: OFFLINE_MUTATION_PERSISTENCE_ADAPTER, useExisting: adapter }] : []),
       ],

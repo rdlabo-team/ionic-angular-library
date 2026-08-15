@@ -20,6 +20,9 @@ describe('OfflineCoordinatorService', () => {
     manifest: OfflineSessionManifest | null = null,
     options: {
       repositoryInitialize?: () => Promise<void>;
+      networkInitialize?: () => Promise<void>;
+      sessionInitialize?: () => Promise<void>;
+      syncInitialize?: () => Promise<void>;
       onStorageUnavailable?: (error: OfflineStorageUnavailableError) => void | Promise<void>;
       preferenceLoad?: () => Promise<boolean | null | undefined>;
     } = {},
@@ -32,10 +35,10 @@ describe('OfflineCoordinatorService', () => {
     };
     const network = {
       state: signal('connected'),
-      initialize: vi.fn(async () => undefined),
+      initialize: vi.fn(options.networkInitialize ?? (async () => undefined)),
     };
     const session = {
-      initialize: vi.fn(async () => undefined),
+      initialize: vi.fn(options.sessionInitialize ?? (async () => undefined)),
       activateSession: vi.fn(
         async (userId: number, _scopeIds: readonly string[], _authSubject: string | null, lease: { isCurrent(): boolean }) => {
           order.push('activate-remote');
@@ -59,7 +62,7 @@ describe('OfflineCoordinatorService', () => {
       syncState: signal('idle'),
       pendingCount: signal(0),
       conflicts: signal([]),
-      initialize: vi.fn(async () => undefined),
+      initialize: vi.fn(options.syncInitialize ?? (async (_options?: { flush?: boolean }) => undefined)),
       resetSession: vi.fn(async () => void order.push('reset')),
       revokeSession: vi.fn(() => void order.push('revoke-sync')),
       refreshSession: vi.fn(async () => void order.push('resume-remote')),
@@ -119,7 +122,147 @@ describe('OfflineCoordinatorService', () => {
     expect(repository.initialize).toHaveBeenCalledOnce();
     expect(network.initialize).toHaveBeenCalledOnce();
     expect(session.initialize).toHaveBeenCalledOnce();
+    expect(sync.initialize).toHaveBeenCalledExactlyOnceWith({ flush: false });
+  });
+
+  it('publishes the local substrate after session restore without waiting for network discovery', async () => {
+    let releaseNetwork: (() => void) | undefined;
+    const networkGate = new Promise<void>((resolve) => {
+      releaseNetwork = resolve;
+    });
+    const { coordinator, network, session, sync } = setup(null, {
+      networkInitialize: () => networkGate,
+    });
+
+    const runtime = coordinator.initialize();
+    await coordinator.initializeLocal();
+
+    expect(network.initialize).toHaveBeenCalledOnce();
+    expect(session.initialize).toHaveBeenCalledOnce();
+    expect(coordinator.isStorageReady()).toBe(true);
+    expect(sync.initialize).toHaveBeenCalledExactlyOnceWith({ flush: false });
+
+    releaseNetwork?.();
+    await runtime;
     expect(sync.initialize).toHaveBeenCalledOnce();
+  });
+
+  it('does not publish storage readiness before the persisted session boundary is restored', async () => {
+    let releaseSession: (() => void) | undefined;
+    let markSessionStarted: (() => void) | undefined;
+    const sessionStarted = new Promise<void>((resolve) => {
+      markSessionStarted = resolve;
+    });
+    const sessionGate = new Promise<void>((resolve) => {
+      releaseSession = resolve;
+    });
+    const { coordinator } = setup(null, {
+      sessionInitialize: async () => {
+        markSessionStarted?.();
+        await sessionGate;
+      },
+    });
+
+    const local = coordinator.initializeLocal();
+    await sessionStarted;
+    expect(coordinator.storageState()).toEqual({ status: 'initializing' });
+
+    releaseSession?.();
+    await local;
+    expect(coordinator.storageState()).toEqual({ status: 'ready' });
+  });
+
+  it('shares local and runtime initialization across concurrent callers', async () => {
+    const { coordinator, repository, network, session, sync } = setup();
+
+    await Promise.all([coordinator.initializeLocal(), coordinator.initialize(), coordinator.initialize()]);
+
+    expect(repository.initialize).toHaveBeenCalledOnce();
+    expect(network.initialize).toHaveBeenCalledOnce();
+    expect(session.initialize).toHaveBeenCalledOnce();
+    expect(sync.initialize).toHaveBeenCalledOnce();
+  });
+
+  it('does not start a session transition before runtime initialization completes', async () => {
+    let releaseNetwork: (() => void) | undefined;
+    const networkGate = new Promise<void>((resolve) => {
+      releaseNetwork = resolve;
+    });
+    const { coordinator, order, sync } = setup(null, { networkInitialize: () => networkGate });
+
+    const activation = coordinator.prepareRemoteSession(1, ['2'], 'subject');
+    await coordinator.initializeLocal();
+
+    expect(sync.initialize).toHaveBeenCalledOnce();
+    expect(order).toEqual([]);
+
+    releaseNetwork?.();
+    await expect(activation).resolves.toBe(true);
+    expect(sync.initialize).toHaveBeenCalledOnce();
+    expect(order).toEqual(['reset', 'suspend-remote', 'activate-remote']);
+  });
+
+  it('does not revive a remote activation invalidated by logout while network initialization waits', async () => {
+    let releaseNetwork: (() => void) | undefined;
+    const networkGate = new Promise<void>((resolve) => {
+      releaseNetwork = resolve;
+    });
+    const { coordinator, session, sessionState, sync } = setup(null, { networkInitialize: () => networkGate });
+
+    const activation = coordinator.activateSession(1, ['2'], 'subject');
+    await coordinator.initializeLocal();
+    await coordinator.clearActiveSession();
+    releaseNetwork?.();
+    await activation;
+
+    expect(session.activateSession).not.toHaveBeenCalled();
+    expect(sync.refreshSession).not.toHaveBeenCalled();
+    expect(sessionState.userId).toBeNull();
+  });
+
+  it('activates a verified offline session without waiting for network discovery', async () => {
+    let releaseNetwork: (() => void) | undefined;
+    const networkGate = new Promise<void>((resolve) => {
+      releaseNetwork = resolve;
+    });
+    const manifest = { userId: 1, scopeIds: ['2'], authSubject: 'subject', updatedAt: 1 };
+    const { coordinator, order, sync } = setup(manifest, { networkInitialize: () => networkGate });
+
+    const runtime = coordinator.initialize();
+    await expect(coordinator.activateOfflineSession('subject')).resolves.toEqual(manifest);
+
+    expect(order).toEqual(['reset', 'activate-local', 'refresh-local']);
+    expect(sync.refreshSession).not.toHaveBeenCalled();
+
+    releaseNetwork?.();
+    await runtime;
+  });
+
+  it('does not revive an offline activation invalidated while sync restoration waits', async () => {
+    let releaseSync: (() => void) | undefined;
+    let markSyncStarted: (() => void) | undefined;
+    const syncStarted = new Promise<void>((resolve) => {
+      markSyncStarted = resolve;
+    });
+    const syncGate = new Promise<void>((resolve) => {
+      releaseSync = resolve;
+    });
+    const manifest = { userId: 1, scopeIds: ['2'], authSubject: 'subject', updatedAt: 1 };
+    const { coordinator, session, sync } = setup(manifest, {
+      syncInitialize: async () => {
+        markSyncStarted?.();
+        await syncGate;
+      },
+    });
+
+    const activation = coordinator.activateOfflineSession('subject');
+    await syncStarted;
+    const clearing = coordinator.clearActiveSession();
+    releaseSync?.();
+    await Promise.all([activation, clearing]);
+
+    expect(session.activateOfflineSession).not.toHaveBeenCalled();
+    expect(sync.refreshLocalSession).not.toHaveBeenCalled();
   });
 
   it('restores local visibility without starting remote synchronization', async () => {
@@ -329,6 +472,24 @@ describe('OfflineCoordinatorService', () => {
       expect(sync.initialize).not.toHaveBeenCalled();
       expect(coordinator.storageState()).toEqual({ status: 'unavailable', error: storageError });
       expect(coordinator.isStorageReady()).toBe(false);
+    });
+
+    it('treats persisted session restore failure as an unavailable local substrate', async () => {
+      const sessionError = new Error('session manifest unreadable');
+      const onStorageUnavailable = vi.fn(async () => undefined);
+      const { coordinator, sync } = setup(null, {
+        sessionInitialize: async () => Promise.reject(sessionError),
+        onStorageUnavailable,
+      });
+
+      await expect(coordinator.initializeLocal()).resolves.toBeUndefined();
+
+      const state = coordinator.storageState();
+      expect(state.status).toBe('unavailable');
+      if (state.status !== 'unavailable') return;
+      expect(state.error.cause).toBe(sessionError);
+      expect(onStorageUnavailable).toHaveBeenCalledExactlyOnceWith(state.error);
+      expect(sync.initialize).not.toHaveBeenCalled();
     });
 
     it('normalizes a synchronous repository initialization failure through onStorageUnavailable', async () => {

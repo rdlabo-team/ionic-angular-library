@@ -131,11 +131,15 @@ describe('OfflineSyncService', () => {
   let rows: OfflineReplicaRow[];
   let pullAttentions: OfflinePullAttention[];
   let connected: ReturnType<typeof signal<boolean>>;
+  let networkConnected: () => boolean;
   let session: { userId: number; scopes: OfflineScope[] } | null;
   let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
   let beforePutCommand: ((command: OfflineCommand) => Promise<void>) | null;
   let beforeGetCommands: (() => Promise<void>) | null;
   let beforeGetReplicaRow: (() => Promise<void>) | null;
+  let beforeTransactReplica: (() => Promise<void>) | null;
+  let repositoryInitialize: ReturnType<typeof vi.fn>;
+  let putCommand: ReturnType<typeof vi.fn>;
   let pull: ReturnType<typeof vi.fn<(scope: OfflineScope) => Promise<void>>>;
   let handleError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
   let onCommandRemoved: ReturnType<typeof vi.fn<(command: OfflineCommand) => Promise<void>>>;
@@ -159,11 +163,13 @@ describe('OfflineSyncService', () => {
     rows = [];
     pullAttentions = [];
     connected = signal(false);
+    networkConnected = connected;
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     localSession = undefined;
     beforePutCommand = null;
     beforeGetCommands = null;
     beforeGetReplicaRow = null;
+    beforeTransactReplica = null;
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
     onCommandRemoved = vi.fn(async () => undefined);
@@ -172,19 +178,21 @@ describe('OfflineSyncService', () => {
     execute.mockResolvedValue({ response: null });
     provesCommandNotCommitted.mockReset();
     provesCommandNotCommitted.mockReturnValue(false);
+    repositoryInitialize = vi.fn(async () => undefined);
+    putCommand = vi.fn(async (command: OfflineCommand) => {
+      await beforePutCommand?.(command);
+      commands = commands.filter((item) => item.commandId !== command.commandId);
+      commands.push(structuredClone(command));
+      commands.sort((left, right) => left.createdAt - right.createdAt);
+    });
     const repository = {
-      initialize: vi.fn(async () => undefined),
+      initialize: repositoryInitialize,
       getCommands: vi.fn(async (scope: OfflineScope) => {
         await beforeGetCommands?.();
         return commands.filter((item) => item.userId === scope.userId && item.scopeId === scope.scopeId);
       }),
       getCommandsForUser: vi.fn(async (userId: number) => commands.filter((item) => item.userId === userId)),
-      putCommand: vi.fn(async (command: OfflineCommand) => {
-        await beforePutCommand?.(command);
-        commands = commands.filter((item) => item.commandId !== command.commandId);
-        commands.push(structuredClone(command));
-        commands.sort((left, right) => left.createdAt - right.createdAt);
-      }),
+      putCommand,
       replaceCommand: vi.fn(async (command: OfflineCommand) => {
         commands = commands.filter((item) => item.commandId !== command.commandId);
         commands.push(structuredClone(command));
@@ -280,6 +288,7 @@ describe('OfflineSyncService', () => {
         pullAttentions = pullAttentions.filter((candidate) => candidate.userId !== scope.userId || candidate.scopeId !== scope.scopeId);
       }),
       transactReplica: vi.fn(async (transaction) => {
+        await beforeTransactReplica?.();
         for (const row of transaction.putRows ?? []) {
           rows = rows.filter(
             (item) =>
@@ -320,7 +329,7 @@ describe('OfflineSyncService', () => {
       providers: [
         OfflineSyncService,
         { provide: OFFLINE_REPOSITORY, useValue: repository },
-        { provide: OfflineNetworkService, useValue: { connected } },
+        { provide: OfflineNetworkService, useValue: { connected: () => networkConnected() } },
         { provide: OFFLINE_KIT_OPTIONS, useValue: options },
         { provide: OfflineReplicaPullService, useValue: { pull } },
         { provide: ErrorHandler, useValue: { handleError } },
@@ -2146,6 +2155,274 @@ describe('OfflineSyncService', () => {
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     await service.refreshSession();
     expect(service.pendingCommands()[0]).toMatchObject({ state: 'pending', serverCommitUnknown: true });
+  });
+
+  it('shares restart restoration with an enqueue that arrives while initialization is in flight', async () => {
+    commands.push({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'interrupted',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'interrupted-local' },
+      operation: 'documents.create',
+      payload: {},
+      baseRevision: null,
+      state: 'sending',
+      attempts: 1,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+    let releaseRestore: (() => void) | undefined;
+    let markRestoreStarted: (() => void) | undefined;
+    const restoreStarted = new Promise<void>((resolve) => {
+      markRestoreStarted = resolve;
+    });
+    const restoreGate = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let blockFirstRead = true;
+    beforeGetCommands = async () => {
+      if (!blockFirstRead) return;
+      blockFirstRead = false;
+      markRestoreStarted?.();
+      await restoreGate;
+    };
+
+    const initialization = service.initialize({ flush: false });
+    await restoreStarted;
+    const enqueue = service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'new-local' },
+        operation: 'documents.create',
+        payload: { title: 'new' },
+      },
+      { flush: false },
+    );
+
+    releaseRestore?.();
+    const [, commandId] = await Promise.all([initialization, enqueue]);
+
+    expect(repositoryInitialize).toHaveBeenCalledOnce();
+    expect(putCommand).toHaveBeenCalledOnce();
+    expect(commands).toHaveLength(2);
+    expect(commands.find((command) => command.commandId === 'interrupted')).toMatchObject({
+      state: 'pending',
+      serverCommitUnknown: true,
+    });
+    expect(commands.find((command) => command.commandId === commandId)).toMatchObject({ state: 'pending' });
+  });
+
+  it('preserves a later caller flush request while sharing initialization', async () => {
+    TestBed.flushEffects();
+    commands.push({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'ready-to-send',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'ready-local' },
+      operation: 'documents.create',
+      payload: {},
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+    let releaseRestore: (() => void) | undefined;
+    let markRestoreStarted: (() => void) | undefined;
+    const restoreStarted = new Promise<void>((resolve) => {
+      markRestoreStarted = resolve;
+    });
+    const restoreGate = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let blockFirstRead = true;
+    beforeGetCommands = async () => {
+      if (!blockFirstRead) return;
+      blockFirstRead = false;
+      markRestoreStarted?.();
+      await restoreGate;
+    };
+    networkConnected = () => true;
+
+    const localRestore = service.initialize({ flush: false });
+    await restoreStarted;
+    const flushRequested = service.initialize();
+    releaseRestore?.();
+    await Promise.all([localRestore, flushRequested]);
+
+    expect(repositoryInitialize).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledOnce());
+  });
+
+  it('restores interrupted commands before a direct flush can start transport', async () => {
+    TestBed.flushEffects();
+    commands.push({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'interrupted-flush',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'interrupted-flush-local' },
+      operation: 'documents.create',
+      payload: {},
+      baseRevision: null,
+      state: 'sending',
+      attempts: 1,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+    let releaseRestore: (() => void) | undefined;
+    let markRestoreStarted: (() => void) | undefined;
+    const restoreStarted = new Promise<void>((resolve) => {
+      markRestoreStarted = resolve;
+    });
+    const restoreGate = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let blockFirstRead = true;
+    beforeGetCommands = async () => {
+      if (!blockFirstRead) return;
+      blockFirstRead = false;
+      markRestoreStarted?.();
+      await restoreGate;
+    };
+    networkConnected = () => true;
+    pull.mockImplementation(async () => {
+      expect(commands[0]).toMatchObject({ state: 'pending', serverCommitUnknown: true });
+      commands = [];
+    });
+
+    const flush = service.flush();
+    await restoreStarted;
+    expect(execute).not.toHaveBeenCalled();
+    expect(pull).not.toHaveBeenCalled();
+
+    releaseRestore?.();
+    await flush;
+
+    expect(repositoryInitialize).toHaveBeenCalledOnce();
+    expect(putCommand).toHaveBeenCalledOnce();
+    expect(pull).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a refresh waiting for restore continue under a replacement session', async () => {
+    TestBed.flushEffects();
+    let releaseRestore: (() => void) | undefined;
+    let markRestoreStarted: (() => void) | undefined;
+    const restoreStarted = new Promise<void>((resolve) => {
+      markRestoreStarted = resolve;
+    });
+    const restoreGate = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let blockFirstRead = true;
+    beforeGetCommands = async () => {
+      if (!blockFirstRead) return;
+      blockFirstRead = false;
+      markRestoreStarted?.();
+      await restoreGate;
+    };
+    networkConnected = () => true;
+
+    const refresh = service.refreshSession(['10']);
+    await restoreStarted;
+    service.revokeSession();
+    session = { userId: 2, scopes: [{ userId: 2, scopeId: '20' }] };
+    releaseRestore?.();
+    await refresh;
+
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it('does not let a discard waiting for restore mutate commands after session revocation', async () => {
+    commands.push({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'stale-discard',
+      aggregateType: 'documents',
+      sourceKey: 'documents',
+      identity: { kind: 'generated', localId: 'stale-discard-local' },
+      operation: 'documents.create',
+      payload: {},
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+    let releaseRestore: (() => void) | undefined;
+    let markRestoreStarted: (() => void) | undefined;
+    const restoreStarted = new Promise<void>((resolve) => {
+      markRestoreStarted = resolve;
+    });
+    const restoreGate = new Promise<void>((resolve) => {
+      releaseRestore = resolve;
+    });
+    let blockFirstRead = true;
+    beforeGetCommands = async () => {
+      if (!blockFirstRead) return;
+      blockFirstRead = false;
+      markRestoreStarted?.();
+      await restoreGate;
+    };
+
+    const discard = service.discardAllPending();
+    await restoreStarted;
+    service.revokeSession();
+    session = { userId: 2, scopes: [{ userId: 2, scopeId: '20' }] };
+    releaseRestore?.();
+    await discard;
+
+    expect(commands.map(({ commandId }) => commandId)).toEqual(['stale-discard']);
+    expect(onCommandRemoved).not.toHaveBeenCalled();
+  });
+
+  it('does not start transport before a connected discard commits', async () => {
+    TestBed.flushEffects();
+    await service.initialize();
+    const commandId = await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: 'discard-local' },
+        operation: 'documents.create',
+        payload: { title: 'discard' },
+      },
+      { flush: false },
+    );
+    networkConnected = () => true;
+    let releaseDiscard: (() => void) | undefined;
+    let markDiscardStarted: (() => void) | undefined;
+    const discardStarted = new Promise<void>((resolve) => {
+      markDiscardStarted = resolve;
+    });
+    const discardGate = new Promise<void>((resolve) => {
+      releaseDiscard = resolve;
+    });
+    beforeTransactReplica = async () => {
+      markDiscardStarted?.();
+      await discardGate;
+    };
+
+    const discard = service.discard(commandId);
+    await discardStarted;
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(pull).not.toHaveBeenCalled();
+    expect(commands.some((command) => command.commandId === commandId)).toBe(true);
+
+    releaseDiscard?.();
+    await discard;
+    expect(commands.some((command) => command.commandId === commandId)).toBe(false);
   });
 
   it('restart正規化のpending+serverCommitUnknownはattentionでdiscard禁止かつretry UI対象', async () => {

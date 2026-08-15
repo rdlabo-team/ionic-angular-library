@@ -176,6 +176,7 @@ export class OfflineSyncService {
   #retryTimer: ReturnType<typeof setTimeout> | null = null;
   /** When non-null, automatic flushes pull only foreground scopes plus Outbox scopes. */
   #foregroundScopePolicy: readonly string[] | null = null;
+  #initialization: Promise<void> | null = null;
   #initialized = false;
   #lastCommandCreatedAt = 0;
 
@@ -206,7 +207,22 @@ export class OfflineSyncService {
   }
 
   async initialize(options: { flush?: boolean } = {}): Promise<void> {
-    if (this.#initialized) return;
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
+    if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
+  }
+
+  #ensureInitialized(): Promise<void> {
+    this.#initialization ??= this.#initializeOnce();
+    return this.#initialization;
+  }
+
+  async #restoreCurrentGeneration(generation: number): Promise<boolean> {
+    await this.#ensureInitialized();
+    return this.#isCurrent(generation);
+  }
+
+  async #initializeOnce(): Promise<void> {
     await this.#repository.initialize();
     await this.#discoverScopes();
     const commands = await this.#readKnownCommands();
@@ -223,7 +239,6 @@ export class OfflineSyncService {
     );
     this.#initialized = true;
     await this.#refreshState();
-    if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
   }
 
   noteScope(scope: OfflineScope): void {
@@ -231,13 +246,15 @@ export class OfflineSyncService {
   }
 
   async reloadPendingCommands(): Promise<void> {
-    await this.initialize();
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     await this.#refreshState();
   }
 
   async refreshSession(foregroundScopeIds?: readonly string[]): Promise<void> {
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     this.#setForegroundScopePolicy(foregroundScopeIds);
-    await this.initialize({ flush: false });
     await this.#discoverScopes();
     await this.#restoreInterruptedCommands();
     await this.#refreshState();
@@ -246,7 +263,8 @@ export class OfflineSyncService {
 
   /** Restores local outbox visibility without enabling pull or replay transport. */
   async refreshLocalSession(): Promise<void> {
-    await this.initialize();
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     await this.#discoverLocalScopes();
     await this.#restoreInterruptedCommands();
     await this.#refreshState();
@@ -289,7 +307,7 @@ export class OfflineSyncService {
     return this.#mutationAdmission.run(() => {
       const generation = this.#generation;
       return this.#serializeReplicaMutation(async (repository) => {
-        await this.initialize();
+        await this.#ensureInitialized();
         if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared enqueue.');
         const prepared = await prepare(repository);
         return this.#enqueue(prepared.request, options, generation, undefined, repository);
@@ -312,7 +330,7 @@ export class OfflineSyncService {
     return this.#mutationAdmission.run(() => {
       const generation = this.#generation;
       return this.#serializeReplicaMutation(async (repository) => {
-        await this.initialize();
+        await this.#ensureInitialized();
         if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared batch enqueue.');
         const prepared = await prepare(repository);
         return this.#enqueuePreparedBatch(prepared, options, generation, repository);
@@ -334,7 +352,7 @@ export class OfflineSyncService {
   ): Promise<string> {
     const generation = this.#generation;
     return this.#serializeReplicaMutation(async (repository) => {
-      await this.initialize();
+      await this.#ensureInitialized();
       if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared replacement.');
       const knownCommands = await this.#readKnownCommands();
       const replaced = knownCommands.find((command) => command.commandId === commandId);
@@ -364,7 +382,7 @@ export class OfflineSyncService {
   ): Promise<readonly string[]> {
     const generation = this.#generation;
     return this.#serializeReplicaMutation(async (repository) => {
-      await this.initialize();
+      await this.#ensureInitialized();
       if (!this.#isCurrent(generation)) throw new Error('Offline session changed before prepared aggregate replacement.');
       const knownCommands = await this.#readKnownCommands();
       const selected = knownCommands.find((command) => command.commandId === commandId);
@@ -421,7 +439,7 @@ export class OfflineSyncService {
   runSerializedReplicaMutation<T>(operation: (repository: OfflineRepository) => Promise<T>): Promise<T> {
     const generation = this.#generation;
     return this.#serializeReplicaMutation(async (repository) => {
-      await this.initialize();
+      await this.#ensureInitialized();
       if (!this.#isCurrent(generation)) throw new Error('Offline session changed before serialized replica mutation.');
       const result = await operation(repository);
       if (this.#isCurrent(generation)) await this.#refreshState(generation);
@@ -488,7 +506,7 @@ export class OfflineSyncService {
   }
 
   async #beginEnqueueSession(generation: number): Promise<OfflineSyncSession> {
-    await this.initialize();
+    await this.#ensureInitialized();
     if (this.#options.mode === 'readCacheOnly') {
       throw new Error('This offline provider is configured as a read-only cache and cannot enqueue commands.');
     }
@@ -804,7 +822,8 @@ export class OfflineSyncService {
   }
 
   async discard(commandId: string, options: { flush?: boolean } = {}): Promise<void> {
-    await this.initialize();
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     // A pull may have completed while transport was being cancelled. Re-read
     // and project the discard inside the same local mutation lane used by
     // enqueue, ACK, and pull application so an old before-image cannot replace
@@ -826,7 +845,8 @@ export class OfflineSyncService {
 
   /** Clears a retry backoff/auth block selected explicitly by the user and sends the durable command now. */
   async retryNow(commandId: string): Promise<void> {
-    await this.initialize();
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     this.#invalidateFlush();
     await this.#waitForSendingTransitions();
     await this.#restoreInterruptedCommands();
@@ -851,7 +871,8 @@ export class OfflineSyncService {
   }
 
   async discardAllPending(): Promise<void> {
-    await this.initialize();
+    const generation = this.#generation;
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     const commands = await this.#replicaMutations.run(async (repository) => {
       const current = await this.#readKnownCommands();
       this.#assertDiscardable(current);
@@ -877,6 +898,12 @@ export class OfflineSyncService {
   }
 
   flush(): Promise<void> {
+    const generation = this.#generation;
+    return this.#flushAfterInitialization(generation);
+  }
+
+  async #flushAfterInitialization(generation: number): Promise<void> {
+    if (!(await this.#restoreCurrentGeneration(generation))) return;
     return this.#beginFlush(true);
   }
 

@@ -1,5 +1,5 @@
 import type { EnvironmentProviders, Provider, Type } from '@angular/core';
-import { inject, makeEnvironmentProviders, provideAppInitializer } from '@angular/core';
+import { ErrorHandler, inject, makeEnvironmentProviders, provideAppInitializer } from '@angular/core';
 import { Capacitor } from '@capacitor/core';
 import type { OfflineCommandExecutor, OfflineCommandResult } from './offline-command-executor';
 import { OFFLINE_COMMAND_EXECUTOR, OFFLINE_SYNC_CONTEXT } from './offline-command-executor';
@@ -163,7 +163,22 @@ export function provideOffline(options: ProvideOfflineOptions): EnvironmentProvi
     ...(options.providers ?? []),
     provideAppInitializer(() => {
       assertSupportedOfflineMode(Capacitor.getPlatform(), options.mode ?? 'synchronized');
-      return inject(OfflineCoordinatorService).initialize();
+      const coordinator = inject(OfflineCoordinatorService);
+      const errorHandler = inject(ErrorHandler);
+      const localInitialization = coordinator.initializeLocal();
+      void coordinator.initialize().catch(async (error: unknown) => {
+        const localSucceeded = await localInitialization.then(
+          () => true,
+          () => false,
+        );
+        if (!localSucceeded) return;
+        try {
+          errorHandler.handleError(error);
+        } catch {
+          // Error reporting must not create an unhandled background rejection.
+        }
+      });
+      return localInitialization;
     }),
   ]);
 }

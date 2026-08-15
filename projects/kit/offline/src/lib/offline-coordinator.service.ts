@@ -29,6 +29,9 @@ export class OfflineCoordinatorService {
   readonly #session = inject(OfflineSessionService);
   readonly #options = inject(OFFLINE_KIT_OPTIONS);
   readonly #storageState = signal<OfflineStorageState>({ status: 'initializing' });
+  #localInitialization: Promise<void> | null = null;
+  #syncInitialization: Promise<void> | null = null;
+  #runtimeInitialization: Promise<void> | null = null;
   #transitionRevision = 0;
   #transitionTail: Promise<void> = settledTransition();
 
@@ -52,21 +55,27 @@ export class OfflineCoordinatorService {
   /** Device-local control for accepting new durable Outbox mutations. */
   readonly mutationPersistence = this.#mutationPersistence;
 
-  /**
-   * Opens local storage, then session and sync.
-   *
-   * Repository failure without {@link OfflineKitOptions.onStorageUnavailable} throws
-   * {@link OfflineStorageUnavailableError}. When the callback is present and settles, this method
-   * resolves with {@link storageState} `unavailable` and skips session/sync initialization.
-   */
-  async initialize(): Promise<void> {
+  /** Opens local storage and restores its persisted session boundary without waiting for network discovery. */
+  initializeLocal(): Promise<void> {
+    this.#localInitialization ??= this.#initializeLocal();
+    return this.#localInitialization;
+  }
+
+  /** Opens the local substrate, starts network discovery, then initializes synchronization. */
+  initialize(): Promise<void> {
+    this.#runtimeInitialization ??= this.#initializeRuntime();
+    return this.#runtimeInitialization;
+  }
+
+  async #initializeLocal(): Promise<void> {
     await this.#mutationPersistence.initialize();
-    const networkReady = this.#network.initialize();
-    const initializeRepository = async (): Promise<void> => this.#repository.initialize();
-    const repositoryReady = await initializeRepository().then(
+    const initializeSubstrate = async (): Promise<void> => {
+      await this.#repository.initialize();
+      await this.#session.initialize();
+    };
+    const substrateReady = await initializeSubstrate().then(
       () => true,
       async (error: unknown) => {
-        await networkReady;
         const typed = this.#asStorageUnavailable(error);
         this.#storageState.set({ status: 'unavailable', error: typed });
         const onUnavailable = this.#options.onStorageUnavailable;
@@ -75,11 +84,24 @@ export class OfflineCoordinatorService {
         return false;
       },
     );
-    if (!repositoryReady) return;
-    await networkReady;
+    if (!substrateReady) return;
     this.#storageState.set({ status: 'ready' });
-    await this.#session.initialize();
-    await this.#sync.initialize();
+  }
+
+  async #initializeRuntime(): Promise<void> {
+    const networkReady = this.#network.initialize();
+    await Promise.all([this.#initializeSync(), networkReady]);
+  }
+
+  #initializeSync(): Promise<void> {
+    this.#syncInitialization ??= this.#initializeSyncOnce();
+    return this.#syncInitialization;
+  }
+
+  async #initializeSyncOnce(): Promise<void> {
+    await this.initializeLocal();
+    if (this.#storageUnavailable()) return;
+    await this.#sync.initialize({ flush: false });
   }
 
   async activateSession(userId: OfflinePrincipalId, scopeIds: readonly string[], authSubject: string | null): Promise<void> {
@@ -94,9 +116,11 @@ export class OfflineCoordinatorService {
     authSubject: string | null,
     authLease?: OfflineSessionTransitionLease,
   ): Promise<boolean> {
-    if (this.#storageUnavailable()) return true;
     const revision = ++this.#transitionRevision;
     const lease = this.#lease(revision, authLease);
+    await this.initialize();
+    if (this.#storageUnavailable()) return true;
+    if (!lease.isCurrent()) return false;
     return this.#enqueueTransition(async () => {
       await this.#sync.resetSession();
       await this.#session.suspendRemoteSession();
@@ -107,6 +131,7 @@ export class OfflineCoordinatorService {
 
   /** Starts pull and outbox replay after the caller has published remote access. */
   async resumeRemoteSession(options?: OfflineResumeRemoteSessionOptions): Promise<void> {
+    await this.initialize();
     if (this.#storageUnavailable()) return;
     await this.#sync.refreshSession(options?.foregroundScopeIds);
   }
@@ -118,9 +143,11 @@ export class OfflineCoordinatorService {
     authSubject?: string | null,
     authLease?: OfflineSessionTransitionLease,
   ): Promise<OfflineSessionManifest | null> {
-    if (this.#storageUnavailable()) return null;
     const revision = ++this.#transitionRevision;
     const lease = this.#lease(revision, authLease);
+    await this.#initializeSync();
+    if (this.#storageUnavailable()) return null;
+    if (!lease.isCurrent()) return null;
     return this.#enqueueTransition(async () => {
       await this.#sync.resetSession();
       if (!lease.isCurrent()) return null;
@@ -131,10 +158,11 @@ export class OfflineCoordinatorService {
   }
 
   async clearActiveSession(): Promise<void> {
-    if (this.#storageUnavailable()) return;
     this.#sync.revokeSession();
     this.#session.revokeAccess();
     ++this.#transitionRevision;
+    await this.#initializeSync();
+    if (this.#storageUnavailable()) return;
     return this.#enqueueTransition(async () => {
       await this.#sync.resetSession();
       await this.#session.clearActiveSession();
@@ -142,6 +170,7 @@ export class OfflineCoordinatorService {
   }
 
   async prepareLogout(action: OfflineLogoutAction): Promise<boolean> {
+    await this.initialize();
     if (this.#storageUnavailable()) return action !== 'cancel';
     if (action === 'cancel') return false;
     if (action === 'discard') {
@@ -153,6 +182,7 @@ export class OfflineCoordinatorService {
   }
 
   async flush(): Promise<void> {
+    await this.initialize();
     if (this.#storageUnavailable()) return;
     return this.#sync.flush();
   }
