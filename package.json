@@ -3,10 +3,10 @@
   "version": "21.6.2",
   "repository": {
     "type": "git",
-    "url": "git@github.com:rdlabo-team/ionic-angular-library.git"
+    "url": "git@github.com:rdlabo-dev/ionic-angular-library.git"
   },
   "bugs": {
-    "url": "git@github.com:rdlabo-team/ionic-angular-library.git/issues"
+    "url": "git@github.com:rdlabo-dev/ionic-angular-library.git/issues"
   },
   "engines": {
     "node": ">=22.0.0"

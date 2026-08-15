@@ -1281,7 +1281,7 @@ export const appConfig: ApplicationConfig = {
 
 #### Release and channel model
 
-Each app's release workflow runs when a `vX.Y.Z` or `vX.Y.Z-N` tag is pushed. The shared `classify-mobile-release` composite action in [`ionic-angular-library/.github/actions`](https://github.com/rdlabo-team/ionic-angular-library/tree/main/.github/actions) compares the tag with the previous release and selects the delivery path. Patch and prerelease updates within the same `major.minor` line use `publish-live-update`; major and minor updates use Capawesome Cloud Native Builds and App Store Publishing.
+Each app's release workflow runs when a `vX.Y.Z` or `vX.Y.Z-N` tag is pushed. The shared `classify-mobile-release` composite action in [`ionic-angular-library/.github/actions`](https://github.com/rdlabo-dev/ionic-angular-library/tree/main/.github/actions) compares the tag with the previous release and selects the delivery path. Patch and prerelease updates within the same `major.minor` line use `publish-live-update`; major and minor updates use Capawesome Cloud Native Builds and App Store Publishing.
 
 Every delivery channel is named **`production-<native-build-number>`**, where the Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` must match. A Live Update replaces only the JS, HTML, and CSS on an existing native binary, so channels are isolated by build number and updates reach only compatible devices. The upload pins `--android-min/max` and `--ios-min/max` to that build number.
 

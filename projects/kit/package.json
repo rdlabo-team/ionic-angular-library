@@ -3,7 +3,7 @@
   "version": "21.6.2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rdlabo-team/ionic-angular-library.git"
+    "url": "https://github.com/rdlabo-dev/ionic-angular-library.git"
   },
   "peerDependencies": {
     "@angular/common": "^21.0.0",

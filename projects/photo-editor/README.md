@@ -26,7 +26,7 @@ If you public your project to the web, you need to add the following input tag t
 
 ## Theme
 
-Default color is set, but user can overwrite it: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/pages/core.scss
+Default color is set, but user can overwrite it: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/pages/core.scss
 
 ### How to overwrite
 
@@ -120,7 +120,7 @@ The image url or base64 string.
 
 If set, the label is overwritten.
 
-List is [here](https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).
+List is [here](https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).
 
 
 ### PhotoViewerPage
@@ -174,4 +174,4 @@ If true, enable footer safe area for iOS.
 
 If set, the label is overwritten.
 
-List is [here](https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).
+List is [here](https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).

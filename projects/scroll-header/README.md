@@ -27,7 +27,7 @@ And import CSS for directive:
 ### Scroll of IonContent
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-header
-- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-header/scroll-header.page.html
+- Source: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/demo/src/app/scroll-header/scroll-header.page.html
 
 ```ts
 import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
@@ -52,7 +52,7 @@ import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
 ### Scroll of CdkVirtualScroll (Angular Material)
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/virtual-scroll-header
-- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/virtual-scroll-header/virtual-scroll-header.page.html
+- Source: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/demo/src/app/virtual-scroll-header/virtual-scroll-header.page.html
 
 ```ts
 import { VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';

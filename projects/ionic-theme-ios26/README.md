@@ -1,7 +1,7 @@
 # This Project Has Moved
 
 This project has been moved to:  
-[https://github.com/rdlabo-team/ionic-theme-ios26](https://github.com/rdlabo-team/ionic-theme-ios26)
+[https://github.com/rdlabo-dev/ionic-theme-ios26](https://github.com/rdlabo-dev/ionic-theme-ios26)
 
 ---
 

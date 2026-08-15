@@ -31,7 +31,7 @@ npm install @rdlabo/ngx-cdk-scroll-strategies
 > This is a simple example of how to use it.
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/simple
-- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-simple
+- Source: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-simple
 
 ```ts
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
@@ -66,14 +66,14 @@ Other than this, it works the same way as `@angular/cdk/scrolling`.
 > It is difficult without basic knowledge of Angular.
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/advanced
-- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-advanced
+- Source: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-advanced
 
 ### Reverse Usage
 
 > This is a demo for reverse scrolling like WeChat.
 
 - Demo: https://rdlabo-ionic-angular-library.netlify.app/main/scroll-strategies/reverse
-- Source: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-reverse
+- Source: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/demo/src/app/scroll-strategies/pages/scroll-reverse
 
 If reverse scroll, add `isReverse` directive to `cdk-virtual-scroll-viewport` tag.
 
@@ -121,7 +121,7 @@ div.reverse-items {
 ```
 
 **In Reverse Scroll, CdkVirtualScrollViewport's measureScrollOffset does not work. Please use the scrollOffset of this directive.**
-https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts
+https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll-strategy.ts
 
 The reverse layout uses negative native `scrollTop` values. `scrollToIndex()` accepts a logical item index as usual and converts its cumulative offset to that native coordinate internally.
 
@@ -133,7 +133,7 @@ This package contains a Helper Service that simplifies development with Virtual 
 import { DynamicSizeVirtualScrollService } from '@rdlabo/ngx-cdk-scroll-strategies';
 ```
 
-Detail is here: https://github.com/rdlabo-team/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll.service.ts
+Detail is here: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/scroll-strategies/src/lib/dynamic-size-virtual-scroll.service.ts
 
 ## FQA
 

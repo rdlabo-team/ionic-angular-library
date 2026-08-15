@@ -47,10 +47,10 @@ Selector: `[rdlaboAutofill]`. iOS-only workaround for `ion-input` autofill not p
 
 | Project | Packages used |
 |---------|---------------|
-| rdlabo-team/winecode | kit, scroll-header, scroll-strategies, photo-editor |
-| rdlabo-team/receptray | scroll-header, scroll-strategies |
-| rdlabo-team/tipsys | photo-editor, scroll-header, scroll-strategies |
-| rdlabo-team/foodlabel | scroll-header |
+| winecode | kit, scroll-header, scroll-strategies, photo-editor |
+| receptray | scroll-header, scroll-strategies |
+| tipsys | photo-editor, scroll-header, scroll-strategies |
+| foodlabel | scroll-header |
 | odss-team/odss-mobile | photo-editor, scroll-header |
 | proschool-team/airlec2 | *(adoption pending)* |
 
