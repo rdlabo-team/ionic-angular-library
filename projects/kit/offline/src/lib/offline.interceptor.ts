@@ -1,7 +1,7 @@
 import type { HttpEvent, HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { HttpResponse as AngularHttpResponse } from '@angular/common/http';
 import { ErrorHandler, inject, Injectable } from '@angular/core';
-import type { Notification, Observable, ObservableNotification } from 'rxjs';
+import type { Notification, ObservableNotification } from 'rxjs';
 import {
   catchError,
   concat,
@@ -14,12 +14,14 @@ import {
   map,
   materialize,
   of,
+  Observable,
   ReplaySubject,
   take,
   tap,
   throwError,
 } from 'rxjs';
 import { isOfflineFallbackError, OfflineNetworkService } from './offline-network.service';
+import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
 import { OFFLINE_MUTATION_PERSISTENCE_ENABLED } from './offline-mutation-persistence.service';
 import {
   OFFLINE_BYPASS,
@@ -44,7 +46,7 @@ export const offlineInterceptor: HttpInterceptorFn = (request, next) => {
     const plan = registry.resolve(request);
     if (!plan) return transport();
     if (plan.readStrategy === 'local-first') {
-      return readLocalFirst(request, plan, transport, fallback, inject(ErrorHandler));
+      return readLocalFirst(request, plan, transport, fallback, inject(ErrorHandler), inject(OfflineReplicaMutationCoordinator));
     }
     return readNetworkFirst(request, plan, transport, fallback);
   }
@@ -91,12 +93,13 @@ function readLocalFirst(
   transport: () => Observable<HttpEvent<unknown>>,
   fallback: OfflineRequestFallbackService,
   errorHandler: ErrorHandler,
+  replicaMutations: OfflineReplicaMutationCoordinator,
 ): Observable<HttpEvent<unknown>> {
   return defer(transport).pipe(
     materialize(),
     connect(
       (bufferedTransport$) =>
-        resolveLocalAttempt(plan, errorHandler).pipe(
+        resolveLocalAttempt(plan, errorHandler, replicaMutations).pipe(
           concatMap((localResponse) =>
             localResponse
               ? concat(of(localResponse), drainRemoteAfterLocal(bufferedTransport$, plan))
@@ -108,18 +111,44 @@ function readLocalFirst(
   );
 }
 
-function resolveLocalAttempt(plan: OfflineReadRequestPlan, errorHandler: ErrorHandler): Observable<HttpEvent<unknown> | null> {
-  return defer(() =>
-    from(plan.readLocal()).pipe(
-      catchError((localError: unknown) => {
-        errorHandler.handleError(localError);
-        return of(null);
-      }),
-    ),
-  ).pipe(
+function resolveLocalAttempt(
+  plan: OfflineReadRequestPlan,
+  errorHandler: ErrorHandler,
+  replicaMutations: OfflineReplicaMutationCoordinator,
+): Observable<HttpEvent<unknown> | null> {
+  return serializedLocalRead(plan, replicaMutations).pipe(
+    catchError((localError: unknown) => {
+      errorHandler.handleError(localError);
+      return of(null);
+    }),
     concatMap((local) => (local ? tryProjectLocal(local, plan, errorHandler) : of(null))),
     take(1),
   );
+}
+
+/** Skips a queued local read when its HTTP subscriber leaves before the lane opens. */
+function serializedLocalRead(
+  plan: OfflineReadRequestPlan,
+  replicaMutations: OfflineReplicaMutationCoordinator,
+): Observable<AngularHttpResponse<unknown> | null> {
+  return new Observable((subscriber) => {
+    let cancelled = false;
+    void replicaMutations
+      .runSerializedRead(async () => (cancelled ? null : plan.readLocal()))
+      .then(
+        (response) => {
+          if (cancelled) return;
+          subscriber.next(response);
+          subscriber.complete();
+        },
+        (error: unknown) => {
+          if (!cancelled) subscriber.error(error);
+        },
+      );
+    return () => {
+      cancelled = true;
+    };
+  });
 }
 
 function tryProjectLocal(
@@ -196,6 +225,7 @@ function observeTransport(source: Observable<HttpEvent<unknown>>, network: Offli
 export class OfflineRequestFallbackService {
   readonly #registry = inject(OfflineRequestPolicyRegistry);
   readonly #errorHandler = inject(ErrorHandler);
+  readonly #replicaMutations = inject(OfflineReplicaMutationCoordinator);
 
   handle(
     request: HttpRequest<unknown>,
@@ -205,7 +235,7 @@ export class OfflineRequestFallbackService {
     if (request.context.get(OFFLINE_BYPASS) || request.method !== 'GET' || !isOfflineFallbackError(error)) return null;
     const plan = resolvedPlan ?? this.#registry.resolve(request);
     if (!plan || plan.kind !== 'read') return null;
-    return defer(() => from(plan.readLocal())).pipe(
+    return serializedLocalRead(plan, this.#replicaMutations).pipe(
       catchError((localError: unknown) => {
         this.#errorHandler.handleError(localError);
         return throwError(() => error);

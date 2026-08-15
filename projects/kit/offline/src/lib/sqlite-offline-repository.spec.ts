@@ -518,6 +518,28 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(externalCommitted).toBe(true);
   });
 
+  it('atomic callbackからrepository本体のsnapshotへ再入するとfail-fastする', async () => {
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return {
+          columns: ['version', 'schema_hash'],
+          rows: [[storedReplicaMetadata!.version, storedReplicaMetadata!.schemaHash]],
+        };
+      }
+      if (statement.startsWith('PRAGMA table_info')) return { rows: [{ name: 'next_local_id' }] };
+      return { rows: [] };
+    });
+    const repository = createRepository();
+    await repository.initialize();
+
+    await expect(
+      repository[OFFLINE_REPOSITORY_ATOMIC_MUTATION]!(async () =>
+        repository.runReadSnapshot((reader) => reader.getCommands({ userId: 1, scopeId: '10' })),
+      ),
+    ).rejects.toThrow('Use the repository passed to an atomic mutation for snapshot reads.');
+  });
+
   it('snapshot callbackからrepository本体を再入しても同じsnapshotで完了する', async () => {
     plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
       if (statement === 'PRAGMA data_version') return { columns: ['data_version'], rows: [[1]] };

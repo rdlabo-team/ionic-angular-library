@@ -23,7 +23,7 @@ import type { OfflineReplicaEntitySchema } from './offline-replica-schema';
 const settledMutation = async (): Promise<void> => undefined;
 
 /**
- * Serializes only local replica read/derive/write critical sections. Network
+ * Serializes local replica reads and read/derive/write critical sections. Network
  * transport must stay outside this coordinator so synchronization never holds
  * the local mutation lane while waiting on I/O.
  *
@@ -40,19 +40,34 @@ export class OfflineReplicaMutationCoordinator {
 
   /** Enqueues one local replica critical section behind any in-flight mutation. */
   run<T>(operation: (repository: OfflineRepository) => Promise<T>): Promise<T> {
-    const mutation = this.#tail.then(() => {
+    return this.#enqueue(() => {
       if (!this.#repository) throw new Error('Offline repository is not configured.');
       const atomicMutation = this.#repository?.[OFFLINE_REPOSITORY_ATOMIC_MUTATION];
       return atomicMutation ? (atomicMutation.call(this.#repository, operation) as Promise<T>) : operation(this.#repository);
     });
-    this.#tail = mutation.then(
+  }
+
+  /**
+   * Enqueues an external local-replica read behind mutations and keeps later
+   * mutations behind that read until it settles.
+   *
+   * Do not invoke this from inside {@link run}; use the repository passed to
+   * that callback for reads owned by an atomic mutation.
+   */
+  runSerializedRead<T>(read: () => Promise<T>): Promise<T> {
+    return this.#enqueue(read);
+  }
+
+  #enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const queued = this.#tail.then(operation);
+    this.#tail = queued.then(
       () => undefined,
       () => undefined,
     );
-    return mutation;
+    return queued;
   }
 
-  /** Resolves after every currently queued replica mutation has settled. */
+  /** Resolves after every currently queued replica read or mutation has settled. */
   async drain(): Promise<void> {
     await this.#tail;
   }

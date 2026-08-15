@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { finalize, firstValueFrom, of, Subject, throwError, type Observable } from 'rxjs';
 import { OfflineNetworkService } from './offline-network.service';
 import { OFFLINE_MUTATION_PERSISTENCE_ENABLED } from './offline-mutation-persistence.service';
+import { OfflineReplicaMutationCoordinator } from './offline-replica-mutation-coordinator';
+import { OFFLINE_REPOSITORY } from './offline-repository';
 import { offlineInterceptor } from './offline.interceptor';
 import {
   OFFLINE_BYPASS,
@@ -38,6 +40,7 @@ describe('offlineInterceptor', () => {
         { provide: OfflineNetworkService, useValue: { markApiSuccess, markApiFailure } },
         { provide: OFFLINE_MUTATION_PERSISTENCE_ENABLED, useValue: () => mutationPersistenceEnabled },
         { provide: ErrorHandler, useValue: { handleError } },
+        { provide: OFFLINE_REPOSITORY, useValue: {} },
       ],
     });
   });
@@ -114,6 +117,44 @@ describe('offlineInterceptor', () => {
     expect(response instanceof HttpResponse && response.headers.get(OFFLINE_RESPONSE_HEADER)).toBe('local');
     expect(readLocal).toHaveBeenCalledOnce();
     expect(markApiFailure).toHaveBeenCalledOnce();
+  });
+
+  it('lane待機中にnetwork fallbackの購読が解除されたらlocal readを開始しない', async () => {
+    const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+    let releaseMutation!: () => void;
+    const mutationGate = new Promise<void>((resolve) => (releaseMutation = resolve));
+    let mutationStarted!: () => void;
+    const mutationReady = new Promise<void>((resolve) => (mutationStarted = resolve));
+    const mutation = coordinator.run(async () => {
+      mutationStarted();
+      await mutationGate;
+    });
+    await mutationReady;
+
+    const readLocal = vi.fn(async () => new HttpResponse({ status: 200 }));
+    resolve.mockReturnValue({ kind: 'read', readLocal });
+    const transportError = new HttpErrorResponse({ status: 0, error: new Error('offline') });
+    const observedErrors: unknown[] = [];
+    const subscription = run(new HttpRequest('GET', '/bootstrap'), () => throwError(() => transportError)).subscribe({
+      error: (error: unknown) => observedErrors.push(error),
+    });
+
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(readLocal).not.toHaveBeenCalled();
+    subscription.unsubscribe();
+
+    releaseMutation();
+    await mutation;
+    await coordinator.drain();
+    expect(readLocal).not.toHaveBeenCalled();
+    expect(observedErrors).toEqual([]);
+
+    let laterMutationRan = false;
+    await coordinator.run(async () => {
+      laterMutationRan = true;
+    });
+    expect(laterMutationRan).toBe(true);
   });
 
   it('fallback responseもremoteと同じprojectorへlocal sourceとして渡す', async () => {
@@ -221,6 +262,73 @@ describe('offlineInterceptor', () => {
       readStrategy: 'local-first',
       readLocal: vi.fn(async () => null),
       ...overrides,
+    });
+
+    it('waits for the replica mutation lane before starting a local-first read', async () => {
+      const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+      let releaseMutation!: () => void;
+      const mutationGate = new Promise<void>((resolve) => (releaseMutation = resolve));
+      let mutationStarted!: () => void;
+      const mutationReady = new Promise<void>((resolve) => (mutationStarted = resolve));
+      const mutation = coordinator.run(async () => {
+        mutationStarted();
+        await mutationGate;
+      });
+      await mutationReady;
+
+      const local = new HttpResponse({ body: { value: 'cached' }, status: 200 });
+      const readLocal = vi.fn(async () => local);
+      resolve.mockReturnValue(localFirstPlan({ readLocal }));
+      const pending = firstValueFrom(
+        run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ body: { value: 'remote' }, status: 200 }))),
+      );
+
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      expect(readLocal).not.toHaveBeenCalled();
+      expect(handleError).not.toHaveBeenCalled();
+
+      releaseMutation();
+      await mutation;
+      const response = await pending;
+      expect(response instanceof HttpResponse && response.body).toEqual({ value: 'cached' });
+      expect(response instanceof HttpResponse && response.headers.get(OFFLINE_RESPONSE_HEADER)).toBe('local');
+      expect(readLocal).toHaveBeenCalledOnce();
+      expect(handleError).not.toHaveBeenCalled();
+    });
+
+    it('lane待機中にlocal-firstの購読が解除されたらlocal readを開始しない', async () => {
+      const coordinator = TestBed.inject(OfflineReplicaMutationCoordinator);
+      let releaseMutation!: () => void;
+      const mutationGate = new Promise<void>((resolve) => (releaseMutation = resolve));
+      let mutationStarted!: () => void;
+      const mutationReady = new Promise<void>((resolve) => (mutationStarted = resolve));
+      const mutation = coordinator.run(async () => {
+        mutationStarted();
+        await mutationGate;
+      });
+      await mutationReady;
+
+      const readLocal = vi.fn(async () => new HttpResponse({ status: 200 }));
+      resolve.mockReturnValue(localFirstPlan({ readLocal }));
+      const subscription = run(new HttpRequest('GET', '/bootstrap'), () => of(new HttpResponse({ status: 200 }))).subscribe();
+
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+      expect(readLocal).not.toHaveBeenCalled();
+      subscription.unsubscribe();
+
+      releaseMutation();
+      await mutation;
+      await coordinator.drain();
+      expect(readLocal).not.toHaveBeenCalled();
+      expect(handleError).not.toHaveBeenCalled();
+
+      let laterMutationRan = false;
+      await coordinator.run(async () => {
+        laterMutationRan = true;
+      });
+      expect(laterMutationRan).toBe(true);
     });
 
     it('local hitのあとremoteを順にemitしreachabilityを更新する', async () => {
