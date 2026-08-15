@@ -7,11 +7,40 @@ import { HttpContextToken } from '@angular/common/http';
 export const OFFLINE_BYPASS = new HttpContextToken<boolean>(() => false);
 /** Header attached to synthetic local or optimistic responses. */
 export const OFFLINE_RESPONSE_HEADER = 'X-Offline-Response';
+/** Header marking a local response as a complete collection snapshot. */
+export const OFFLINE_RESPONSE_COMPLETE_HEADER = 'X-Offline-Response-Complete';
 /** Origin of a synthetic offline response. */
 export type OfflineResponseSource = 'local' | 'optimistic';
 
 /** Source passed to a read policy's shared response projector. */
 export type OfflineReadResponseSource = 'remote' | 'local';
+
+/** Value emitted by a local-first read together with its settlement metadata. */
+export interface OfflineReadEmission<T> {
+  readonly value: T;
+  readonly source: OfflineReadResponseSource;
+  readonly complete?: boolean;
+}
+
+/** Reads the source attached by the offline interceptor. */
+export function offlineReadSource(response: HttpResponse<unknown>): OfflineReadResponseSource {
+  return response.headers.get(OFFLINE_RESPONSE_HEADER) === 'local' ? 'local' : 'remote';
+}
+
+/** Converts an HTTP response into the shared local-first read emission contract. */
+export function offlineReadEmission<T>(response: HttpResponse<unknown>, value: T): OfflineReadEmission<T> {
+  const source = offlineReadSource(response);
+  return {
+    value,
+    source,
+    complete: source === 'remote' || response.headers.get(OFFLINE_RESPONSE_COMPLETE_HEADER) === 'true',
+  };
+}
+
+/** Prevents an incomplete empty local collection from clearing usable UI state. */
+export function shouldCommitOfflineCollection<T>(emission: OfflineReadEmission<readonly T[]>): boolean {
+  return emission.source === 'remote' || emission.complete || emission.value.length > 0;
+}
 
 /** Controls GET emission order between local replica and remote transport. */
 export type OfflineReadStrategy = 'network-first' | 'local-first';

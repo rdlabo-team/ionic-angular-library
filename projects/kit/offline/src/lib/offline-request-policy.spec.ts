@@ -1,14 +1,18 @@
-import { HttpRequest, HttpResponse } from '@angular/common/http';
+import { HttpHeaders, HttpRequest, HttpResponse } from '@angular/common/http';
 import { TestBed } from '@angular/core/testing';
 import { describe, expect, it, vi } from 'vitest';
 import { of } from 'rxjs';
 import { OfflineNetworkService } from './offline-network.service';
 import {
   OFFLINE_MUTATION_REQUEST_POLICIES,
+  OFFLINE_RESPONSE_COMPLETE_HEADER,
+  OFFLINE_RESPONSE_HEADER,
   OfflineMutationPolicyConflictError,
   type OfflineMutationRequestPlan,
   type OfflineMutationRequestPolicy,
   OfflineMutationRequestPolicyRegistry,
+  offlineReadEmission,
+  shouldCommitOfflineCollection,
 } from './offline-request-policy';
 import { offlineInterceptor } from './offline.interceptor';
 
@@ -52,6 +56,30 @@ describe('OfflineMutationRequestPolicyRegistry', () => {
     expect(firstPrepare).not.toHaveBeenCalled();
     expect(secondPrepare).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+  });
+});
+
+describe('offline read settlement', () => {
+  it('keeps an incomplete empty local collection from replacing usable state', () => {
+    const response = new HttpResponse({ headers: new HttpHeaders().set(OFFLINE_RESPONSE_HEADER, 'local') });
+
+    expect(shouldCommitOfflineCollection(offlineReadEmission(response, []))).toBe(false);
+  });
+
+  it('commits complete local and remote empty collections', () => {
+    const local = new HttpResponse({
+      headers: new HttpHeaders().set(OFFLINE_RESPONSE_HEADER, 'local').set(OFFLINE_RESPONSE_COMPLETE_HEADER, 'true'),
+    });
+    const remote = new HttpResponse();
+
+    expect(shouldCommitOfflineCollection(offlineReadEmission(local, []))).toBe(true);
+    expect(shouldCommitOfflineCollection(offlineReadEmission(remote, []))).toBe(true);
+  });
+
+  it('commits a nonempty local collection before settlement', () => {
+    const response = new HttpResponse({ headers: new HttpHeaders().set(OFFLINE_RESPONSE_HEADER, 'local') });
+
+    expect(shouldCommitOfflineCollection(offlineReadEmission(response, ['cached']))).toBe(true);
   });
 });
 
