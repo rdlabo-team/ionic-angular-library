@@ -1,13 +1,8 @@
 These libraries is a collection of components and services that are useful for developing Ionic Angular applications.
 
+Documentation: [Ionic Angular Kit](https://docs.rdlabo.dev/projects/ionic-angular-kit) · [Photo Editor](https://docs.rdlabo.dev/projects/ionic-angular-photo-editor) · [Scroll Header](https://docs.rdlabo.dev/projects/ionic-angular-scroll-header) · [Scroll Strategies](https://docs.rdlabo.dev/projects/ngx-cdk-scroll-strategies)
+
 [Demo site is here.](https://rdlabo-ionic-angular-library.netlify.app/)
-
-## 💖 Support This Project
-
-Enjoying this project? Your support helps keep it alive and growing!  
-Sponsoring means you directly contribute to new features, improvements, and maintenance.
-
-[Become a Sponsor →](https://github.com/sponsors/rdlabo)
 
 ## Support Version
 
@@ -41,7 +36,3 @@ The demo app includes a **Kit** tab with a Firebase Auth harness (`/main/kit/aut
 2. `npm start` — open the Kit tab.
 3. `npm run e2e` — Playwright signs up with a UUID email; `window.__E2E__` skips email confirmation.
 4. `npm run cap` — copy a production build to iOS/Android for device checks (e.g. `kitAuthInput` autofill).
-
-## sponsors
-
-This is an Apache-2.0-licensed open source project. It can grow thanks to the support by these awesome people. If you'd like to join them, please read more [here](https://github.com/sponsors/rdlabo) .
