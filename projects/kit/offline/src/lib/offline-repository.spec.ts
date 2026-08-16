@@ -1021,6 +1021,56 @@ describe('IonicOfflineRepository', () => {
     expect(storage.values.get('firebaseToken')).toEqual({ token: 'keep' });
   });
 
+  it('released core schema v1をOutboxの状態とoptimistic imageを保ってv2へ上げる', async () => {
+    const legacyCommand = {
+      userId: 1,
+      scopeId: '10',
+      commandId: 'legacy-create',
+      aggregateType: 'test_items',
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: '019d-legacy' },
+      operation: 'test_items.create',
+      payload: { encryptedBody: 'ciphertext' },
+      optimisticValue: { id: 0, title: 'Legacy optimistic' },
+      optimisticCompanions: [{ key: 'legacy-companion' }],
+      payloadHash: 'legacy-hash',
+      baseRevision: null,
+      state: 'retry_wait',
+      attempts: 2,
+      retryAt: 123,
+      createdAt: 1,
+      lastErrorCode: 'network',
+      serverCommitUnknown: true,
+    };
+    storage.values.set('offline:metadata', {
+      schemaVersion: 1,
+      lastUserId: 1,
+      replicaSchemaVersion: replicaSchemaV1.version,
+      replicaSchemaHash: await sha256OfflineReplicaSchema(replicaSchemaV1),
+    });
+    storage.values.set('offline:outbox:commands', { [legacyCommand.commandId]: legacyCommand });
+
+    await repository.initialize();
+
+    await expect(repository.getCommands({ userId: 1, scopeId: '10' })).resolves.toEqual([
+      expect.objectContaining({
+        commandId: 'legacy-create',
+        payload: { encryptedBody: 'ciphertext' },
+        legacyOptimisticValue: { id: 0, title: 'Legacy optimistic' },
+        legacyOptimisticCompanions: [{ key: 'legacy-companion' }],
+        legacyPayloadHash: 'legacy-hash',
+        state: 'retry_wait',
+        attempts: 2,
+        retryAt: 123,
+        serverCommitUnknown: true,
+      }),
+    ]);
+    expect(storage.values.get('offline:metadata')).toMatchObject({ schemaVersion: OFFLINE_SCHEMA_VERSION, lastUserId: 1 });
+    expect(storage.values.get('offline:outbox:commands')).not.toHaveProperty('legacy-create.optimisticValue');
+    expect(storage.values.get('offline:outbox:commands')).not.toHaveProperty('legacy-create.optimisticCompanions');
+    expect(storage.values.get('offline:outbox:commands')).not.toHaveProperty('legacy-create.payloadHash');
+  });
+
   it('local replica fallbackは通信不能だけを対象にする', () => {
     expect(isOfflineFallbackError({ status: 0 })).toBe(true);
     expect(isOfflineFallbackError({ status: 403 })).toBe(false);

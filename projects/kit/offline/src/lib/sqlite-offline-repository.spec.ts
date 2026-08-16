@@ -551,6 +551,72 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     await expect(options.createEncryptionKey?.()).resolves.toBe('first-install-secret');
   });
 
+  it('released core schema v1を同一transactionでv2へ上げoptimistic imageを保持する', async () => {
+    plugin.query.mockImplementation(async ({ statement }: { statement: string }) => {
+      if (statement.includes('offline_replica_schema_metadata')) {
+        return { columns: ['version', 'schema_hash'], rows: [[replicaSchemaV1.version, replicaSchemaV1Hash]] };
+      }
+      if (statement.includes('offline_metadata') && statement.includes('schema_version')) {
+        return { rows: [{ schema_version: 1 }] };
+      }
+      if (statement === 'PRAGMA table_info(offline_sync_commands)') {
+        return {
+          rows: [{ name: 'optimistic_value_json' }, { name: 'server_commit_unknown' }],
+        };
+      }
+      return { rows: [] };
+    });
+    const repository = createRepository();
+
+    await repository.initialize();
+
+    const statements = plugin.execute.mock.calls.map(([options]) => options as { statement: string; values?: unknown[] });
+    expect(statements.map(({ statement }) => statement)).toEqual(
+      expect.arrayContaining([
+        'ALTER TABLE offline_sync_commands ADD COLUMN legacy_optimistic_value_json TEXT',
+        'ALTER TABLE offline_sync_commands ADD COLUMN local_only_footprint_json TEXT',
+        'ALTER TABLE offline_sync_commands ADD COLUMN reconciliation_identity_json TEXT',
+        'UPDATE offline_sync_commands SET legacy_optimistic_value_json = optimistic_value_json WHERE legacy_optimistic_value_json IS NULL',
+      ]),
+    );
+    expect(statements).toContainEqual(
+      expect.objectContaining({
+        statement: 'UPDATE offline_metadata SET schema_version = ? WHERE id = 1',
+        values: [OFFLINE_SCHEMA_VERSION],
+      }),
+    );
+    expect(plugin.beginTransaction).toHaveBeenCalledOnce();
+    expect(plugin.commitTransaction).toHaveBeenCalledOnce();
+    expect(plugin.rollbackTransaction).not.toHaveBeenCalled();
+  });
+
+  it('v1 tableのNOT NULL optimistic columnを保ったまま新形式commandを書ける', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    await repository.putCommand({
+      userId: 1,
+      scopeId: '10',
+      commandId: 'new-command',
+      aggregateType: 'test_items',
+      sourceKey: 'test_items',
+      identity: { kind: 'generated', localId: 'new-local' },
+      operation: 'test_items.create',
+      payload: { title: 'New' },
+      baseRevision: null,
+      state: 'pending',
+      attempts: 0,
+      retryAt: null,
+      createdAt: 1,
+      lastErrorCode: null,
+    });
+
+    const insert = plugin.execute.mock.calls
+      .map(([options]) => options as { statement: string; values?: unknown[] })
+      .find(({ statement }) => statement.startsWith('INSERT INTO offline_sync_commands'));
+    expect(insert?.statement).toContain('optimistic_value_json');
+    expect(insert?.values).toContain('null');
+  });
+
   it('partition scopeのcursorだけを単一transactionで削除しuser-scoped outboxを保持する', async () => {
     const repository = createRepository();
     await repository.initialize();
@@ -982,7 +1048,7 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     expect(insert?.statement).toContain('replica_mutation');
     expect(insert?.values).toContain('delete');
     expect(insert?.statement).toContain('payload_hash');
-    expect(insert?.values?.[10]).toBe('');
+    expect(insert?.values?.[13]).toBe('');
   });
 
   it('persists and restores declared localOnly footprint keys', async () => {
@@ -1074,6 +1140,33 @@ describe('SqliteOfflineRepository community sqlite driver', () => {
     });
     expect(plugin.beginTransaction).toHaveBeenCalledOnce();
     expect(plugin.commitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('同一partitionの複数putはexisting rowsを一度だけbulk preloadする', async () => {
+    const repository = createRepository();
+    await repository.initialize();
+    plugin.query.mockClear();
+
+    await repository.transactReplica({
+      putRows: [1, 2].map(
+        (id): OfflineReplicaRow => ({
+          userId: 1,
+          scopeId: '10',
+          sourceKey: 'test_items',
+          identity: { kind: 'generated', localId: `local-${id}`, remoteId: id },
+          values: { id, title: `Item ${id}` },
+          confirmedValues: { id, title: `Item ${id}` },
+          serverRevision: 1,
+          fetchedAt: 1,
+          syncState: 'confirmed',
+        }),
+      ),
+    });
+
+    const tableReads = plugin.query.mock.calls.filter(([options]) =>
+      (options as { statement: string }).statement.includes('SELECT * FROM test_items'),
+    );
+    expect(tableReads).toHaveLength(1);
   });
 
   it('transaction中の書き込み失敗をrollbackして握りつぶさない', async () => {

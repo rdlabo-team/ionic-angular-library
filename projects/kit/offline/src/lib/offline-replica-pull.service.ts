@@ -31,6 +31,7 @@ import {
   OFFLINE_REPOSITORY,
   canonicalOfflineReplicaRowKey,
   type OfflineCommand,
+  type OfflineRepository,
   type OfflineReplicaRow,
   type OfflineReplicaRowKey,
   type OfflineScope,
@@ -42,6 +43,10 @@ type CollapsedOfflineReplicaChange = OfflineReplicaChange & {
   /** Position of the authoritative last change retained by the collapse. */
   collapsedOrdinal: number;
 };
+
+export type OfflineReplicaChangeBatch =
+  | readonly OfflineReplicaChange[]
+  | ((repository: OfflineRepository) => Promise<readonly OfflineReplicaChange[]>);
 
 /**
  * Pull handshake reported a replica schema version/hash that does not match the local Kit schema.
@@ -114,180 +119,11 @@ export class OfflineReplicaPullService {
         continue;
       }
 
-      const applied = await this.#replicaMutations.run(async (repository) => {
-        const currentCursor = (await repository.getReplicaCursor(scope))?.cursor ?? '';
-        if (currentCursor !== persistedCursor) return currentCursor;
-        const scopeCommands = await repository.getCommands(scope);
-        const userCommands = repository.getCommandsForUser ? await repository.getCommandsForUser(scope.userId) : scopeCommands;
-        const changes = this.#collapseChanges(page.changes);
-        const projection = await this.#projector?.project({
-          scope,
-          changes,
-        });
-        this.#assertProjection(scope, projection);
-        const putRows: OfflineReplicaRow[] = [];
-        const removeRows: OfflineReplicaRowKey[] = [];
-        const putCommands = new Map<string, OfflineCommand>();
-        const removeCommandIds = new Set<string>();
-        const rematerializeAfter: OfflineCommand[] = [];
-        if (rebaselinePending || page.rebaselineRequired) {
-          removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, userCommands)));
-        }
-
-        for (const change of changes) {
-          const schema = this.#entitySchema(change.sourceKey);
-          const commands = schema.scope === 'user' ? userCommands : scopeCommands;
-          const acknowledged = (change.acknowledgedCommandIds ?? [])
-            .map((commandId) => {
-              const command = commands.find((candidate) => candidate.commandId === commandId);
-              if (!command) return null;
-              if (command.sourceKey !== change.sourceKey) {
-                throw new Error(`Acknowledged command "${commandId}" does not target "${change.sourceKey}".`);
-              }
-              const requested = reconciliationTargetsById.get(commandId);
-              if (command.state === 'awaiting_pull') {
-                if (!requested) {
-                  throw new Error(`Acknowledged command "${commandId}" was not requested for reconciliation on this pull page.`);
-                }
-                const schema = this.#entitySchema(change.sourceKey);
-                if (
-                  canonicalOfflineRemoteIdentity(schema, requested.identity) !==
-                  canonicalOfflineRemoteIdentity(schema, this.#identity(change))
-                ) {
-                  throw new Error(`Acknowledged command "${commandId}" does not match the requested remote identity.`);
-                }
-              }
-              return command;
-            })
-            .filter((command): command is OfflineCommand => command !== null);
-          const acknowledgedIdentities = new Set(acknowledged.map((command) => canonicalOfflineCommandIdentity(command.identity)));
-          if (acknowledgedIdentities.size > 1) {
-            throw new Error(`Acknowledged commands for "${change.sourceKey}" target multiple replica identities.`);
-          }
-          const acknowledgedCommand = acknowledged[0];
-          const acknowledgedScope = acknowledgedCommand
-            ? { userId: acknowledgedCommand.userId, scopeId: acknowledgedCommand.scopeId }
-            : scope;
-          const acknowledgedRow = acknowledgedCommand
-            ? await (this.#repository.getReplicaRowIncludingPendingDelete?.(
-                acknowledgedScope,
-                change.sourceKey,
-                acknowledgedCommand.identity,
-              ) ?? this.#repository.getReplicaRow(acknowledgedScope, change.sourceKey, acknowledgedCommand.identity))
-            : null;
-          if (acknowledgedCommand && !acknowledgedRow) {
-            throw new Error(`Acknowledged command "${acknowledgedCommand.commandId}" has no local replica row.`);
-          }
-          const identity = this.#identity(change);
-          const serverRow = await this.#repository.getReplicaRowByRemoteIdentity(scope, change.sourceKey, identity);
-          if (
-            acknowledgedRow &&
-            serverRow &&
-            !commandIdentityMatchesReplicaRow(schema, acknowledgedRow, commandIdentityFromReplicaIdentity(serverRow.identity))
-          ) {
-            if (identity.remoteId !== undefined) {
-              throw new Error(`Server id ${String(identity.remoteId)} is already mapped to another local replica row.`);
-            }
-            throw new Error(`Remote identity for "${change.sourceKey}" is already mapped to another local replica row.`);
-          }
-          const existing = acknowledgedRow ?? serverRow;
-          const related = existing
-            ? commands.filter(
-                (command) => command.sourceKey === change.sourceKey && commandIdentityMatchesReplicaRow(schema, existing, command.identity),
-              )
-            : [];
-          const hasPending = related.length > 0;
-
-          if (acknowledgedCommand) {
-            this.#assertIdentityAssignment(schema, existing!, identity);
-            this.#applyAcknowledgement(change, existing!, related, putRows, removeRows, putCommands, removeCommandIds, rematerializeAfter);
-            continue;
-          }
-
-          if (change.deleted) {
-            if (!existing) continue;
-            if (!hasPending) {
-              removeRows.push({ ...existing, identity: existing.identity });
-              continue;
-            }
-            putRows.push({
-              ...existing,
-              confirmedValues: null,
-              serverRevision: change.serverRevision,
-              syncState: 'conflict',
-              fetchedAt: Date.now(),
-            });
-            for (const command of related) {
-              putCommands.set(command.commandId, { ...command, state: 'conflict', retryAt: null, lastErrorCode: 'remote_deleted' });
-            }
-            rematerializeAfter.push(related[0]!);
-            continue;
-          }
-
-          const confirmedValues = this.#validatedValues(schema, change);
-          if (!existing) {
-            putRows.push({
-              ...scope,
-              sourceKey: change.sourceKey,
-              identity:
-                schema.identity.kind === 'naturalKey'
-                  ? offlineNaturalReplicaIdentity(schema, confirmedValues)
-                  : offlineGeneratedReplicaIdentity(crypto.randomUUID(), identity.remoteId ?? null),
-              values: confirmedValues,
-              confirmedValues,
-              serverRevision: change.serverRevision,
-              fetchedAt: Date.now(),
-              syncState: 'confirmed',
-            });
-            continue;
-          }
-
-          const remaining = related.filter((command) => !removeCommandIds.has(command.commandId));
-          const confirmedRow: OfflineReplicaRow = {
-            ...existing,
-            confirmedValues,
-            serverRevision: change.serverRevision,
-            fetchedAt: Date.now(),
-            values: remaining.length > 0 ? existing.values : confirmedValues,
-            syncState: remaining.length > 0 ? 'pending' : 'confirmed',
-          };
-          putRows.push(confirmedRow);
-          if (remaining.length > 0) rematerializeAfter.push(remaining[0]!);
-          for (const command of remaining) {
-            putCommands.set(command.commandId, offlineCommandWithBaseRevision(command, change.serverRevision));
-          }
-        }
-
-        const confirmedAndProjected = this.#mergeRowMutations([
-          { putRows, removeRows },
-          { putRows: projection?.putRows ?? [], removeRows: projection?.removeRows ?? [] },
-        ]);
-        const rematerialized = await this.#rematerializePendingAggregates(
-          scope,
-          userCommands,
-          scopeCommands,
-          confirmedAndProjected,
-          putCommands,
-          removeCommandIds,
-          rematerializeAfter,
-        );
-        const finalRows = this.#mergeRowMutations([confirmedAndProjected, rematerialized]);
-        const removedCommands = [...removeCommandIds]
-          .map(
-            (commandId) =>
-              userCommands.find((command) => command.commandId === commandId) ??
-              scopeCommands.find((command) => command.commandId === commandId),
-          )
-          .filter((command): command is OfflineCommand => command != null);
-        await repository.transactReplica({
-          putRows: finalRows.putRows,
-          removeRows: finalRows.removeRows,
-          putCommands: [...putCommands.values()],
-          removeCommandIds: [...removeCommandIds],
-          putCursors: [{ ...scope, cursor: page.nextCursor }],
-        });
-        await Promise.all(removedCommands.map((command) => this.#hooks.onCommandRemoved?.(command).catch(() => undefined)));
-        return page.nextCursor;
+      const applied = await this.#applyAuthoritativeChanges(scope, page.changes, {
+        expectedCursor: persistedCursor,
+        nextCursor: page.nextCursor,
+        rebaseline: rebaselinePending || page.rebaselineRequired === true,
+        reconciliationTargetsById,
       });
       if (applied !== page.nextCursor) {
         persistedCursor = applied;
@@ -302,13 +138,265 @@ export class OfflineReplicaPullService {
     }
   }
 
+  /**
+   * Applies an already-fetched authoritative server batch through the same
+   * acknowledgement, conflict, and aggregate-rematerialization boundary as pull.
+   */
+  async applyChanges(scope: OfflineScope, changes: OfflineReplicaChangeBatch): Promise<void> {
+    const reconciliationTargets = await this.#reconciliationTargets(scope);
+    await this.#applyAuthoritativeChanges(scope, changes, {
+      expectedCursor: null,
+      nextCursor: null,
+      rebaseline: false,
+      reconciliationTargetsById: new Map(reconciliationTargets.map((target) => [target.commandId, target] as const)),
+    });
+  }
+
+  async #applyAuthoritativeChanges(
+    scope: OfflineScope,
+    incomingChanges: OfflineReplicaChangeBatch,
+    options: {
+      readonly expectedCursor: string | null;
+      readonly nextCursor: string | null;
+      readonly rebaseline: boolean;
+      readonly reconciliationTargetsById: ReadonlyMap<string, OfflineReplicaReconciliationTarget>;
+    },
+  ): Promise<string> {
+    return this.#replicaMutations.run(async (repository) => {
+      const currentCursor = (await repository.getReplicaCursor(scope))?.cursor ?? '';
+      if (options.expectedCursor !== null && currentCursor !== options.expectedCursor) return currentCursor;
+      const scopeCommands = await repository.getCommands(scope);
+      const userCommands = repository.getCommandsForUser ? await repository.getCommandsForUser(scope.userId) : scopeCommands;
+      const changes = this.#collapseChanges(typeof incomingChanges === 'function' ? await incomingChanges(repository) : incomingChanges);
+      const existingRows = await this.#preloadRows(repository, scope, changes);
+      const projection = await this.#projector?.project({
+        scope,
+        changes,
+      });
+      this.#assertProjection(scope, projection);
+      const putRows: OfflineReplicaRow[] = [];
+      const removeRows: OfflineReplicaRowKey[] = [];
+      const putCommands = new Map<string, OfflineCommand>();
+      const removeCommandIds = new Set<string>();
+      const rematerializeAfter: OfflineCommand[] = [];
+      if (options.rebaseline) {
+        removeRows.push(...(await this.#confirmedRowsForRebaseline(scope, userCommands)));
+      }
+
+      for (const change of changes) {
+        const schema = this.#entitySchema(change.sourceKey);
+        const commands = schema.scope === 'user' ? userCommands : scopeCommands;
+        const acknowledged = (change.acknowledgedCommandIds ?? [])
+          .map((commandId) => {
+            const command = commands.find((candidate) => candidate.commandId === commandId);
+            if (!command) return null;
+            if (command.sourceKey !== change.sourceKey) {
+              throw new Error(`Acknowledged command "${commandId}" does not target "${change.sourceKey}".`);
+            }
+            const requested = options.reconciliationTargetsById.get(commandId);
+            if (command.state === 'awaiting_pull') {
+              if (!requested) {
+                throw new Error(`Acknowledged command "${commandId}" was not requested for reconciliation on this pull page.`);
+              }
+              const schema = this.#entitySchema(change.sourceKey);
+              if (
+                canonicalOfflineRemoteIdentity(schema, requested.identity) !==
+                canonicalOfflineRemoteIdentity(schema, this.#identity(change))
+              ) {
+                throw new Error(`Acknowledged command "${commandId}" does not match the requested remote identity.`);
+              }
+            }
+            return command;
+          })
+          .filter((command): command is OfflineCommand => command !== null);
+        const acknowledgedIdentities = new Set(acknowledged.map((command) => canonicalOfflineCommandIdentity(command.identity)));
+        if (acknowledgedIdentities.size > 1) {
+          throw new Error(`Acknowledged commands for "${change.sourceKey}" target multiple replica identities.`);
+        }
+        const acknowledgedCommand = acknowledged[0];
+        const acknowledgedScope = acknowledgedCommand
+          ? { userId: acknowledgedCommand.userId, scopeId: acknowledgedCommand.scopeId }
+          : scope;
+        const acknowledgedRow = acknowledgedCommand
+          ? (existingRows.byCommand.get(this.#commandRowKey(change.sourceKey, acknowledgedScope, acknowledgedCommand.identity)) ?? null)
+          : null;
+        if (acknowledgedCommand && !acknowledgedRow) {
+          throw new Error(`Acknowledged command "${acknowledgedCommand.commandId}" has no local replica row.`);
+        }
+        const identity = this.#identity(change);
+        const serverRow = existingRows.byRemote.get(this.#remoteRowKey(change.sourceKey, scope, identity)) ?? null;
+        if (
+          acknowledgedRow &&
+          serverRow &&
+          !commandIdentityMatchesReplicaRow(schema, acknowledgedRow, commandIdentityFromReplicaIdentity(serverRow.identity))
+        ) {
+          if (identity.remoteId !== undefined) {
+            throw new Error(`Server id ${String(identity.remoteId)} is already mapped to another local replica row.`);
+          }
+          throw new Error(`Remote identity for "${change.sourceKey}" is already mapped to another local replica row.`);
+        }
+        const existing = acknowledgedRow ?? serverRow;
+        const related = existing
+          ? commands.filter(
+              (command) => command.sourceKey === change.sourceKey && commandIdentityMatchesReplicaRow(schema, existing, command.identity),
+            )
+          : [];
+        const hasPending = related.length > 0;
+
+        if (acknowledgedCommand) {
+          this.#assertIdentityAssignment(schema, existing!, identity);
+          this.#applyAcknowledgement(change, existing!, related, putRows, removeRows, putCommands, removeCommandIds, rematerializeAfter);
+          continue;
+        }
+
+        if (change.deleted) {
+          if (!existing) continue;
+          if (!hasPending) {
+            removeRows.push({ ...existing, identity: existing.identity });
+            continue;
+          }
+          putRows.push({
+            ...existing,
+            confirmedValues: null,
+            serverRevision: change.serverRevision,
+            syncState: 'conflict',
+            fetchedAt: Date.now(),
+          });
+          for (const command of related) {
+            putCommands.set(command.commandId, { ...command, state: 'conflict', retryAt: null, lastErrorCode: 'remote_deleted' });
+          }
+          rematerializeAfter.push(related[0]!);
+          continue;
+        }
+
+        const confirmedValues = this.#validatedValues(schema, change);
+        if (!existing) {
+          putRows.push({
+            ...scope,
+            sourceKey: change.sourceKey,
+            identity:
+              schema.identity.kind === 'naturalKey'
+                ? offlineNaturalReplicaIdentity(schema, confirmedValues)
+                : offlineGeneratedReplicaIdentity(crypto.randomUUID(), identity.remoteId ?? null),
+            values: confirmedValues,
+            confirmedValues,
+            serverRevision: change.serverRevision,
+            fetchedAt: Date.now(),
+            syncState: 'confirmed',
+          });
+          continue;
+        }
+
+        const remaining = related.filter((command) => !removeCommandIds.has(command.commandId));
+        const confirmedRow: OfflineReplicaRow = {
+          ...existing,
+          confirmedValues,
+          serverRevision: change.serverRevision,
+          fetchedAt: Date.now(),
+          values: remaining.length > 0 ? existing.values : confirmedValues,
+          syncState: remaining.length > 0 ? 'pending' : 'confirmed',
+        };
+        putRows.push(confirmedRow);
+        if (remaining.length > 0) rematerializeAfter.push(remaining[0]!);
+        for (const command of remaining) {
+          putCommands.set(command.commandId, offlineCommandWithBaseRevision(command, change.serverRevision));
+        }
+      }
+
+      const confirmedAndProjected = this.#mergeRowMutations([
+        { putRows, removeRows },
+        { putRows: projection?.putRows ?? [], removeRows: projection?.removeRows ?? [] },
+      ]);
+      const rematerialized = await this.#rematerializePendingAggregates(
+        scope,
+        userCommands,
+        scopeCommands,
+        confirmedAndProjected,
+        putCommands,
+        removeCommandIds,
+        rematerializeAfter,
+      );
+      const finalRows = this.#mergeRowMutations([confirmedAndProjected, rematerialized]);
+      const removedCommands = [...removeCommandIds]
+        .map(
+          (commandId) =>
+            userCommands.find((command) => command.commandId === commandId) ??
+            scopeCommands.find((command) => command.commandId === commandId),
+        )
+        .filter((command): command is OfflineCommand => command != null);
+      await repository.transactReplica({
+        putRows: finalRows.putRows,
+        removeRows: finalRows.removeRows,
+        putCommands: [...putCommands.values()],
+        removeCommandIds: [...removeCommandIds],
+        ...(options.nextCursor === null ? {} : { putCursors: [{ ...scope, cursor: options.nextCursor }] }),
+      });
+      await Promise.all(removedCommands.map((command) => this.#hooks.onCommandRemoved?.(command).catch(() => undefined)));
+      return options.nextCursor ?? currentCursor;
+    });
+  }
+
+  async #preloadRows(
+    repository: OfflineRepository,
+    scope: OfflineScope,
+    changes: readonly OfflineReplicaChange[],
+  ): Promise<{
+    byCommand: ReadonlyMap<string, OfflineReplicaRow>;
+    byRemote: ReadonlyMap<string, OfflineReplicaRow>;
+  }> {
+    const sourceKeys = [...new Set(changes.map((change) => change.sourceKey))];
+    const partitions = await Promise.all(
+      sourceKeys.map(async (sourceKey) => ({
+        sourceKey,
+        rows: await (repository.getReplicaRowsIncludingPendingDelete?.(scope, sourceKey) ?? repository.getReplicaRows(scope, sourceKey)),
+      })),
+    );
+    const byCommand = new Map<string, OfflineReplicaRow>();
+    const byRemote = new Map<string, OfflineReplicaRow>();
+    for (const { sourceKey, rows } of partitions) {
+      const schema = this.#entitySchema(sourceKey);
+      for (const row of rows) {
+        if (row.identity.kind !== 'local') {
+          byCommand.set(this.#commandRowKey(sourceKey, row, commandIdentityFromReplicaIdentity(row.identity)), row);
+        }
+        if (row.identity.kind === 'generated' && row.identity.remoteId !== null) {
+          byRemote.set(this.#remoteRowKey(sourceKey, row, { remoteId: row.identity.remoteId }), row);
+        } else if (row.identity.kind === 'natural') {
+          byRemote.set(this.#remoteRowKey(sourceKey, row, { naturalKey: row.identity.naturalKey }), row);
+        }
+      }
+    }
+    return { byCommand, byRemote };
+  }
+
+  #commandRowKey(sourceKey: string, scope: OfflineScope, identity: OfflineCommand['identity']): string {
+    const partition = this.#entitySchema(sourceKey).scope === 'user' ? '' : scope.scopeId;
+    return `${sourceKey}:${scope.userId}:${partition}:${canonicalOfflineCommandIdentity(identity)}`;
+  }
+
+  #remoteRowKey(sourceKey: string, scope: OfflineScope, identity: OfflineReplicaRemoteIdentity): string {
+    const schema = this.#entitySchema(sourceKey);
+    const partition = schema.scope === 'user' ? '' : scope.scopeId;
+    return `${sourceKey}:${scope.userId}:${partition}:${canonicalOfflineRemoteIdentity(schema, identity)}`;
+  }
+
   async #reconciliationTargets(scope: OfflineScope): Promise<OfflineReplicaReconciliationTarget[]> {
     const commands = (await this.#repository.getCommands(scope)).filter((command) => command.state === 'awaiting_pull');
+    const rowsByCommand = new Map<string, OfflineReplicaRow>();
+    await Promise.all(
+      [...new Set(commands.map((command) => command.sourceKey))].map(async (sourceKey) => {
+        const rows = await (this.#repository.getReplicaRowsIncludingPendingDelete?.(scope, sourceKey) ??
+          this.#repository.getReplicaRows(scope, sourceKey));
+        for (const row of rows) {
+          if (row.identity.kind !== 'local') {
+            rowsByCommand.set(this.#commandRowKey(sourceKey, row, commandIdentityFromReplicaIdentity(row.identity)), row);
+          }
+        }
+      }),
+    );
     const targets: OfflineReplicaReconciliationTarget[] = [];
     for (const command of commands) {
-      const row =
-        (await this.#repository.getReplicaRowIncludingPendingDelete?.(scope, command.sourceKey, command.identity)) ??
-        (await this.#repository.getReplicaRow(scope, command.sourceKey, command.identity));
+      const row = rowsByCommand.get(this.#commandRowKey(command.sourceKey, command, command.identity));
       if (!row) throw new Error(`Awaiting-pull command "${command.commandId}" has no replica row.`);
       const identity =
         command.reconciliationIdentity ??
