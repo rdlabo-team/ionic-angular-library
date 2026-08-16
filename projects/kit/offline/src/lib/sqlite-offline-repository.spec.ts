@@ -215,6 +215,281 @@ describe('createCommunitySqliteDriver', () => {
     expect(connection.setEncryptionSecret).not.toHaveBeenCalled();
     expect(connection.createConnection).not.toHaveBeenCalled();
   });
+
+  it('closes an orphaned native connection after a WebView reload and recreates it normally', async () => {
+    const database = createDatabase();
+    const operations: string[] = [];
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi
+        .fn()
+        .mockImplementationOnce(async () => {
+          operations.push('create:conflict');
+          throw new Error('CreateConnection: Connection product-offline already exists');
+        })
+        .mockImplementationOnce(async () => {
+          operations.push('create:recovered');
+          return database;
+        }),
+      closeConnection: vi.fn(async () => void operations.push('close')),
+    };
+
+    await expect(createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline' })).resolves.toEqual({
+      databaseId: 'product-offline',
+    });
+
+    expect(operations).toEqual(['create:conflict', 'close', 'create:recovered']);
+    expect(database.open).toHaveBeenCalledOnce();
+  });
+
+  it('returns one canonical driver for repeated use of the same connection owner', () => {
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => createDatabase()),
+      closeConnection: vi.fn(async () => undefined),
+    };
+
+    expect(createCommunitySqliteDriver(connection)).toBe(createCommunitySqliteDriver(connection));
+  });
+
+  it('does not hide orphan close failure or attempt a second create', async () => {
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => Promise.reject(new Error('Connection product-offline already exists'))),
+      closeConnection: vi.fn(async () => Promise.reject(new Error('database busy'))),
+    };
+
+    await expect(createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline' })).rejects.toThrow('database busy');
+    expect(connection.createConnection).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the original conflict visible when orphan recovery is unsupported', async () => {
+    const conflict = new Error('Connection product-offline already exists');
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => Promise.reject(conflict)),
+    };
+
+    await expect(createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline' })).rejects.toBe(conflict);
+  });
+
+  it('normalizes the .db suffix when recovering a native conflict', async () => {
+    const recovered = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Connection product-offline already exists'))
+        .mockResolvedValueOnce(recovered),
+      closeConnection: vi.fn(async () => undefined),
+    };
+
+    await expect(createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline.db' })).resolves.toEqual({
+      databaseId: 'product-offline.db',
+    });
+    expect(connection.closeConnection).toHaveBeenCalledWith('product-offline.db', false);
+  });
+
+  it('coalesces concurrent opens instead of closing the valid connection created by the first caller', async () => {
+    const database = createDatabase();
+    let releaseCreate: (() => void) | undefined;
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(
+        () =>
+          new Promise<CommunitySqliteDatabase>((resolve) => {
+            releaseCreate = () => resolve(database);
+          }),
+      ),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const driver = createCommunitySqliteDriver(connection);
+
+    const first = driver.open({ databaseName: 'product-offline' });
+    const second = driver.open({ databaseName: 'product-offline' });
+    await vi.waitFor(() => expect(releaseCreate).toBeTypeOf('function'));
+    releaseCreate?.();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([{ databaseId: 'product-offline' }, { databaseId: 'product-offline' }]);
+    expect(connection.createConnection).toHaveBeenCalledOnce();
+    expect(database.open).toHaveBeenCalledOnce();
+    expect(connection.closeConnection).not.toHaveBeenCalled();
+  });
+
+  it('serializes encryption secret initialization across different databases on the same native connection', async () => {
+    const firstDatabase = createDatabase();
+    const secondDatabase = createDatabase();
+    let releaseSecret: (() => void) | undefined;
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: false })),
+      setEncryptionSecret: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseSecret = resolve;
+          }),
+      ),
+      createConnection: vi.fn().mockResolvedValueOnce(firstDatabase).mockResolvedValueOnce(secondDatabase),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const createEncryptionKey = vi.fn(async () => 'one-shared-secret');
+    const driver = createCommunitySqliteDriver(connection);
+
+    const first = driver.open({ databaseName: 'replica-offline', createEncryptionKey });
+    const second = driver.open({ databaseName: 'media-offline', createEncryptionKey });
+    await vi.waitFor(() => expect(releaseSecret).toBeTypeOf('function'));
+    releaseSecret?.();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([{ databaseId: 'replica-offline' }, { databaseId: 'media-offline' }]);
+    expect(connection.isSecretStored).toHaveBeenCalledOnce();
+    expect(createEncryptionKey).toHaveBeenCalledOnce();
+    expect(connection.setEncryptionSecret).toHaveBeenCalledOnce();
+    expect(connection.createConnection).toHaveBeenCalledTimes(2);
+  });
+
+  it('serializes encryption secret initialization across drivers sharing one native connection', async () => {
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: false })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => createDatabase()),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const createEncryptionKey = vi.fn(async () => 'one-shared-secret');
+
+    await Promise.all([
+      createCommunitySqliteDriver(connection).open({ databaseName: 'replica-offline', createEncryptionKey }),
+      createCommunitySqliteDriver(connection).open({ databaseName: 'media-offline', createEncryptionKey }),
+    ]);
+
+    expect(connection.isSecretStored).toHaveBeenCalledOnce();
+    expect(createEncryptionKey).toHaveBeenCalledOnce();
+    expect(connection.setEncryptionSecret).toHaveBeenCalledOnce();
+  });
+
+  it('coalesces the same database open across drivers sharing one native connection', async () => {
+    const database = createDatabase();
+    let releaseCreate: (() => void) | undefined;
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(
+        () =>
+          new Promise<CommunitySqliteDatabase>((resolve) => {
+            releaseCreate = () => resolve(database);
+          }),
+      ),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const firstDriver = createCommunitySqliteDriver(connection);
+    const secondDriver = createCommunitySqliteDriver(connection);
+
+    const first = firstDriver.open({ databaseName: 'product-offline' });
+    const second = secondDriver.open({ databaseName: 'product-offline' });
+    await vi.waitFor(() => expect(releaseCreate).toBeTypeOf('function'));
+    releaseCreate?.();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([{ databaseId: 'product-offline' }, { databaseId: 'product-offline' }]);
+    expect(connection.createConnection).toHaveBeenCalledOnce();
+    expect(database.open).toHaveBeenCalledOnce();
+    expect(connection.closeConnection).not.toHaveBeenCalled();
+  });
+
+  it('coalesces .db and canonical names that target the same native database', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => database),
+      closeConnection: vi.fn(async () => undefined),
+    };
+
+    await Promise.all([
+      createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline' }),
+      createCommunitySqliteDriver(connection).open({ databaseName: 'product-offline.db' }),
+    ]);
+
+    expect(connection.createConnection).toHaveBeenCalledOnce();
+    expect(database.open).toHaveBeenCalledOnce();
+    expect(connection.closeConnection).not.toHaveBeenCalled();
+  });
+
+  it('allows a later open to retry after encryption secret initialization fails', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: false })),
+      setEncryptionSecret: vi.fn().mockRejectedValueOnce(new Error('keychain unavailable')).mockResolvedValueOnce(undefined),
+      createConnection: vi.fn(async () => database),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const driver = createCommunitySqliteDriver(connection);
+
+    await expect(driver.open({ databaseName: 'product-offline', createEncryptionKey: async () => 'retry-secret' })).rejects.toThrow(
+      'keychain unavailable',
+    );
+    await expect(driver.open({ databaseName: 'product-offline', createEncryptionKey: async () => 'retry-secret' })).resolves.toEqual({
+      databaseId: 'product-offline',
+    });
+
+    expect(connection.isSecretStored).toHaveBeenCalledTimes(2);
+    expect(connection.setEncryptionSecret).toHaveBeenCalledTimes(2);
+    expect(connection.createConnection).toHaveBeenCalledOnce();
+  });
+
+  it('allows a later open to retry after an unrelated create error', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn().mockRejectedValueOnce(new Error('permission denied')).mockResolvedValueOnce(database),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const driver = createCommunitySqliteDriver(connection);
+
+    await expect(driver.open({ databaseName: 'product-offline' })).rejects.toThrow('permission denied');
+    await expect(driver.open({ databaseName: 'product-offline' })).resolves.toEqual({
+      databaseId: 'product-offline',
+    });
+
+    expect(connection.createConnection).toHaveBeenCalledTimes(2);
+    expect(connection.closeConnection).not.toHaveBeenCalled();
+  });
+
+  it('recovers the connection orphaned when database open fails before a later retry', async () => {
+    const failedDatabase = createDatabase();
+    vi.mocked(failedDatabase.open).mockRejectedValueOnce(new Error('database open failed'));
+    const recoveredDatabase = createDatabase();
+    const operations: string[] = [];
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi
+        .fn()
+        .mockImplementationOnce(async () => failedDatabase)
+        .mockImplementationOnce(async () => {
+          operations.push('create:conflict');
+          throw new Error('Connection product-offline already exists');
+        })
+        .mockImplementationOnce(async () => {
+          operations.push('create:recovered');
+          return recoveredDatabase;
+        }),
+      closeConnection: vi.fn(async () => void operations.push('close')),
+    };
+    const driver = createCommunitySqliteDriver(connection);
+
+    await expect(driver.open({ databaseName: 'product-offline' })).rejects.toThrow('database open failed');
+    await expect(driver.open({ databaseName: 'product-offline' })).resolves.toEqual({
+      databaseId: 'product-offline',
+    });
+
+    expect(operations).toEqual(['create:conflict', 'close', 'create:recovered']);
+    expect(recoveredDatabase.open).toHaveBeenCalledOnce();
+  });
 });
 
 describe('SqliteOfflineRepository community sqlite driver', () => {

@@ -77,7 +77,13 @@ export interface CommunitySqliteDatabase {
   rollbackTransaction(): Promise<unknown>;
 }
 
-/** Community SQLite connection surface used to provision encrypted databases. */
+/**
+ * Community SQLite connection surface used to provision encrypted databases.
+ *
+ * One object must exclusively own a native plugin connection registry. Consumers must not create another
+ * wrapper over the same native plugin or call `closeConnection` while its canonical driver is active.
+ * Destructive reset belongs before application bootstrap in the next JavaScript lifecycle.
+ */
 export interface CommunitySqliteConnection {
   isSecretStored(): Promise<{ result?: boolean }>;
   setEncryptionSecret(passphrase: string): Promise<void>;
@@ -88,6 +94,7 @@ export interface CommunitySqliteConnection {
     version: number,
     readonly: boolean,
   ): Promise<CommunitySqliteDatabase>;
+  closeConnection?(database: string, readonly: boolean): Promise<void>;
 }
 
 /** DI token for the native community SQLite driver. */
@@ -107,32 +114,120 @@ export async function createRandomOfflineEncryptionKey(): Promise<string> {
 }
 
 const settledSqliteOperation = async (): Promise<void> => undefined;
+const communitySqliteDrivers = new WeakMap<CommunitySqliteConnection, CommunitySqliteDriver>();
 
-/** Create the standard encrypted `@capacitor-community/sqlite` driver. */
+function sqliteErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'object' && error !== null && 'message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
+  return String(error);
+}
+
+function normalizeCommunitySqliteDatabaseName(database: string): string {
+  return database.endsWith('.db') ? database.slice(0, -3) : database;
+}
+
+function isExistingCommunitySqliteConnectionError(error: unknown, database: string): boolean {
+  const databaseName = normalizeCommunitySqliteDatabaseName(database);
+  return sqliteErrorMessage(error).includes(`Connection ${databaseName} already exists`);
+}
+
+type CommunitySqliteCreationResult = { ok: true; database: CommunitySqliteDatabase } | { ok: false; error: unknown };
+
+function settleCommunitySqliteCreation(creation: Promise<CommunitySqliteDatabase>): Promise<CommunitySqliteCreationResult> {
+  return creation.then(
+    (database) => ({ ok: true, database }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+}
+
+async function createReloadSafeCommunitySqliteDatabase(
+  connection: CommunitySqliteConnection,
+  databaseName: string,
+): Promise<CommunitySqliteDatabase> {
+  const create = () =>
+    connection.createConnection(
+      databaseName,
+      COMMUNITY_SQLITE_ENCRYPTED,
+      COMMUNITY_SQLITE_MODE,
+      COMMUNITY_SQLITE_VERSION,
+      COMMUNITY_SQLITE_READONLY,
+    );
+  const creation = await settleCommunitySqliteCreation(create());
+  if (creation.ok) return creation.database;
+  if (!isExistingCommunitySqliteConnectionError(creation.error, databaseName) || !connection.closeConnection) {
+    throw creation.error;
+  }
+  await connection.closeConnection(databaseName, COMMUNITY_SQLITE_READONLY);
+  return create();
+}
+
+/**
+ * Create the canonical encrypted `@capacitor-community/sqlite` driver for a connection owner.
+ *
+ * The supplied connection is the identity and exclusive owner of its native plugin connections. Repeated
+ * calls with the same object return the same driver so normal concurrent access cannot be mistaken for a
+ * WebView-reload orphan. Consumers must route database access through this driver and must not close or
+ * replace the connection while the driver is active. A real WebView reload creates a new JavaScript owner,
+ * allowing the driver to close the native connection orphaned by the previous owner and recreate it.
+ */
 export function createCommunitySqliteDriver(connection: CommunitySqliteConnection): CommunitySqliteDriver {
+  const currentDriver = communitySqliteDrivers.get(connection);
+  if (currentDriver) return currentDriver;
+
   const databases = new Map<string, CommunitySqliteDatabase>();
+  const openings = new Map<string, Promise<CommunitySqliteDatabase>>();
+  let secretInitialization: Promise<void> | null = null;
   const database = (databaseId: string): CommunitySqliteDatabase => {
-    const value = databases.get(databaseId);
+    const value = databases.get(normalizeCommunitySqliteDatabaseName(databaseId));
     if (!value) throw new Error(`Offline SQLite database "${databaseId}" is not open`);
     return value;
   };
-  return {
-    async open({ databaseName, createEncryptionKey }) {
+  const ensureSecret = (createEncryptionKey?: () => Promise<string>): Promise<void> => {
+    if (secretInitialization) return secretInitialization;
+    const initialization = (async () => {
       const stored = await connection.isSecretStored();
-      if (!stored.result) {
-        const encryptionKey = await createEncryptionKey?.();
-        if (!encryptionKey) throw new Error('Native offline storage requires a non-empty encryption key on first open');
-        await connection.setEncryptionSecret(encryptionKey);
-      }
-      const value = await connection.createConnection(
-        databaseName,
-        COMMUNITY_SQLITE_ENCRYPTED,
-        COMMUNITY_SQLITE_MODE,
-        COMMUNITY_SQLITE_VERSION,
-        COMMUNITY_SQLITE_READONLY,
-      );
+      if (stored.result) return;
+      const encryptionKey = await createEncryptionKey?.();
+      if (!encryptionKey) throw new Error('Native offline storage requires a non-empty encryption key on first open');
+      await connection.setEncryptionSecret(encryptionKey);
+    })();
+    secretInitialization = initialization;
+    return initialization.then(undefined, (error: unknown) => {
+      if (secretInitialization === initialization) secretInitialization = null;
+      throw error;
+    });
+  };
+  const openDatabase = async (databaseName: string, createEncryptionKey?: () => Promise<string>): Promise<CommunitySqliteDatabase> => {
+    const databaseKey = normalizeCommunitySqliteDatabaseName(databaseName);
+    const opened = databases.get(databaseKey);
+    if (opened) return opened;
+    const currentOpening = openings.get(databaseKey);
+    if (currentOpening) return currentOpening;
+
+    const opening = (async () => {
+      await ensureSecret(createEncryptionKey);
+      const value = await createReloadSafeCommunitySqliteDatabase(connection, databaseName);
       await value.open();
-      databases.set(databaseName, value);
+      databases.set(databaseKey, value);
+      return value;
+    })();
+    openings.set(databaseKey, opening);
+    return opening.then(
+      (value) => {
+        if (openings.get(databaseKey) === opening) openings.delete(databaseKey);
+        return value;
+      },
+      (error: unknown) => {
+        if (openings.get(databaseKey) === opening) openings.delete(databaseKey);
+        throw error;
+      },
+    );
+  };
+  const driver: CommunitySqliteDriver = {
+    async open({ databaseName, createEncryptionKey }) {
+      await openDatabase(databaseName, createEncryptionKey);
       return { databaseId: databaseName };
     },
     async execute({ databaseId, statement, values = [] }) {
@@ -152,6 +247,8 @@ export function createCommunitySqliteDriver(connection: CommunitySqliteConnectio
       await database(databaseId).rollbackTransaction();
     },
   };
+  communitySqliteDrivers.set(connection, driver);
+  return driver;
 }
 
 type SQLiteValue = string | number | null;
