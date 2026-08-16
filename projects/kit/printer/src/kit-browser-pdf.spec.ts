@@ -119,7 +119,7 @@ describe('kitDownloadPdf', () => {
   it('uses the global scheduler when the injected scheduler fails', () => {
     const harness = createHarness();
     let cleanup: (() => void) | undefined;
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void) => {
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void) => {
       cleanup = callback;
       return 1;
     }) as typeof globalThis.setTimeout);
@@ -139,13 +139,10 @@ describe('kitDownloadPdf', () => {
 });
 
 describe('kitPreviewGeneratedPdf', () => {
-  it('opens the placeholder synchronously and replaces it with the generated PDF', async () => {
-    const replace = vi.fn();
+  it('does not open until buildPdf resolves, then opens the completed blob URL', async () => {
     const target = {
       closed: false,
       close: vi.fn(),
-      document: { title: '', body: { textContent: '' } },
-      location: { replace },
       opener: {} as Window,
     } as unknown as Window;
     const harness = createHarness(target);
@@ -159,14 +156,16 @@ describe('kitPreviewGeneratedPdf', () => {
       dependencies: harness.dependencies,
     });
 
-    expect(harness.open).toHaveBeenCalledWith('', '_blank');
-    expect(target.opener).toBeNull();
-    expect(target.document.title).toBe('PDF generating');
-    expect(target.document.body.textContent).toBe('Please wait');
+    expect(buildPdf).toHaveBeenCalledOnce();
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.createObjectURL).not.toHaveBeenCalled();
 
     resolvePdf(Uint8Array.from([1, 2, 3]));
     await preview;
-    expect(replace).toHaveBeenCalledWith('blob:generated-pdf');
+
+    expect(harness.createObjectURL).toHaveBeenCalledOnce();
+    expect(harness.open).toHaveBeenCalledWith('blob:generated-pdf', '_blank');
+    expect(target.opener).toBeNull();
     expect(harness.click).not.toHaveBeenCalled();
 
     harness.scheduled[0]();
@@ -176,29 +175,23 @@ describe('kitPreviewGeneratedPdf', () => {
   it('downloads when the preview window is blocked', async () => {
     const harness = createHarness(null);
     await kitPreviewGeneratedPdf(async () => Uint8Array.from([1, 2, 3]), {
-      title: 'PDF generating',
-      pendingText: 'Please wait',
       fallbackFilename: 'document.pdf',
       dependencies: harness.dependencies,
     });
 
+    expect(harness.open).toHaveBeenCalledWith('blob:generated-pdf', '_blank');
     expect(harness.link.download).toBe('document.pdf');
     expect(harness.click).toHaveBeenCalledOnce();
+    expect(harness.revokeObjectURL).toHaveBeenCalledWith('blob:generated-pdf');
   });
 
-  it('downloads when the user closes the preview while the PDF is generating', async () => {
-    const target = {
-      closed: true,
-      close: vi.fn(),
-      document: { title: '', body: { textContent: '' } },
-      location: { replace: vi.fn() },
-      opener: null,
-    } as unknown as Window;
-    const harness = createHarness(target);
+  it('downloads when opening the preview throws', async () => {
+    const harness = createHarness();
+    harness.open.mockImplementation(() => {
+      throw new Error('popup blocked');
+    });
 
     await kitPreviewGeneratedPdf(async () => Uint8Array.from([1, 2, 3]), {
-      title: 'PDF generating',
-      pendingText: 'Please wait',
       fallbackFilename: 'document.pdf',
       dependencies: harness.dependencies,
     });
@@ -207,95 +200,18 @@ describe('kitPreviewGeneratedPdf', () => {
     expect(harness.click).toHaveBeenCalledOnce();
   });
 
-  it('closes the placeholder and rethrows after generation fails', async () => {
+  it('closes a partially opened window and downloads when isolating the opener fails', async () => {
     const close = vi.fn();
     const target = {
       closed: false,
       close,
-      document: { title: '', body: { textContent: '' } },
-      location: { replace: vi.fn() },
-      opener: null,
-    } as unknown as Window;
-    const harness = createHarness(target);
-
-    const failure = new Error('PDF failed');
-    await expect(
-      kitPreviewGeneratedPdf(async () => Promise.reject(failure), {
-        title: 'PDF generating',
-        pendingText: 'Please wait',
-        fallbackFilename: 'document.pdf',
-        dependencies: harness.dependencies,
-      }),
-    ).rejects.toBe(failure);
-
-    expect(close).toHaveBeenCalledOnce();
-  });
-
-  it('preserves the generation error when closing the placeholder fails', async () => {
-    const target = {
-      closed: false,
-      close: () => {
-        throw new Error('close failed');
+      set opener(_value: Window | null) {
+        throw new Error('opener isolation failed');
       },
-      document: { title: '', body: { textContent: '' } },
-      location: { replace: vi.fn() },
-      opener: null,
-    } as unknown as Window;
-    const harness = createHarness(target);
-    const failure = new Error('PDF failed');
-
-    await expect(
-      kitPreviewGeneratedPdf(async () => Promise.reject(failure), {
-        title: 'PDF generating',
-        pendingText: 'Please wait',
-        fallbackFilename: 'document.pdf',
-        dependencies: harness.dependencies,
-      }),
-    ).rejects.toBe(failure);
-  });
-
-  it('preserves the generation error when reading the closed state fails', async () => {
-    const target = {
-      get closed(): boolean {
-        throw new Error('closed state failed');
-      },
-      close: vi.fn(),
-      document: { title: '', body: { textContent: '' } },
-      location: { replace: vi.fn() },
-      opener: null,
-    } as unknown as Window;
-    const harness = createHarness(target);
-    const failure = new Error('PDF failed');
-
-    await expect(
-      kitPreviewGeneratedPdf(async () => Promise.reject(failure), {
-        title: 'PDF generating',
-        pendingText: 'Please wait',
-        fallbackFilename: 'document.pdf',
-        dependencies: harness.dependencies,
-      }),
-    ).rejects.toBe(failure);
-  });
-
-  it('closes an unusable placeholder and downloads the completed PDF', async () => {
-    const close = vi.fn();
-    const pendingBody = {
-      set textContent(_value: string) {
-        throw new Error('placeholder failed');
-      },
-    };
-    const target = {
-      closed: false,
-      close,
-      document: { title: '', body: pendingBody },
-      location: { replace: vi.fn() },
-      opener: null,
     } as unknown as Window;
     const harness = createHarness(target);
 
     await kitPreviewGeneratedPdf(async () => Uint8Array.from([1]), {
-      title: 'PDF generating',
-      pendingText: 'Please wait',
       fallbackFilename: 'document.pdf',
       dependencies: harness.dependencies,
     });
@@ -305,17 +221,34 @@ describe('kitPreviewGeneratedPdf', () => {
     expect(harness.click).toHaveBeenCalledOnce();
   });
 
+  it('rethrows after generation fails without opening a preview', async () => {
+    const harness = createHarness({
+      closed: false,
+      close: vi.fn(),
+      opener: null,
+    } as unknown as Window);
+    const failure = new Error('PDF failed');
+
+    await expect(
+      kitPreviewGeneratedPdf(async () => Promise.reject(failure), {
+        fallbackFilename: 'document.pdf',
+        dependencies: harness.dependencies,
+      }),
+    ).rejects.toBe(failure);
+
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.createObjectURL).not.toHaveBeenCalled();
+    expect(harness.click).not.toHaveBeenCalled();
+  });
+
   it('does not misclassify cleanup scheduling failure as PDF generation failure', async () => {
-    const replace = vi.fn();
     const target = {
       closed: false,
       close: vi.fn(),
-      document: { title: '', body: { textContent: '' } },
-      location: { replace },
       opener: null,
     } as unknown as Window;
     const harness = createHarness(target);
-    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((() => 1) as typeof globalThis.setTimeout);
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation((() => 1) as typeof globalThis.setTimeout);
     const dependencies: KitBrowserPdfDependencies = {
       ...harness.dependencies,
       schedule: () => {
@@ -325,40 +258,26 @@ describe('kitPreviewGeneratedPdf', () => {
 
     await expect(
       kitPreviewGeneratedPdf(async () => Uint8Array.from([1]), {
-        title: 'PDF generating',
-        pendingText: 'Please wait',
         fallbackFilename: 'document.pdf',
         dependencies,
       }),
     ).resolves.toBeUndefined();
-    expect(replace).toHaveBeenCalledWith('blob:generated-pdf');
+    expect(harness.open).toHaveBeenCalledWith('blob:generated-pdf', '_blank');
     expect(target.close).not.toHaveBeenCalled();
   });
 
-  it('downloads when navigating the prepared preview fails', async () => {
-    const close = vi.fn();
-    const target = {
-      closed: false,
-      close,
-      document: { title: '', body: { textContent: '' } },
-      location: {
-        replace: () => {
-          throw new Error('navigation failed');
-        },
-      },
-      opener: null,
-    } as unknown as Window;
-    const harness = createHarness(target);
-
-    await kitPreviewGeneratedPdf(async () => Uint8Array.from([1]), {
-      title: 'PDF generating',
-      pendingText: 'Please wait',
-      fallbackFilename: 'document.pdf',
-      dependencies: harness.dependencies,
+  it('propagates download failures after a blocked preview', async () => {
+    const harness = createHarness(null);
+    const failure = new Error('download failed');
+    harness.appendChild.mockImplementation(() => {
+      throw failure;
     });
 
-    expect(close).toHaveBeenCalledOnce();
-    expect(harness.link.download).toBe('document.pdf');
-    expect(harness.click).toHaveBeenCalledOnce();
+    await expect(
+      kitPreviewGeneratedPdf(async () => Uint8Array.from([1]), {
+        fallbackFilename: 'document.pdf',
+        dependencies: harness.dependencies,
+      }),
+    ).rejects.toBe(failure);
   });
 });
