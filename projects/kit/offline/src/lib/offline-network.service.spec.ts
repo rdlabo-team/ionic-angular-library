@@ -1,48 +1,49 @@
-import { TestBed } from '@angular/core/testing';
+import type { PluginListenerHandle } from '@capacitor/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const capacitor = vi.hoisted(() => ({
-  appListener: null as ((state: { isActive: boolean }) => void) | null,
-  networkListener: null as ((state: { connected: boolean }) => void) | null,
-  getAppState: vi.fn<() => Promise<{ isActive: boolean }>>(),
-  getNetworkStatus: vi.fn<() => Promise<{ connected: boolean }>>(),
-}));
-
-vi.mock('@capacitor/app', () => ({
-  App: {
-    getState: capacitor.getAppState,
-    addListener: vi.fn(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
-      capacitor.appListener = listener;
-      return { remove: vi.fn(async () => undefined) };
-    }),
-  },
-}));
-
-vi.mock('@capacitor/network', () => ({
-  Network: {
-    getStatus: capacitor.getNetworkStatus,
-    addListener: vi.fn(async (_event: string, listener: (state: { connected: boolean }) => void) => {
-      capacitor.networkListener = listener;
-      return { remove: vi.fn(async () => undefined) };
-    }),
-  },
-}));
-
 import { OfflineNetworkService } from './offline-network.service';
 
+class TestOfflineNetworkService extends OfflineNetworkService {
+  appListener: ((state: { isActive: boolean }) => void) | null = null;
+  networkListener: ((state: { connected: boolean }) => void) | null = null;
+  readonly getAppStateMock = vi.fn<() => Promise<{ isActive: boolean }>>();
+  readonly getNetworkStatusMock = vi.fn<() => Promise<{ connected: boolean }>>();
+
+  protected override getAppState(): Promise<{ isActive: boolean }> {
+    return this.getAppStateMock();
+  }
+
+  protected override getNetworkStatus(): Promise<{ connected: boolean }> {
+    return this.getNetworkStatusMock();
+  }
+
+  protected override async addAppStateListener(
+    listener: (state: { isActive: boolean }) => void,
+  ): Promise<PluginListenerHandle> {
+    this.appListener = listener;
+    return { remove: vi.fn(async () => undefined) };
+  }
+
+  protected override async addNetworkStatusListener(
+    listener: (state: { connected: boolean }) => void,
+  ): Promise<PluginListenerHandle> {
+    this.networkListener = listener;
+    return { remove: vi.fn(async () => undefined) };
+  }
+}
+
 describe('OfflineNetworkService', () => {
+  let service: TestOfflineNetworkService;
+
   beforeEach(() => {
-    capacitor.appListener = null;
-    capacitor.networkListener = null;
-    capacitor.getAppState.mockReset().mockResolvedValue({ isActive: true });
-    capacitor.getNetworkStatus.mockReset().mockResolvedValue({ connected: true });
+    service = new TestOfflineNetworkService();
+    service.getAppStateMock.mockResolvedValue({ isActive: true });
+    service.getNetworkStatusMock.mockResolvedValue({ connected: true });
   });
 
-  afterEach(() => TestBed.resetTestingModule());
+  afterEach(() => vi.restoreAllMocks());
 
   it('initial app stateがinactiveならtransportをinactiveとして公開する', async () => {
-    capacitor.getAppState.mockResolvedValue({ isActive: false });
-    const service = TestBed.inject(OfflineNetworkService);
+    service.getAppStateMock.mockResolvedValue({ isActive: false });
 
     await service.initialize();
 
@@ -52,17 +53,16 @@ describe('OfflineNetworkService', () => {
 
   it('listener登録後のappStateChangeを遅延した初期stateで上書きしない', async () => {
     let resolveInitialState!: (state: { isActive: boolean }) => void;
-    capacitor.getAppState.mockImplementation(
+    service.getAppStateMock.mockImplementation(
       () => new Promise((resolve) => (resolveInitialState = resolve)),
     );
-    const service = TestBed.inject(OfflineNetworkService);
     const initialization = service.initialize();
     await vi.waitFor(() => {
-      expect(capacitor.appListener).not.toBeNull();
-      expect(capacitor.getAppState).toHaveBeenCalledOnce();
+      expect(service.appListener).not.toBeNull();
+      expect(service.getAppStateMock).toHaveBeenCalledOnce();
     });
 
-    capacitor.appListener?.({ isActive: false });
+    service.appListener?.({ isActive: false });
     resolveInitialState({ isActive: true });
     await initialization;
 

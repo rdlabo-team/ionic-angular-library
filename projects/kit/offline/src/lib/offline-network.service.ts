@@ -36,12 +36,12 @@ export class OfflineNetworkService {
     if (this.#initialized) return;
     this.#initialized = true;
     const [networkListener, appListener] = await Promise.all([
-      Network.addListener('networkStatusChange', ({ connected }) => {
+      this.addNetworkStatusListener(({ connected }) => {
         this.#networkRevision += 1;
         this.#osConnected.set(connected);
         this.#apiReachable.set(connected ? null : false);
       }),
-      App.addListener('appStateChange', ({ isActive }) => {
+      this.addAppStateListener(({ isActive }) => {
         this.#lifecycleRevision.update((revision) => revision + 1);
         this.#appActive.set(isActive);
         if (isActive) void this.#refreshOsStatus();
@@ -50,7 +50,7 @@ export class OfflineNetworkService {
     this.#listeners.push(networkListener, appListener);
     const networkRevision = this.#networkRevision;
     const lifecycleRevision = this.#lifecycleRevision();
-    const [network, app] = await Promise.all([Network.getStatus(), App.getState()]);
+    const [network, app] = await Promise.all([this.getNetworkStatus(), this.getAppState()]);
     if (this.#networkRevision === networkRevision) this.#osConnected.set(network.connected);
     if (this.#lifecycleRevision() === lifecycleRevision) this.#appActive.set(app.isActive);
   }
@@ -63,9 +63,29 @@ export class OfflineNetworkService {
     this.#apiReachable.set(false);
   }
 
+  /** Factory seam for Capacitor app-state discovery and deterministic tests. */
+  protected getAppState(): Promise<{ isActive: boolean }> {
+    return App.getState();
+  }
+
+  /** Factory seam for Capacitor app-state listeners and deterministic tests. */
+  protected addAppStateListener(listener: (state: { isActive: boolean }) => void): Promise<PluginListenerHandle> {
+    return App.addListener('appStateChange', listener);
+  }
+
+  /** Factory seam for Capacitor network discovery and deterministic tests. */
+  protected getNetworkStatus(): Promise<{ connected: boolean }> {
+    return Network.getStatus();
+  }
+
+  /** Factory seam for Capacitor network listeners and deterministic tests. */
+  protected addNetworkStatusListener(listener: (state: { connected: boolean }) => void): Promise<PluginListenerHandle> {
+    return Network.addListener('networkStatusChange', listener);
+  }
+
   async #refreshOsStatus(): Promise<void> {
     const revision = this.#networkRevision;
-    const status = await Network.getStatus();
+    const status = await this.getNetworkStatus();
     if (this.#networkRevision === revision) this.#osConnected.set(status.connected);
   }
 }
