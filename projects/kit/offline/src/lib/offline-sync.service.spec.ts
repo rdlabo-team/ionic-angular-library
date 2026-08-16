@@ -131,6 +131,8 @@ describe('OfflineSyncService', () => {
   let rows: OfflineReplicaRow[];
   let pullAttentions: OfflinePullAttention[];
   let connected: ReturnType<typeof signal<boolean>>;
+  let appActive: ReturnType<typeof signal<boolean>>;
+  let lifecycleRevision: ReturnType<typeof signal<number>>;
   let networkConnected: () => boolean;
   let session: { userId: number; scopes: OfflineScope[] } | null;
   let localSession: { userId: number; scopes: OfflineScope[] } | null | undefined;
@@ -163,6 +165,8 @@ describe('OfflineSyncService', () => {
     rows = [];
     pullAttentions = [];
     connected = signal(false);
+    appActive = signal(true);
+    lifecycleRevision = signal(0);
     networkConnected = connected;
     session = { userId: 1, scopes: [{ userId: 1, scopeId: '10' }] };
     localSession = undefined;
@@ -332,7 +336,10 @@ describe('OfflineSyncService', () => {
       providers: [
         OfflineSyncService,
         { provide: OFFLINE_REPOSITORY, useValue: repository },
-        { provide: OfflineNetworkService, useValue: { connected: () => networkConnected() } },
+        {
+          provide: OfflineNetworkService,
+          useValue: { connected: () => networkConnected(), appActive, lifecycleRevision },
+        },
         { provide: OFFLINE_KIT_OPTIONS, useValue: options },
         { provide: OfflineReplicaPullService, useValue: { pull } },
         { provide: ErrorHandler, useValue: { handleError } },
@@ -1110,6 +1117,40 @@ describe('OfflineSyncService', () => {
     expect(execute).toHaveBeenCalledOnce();
     expect(pull).toHaveBeenCalledTimes(3);
     expectAwaitingPull(1);
+  });
+
+  it.each([0, 408])('background遷移をまたいだpost-send pullのstatus %sも報告せず復帰後に回収する', async (status) => {
+    let rejectPostPull!: (error: unknown) => void;
+    pull
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => (rejectPostPull = reject)))
+      .mockResolvedValue(undefined);
+    await service.enqueue(
+      {
+        scopeId: '10',
+        aggregateType: 'documents',
+        identity: { kind: 'generated', localId: `interrupted-post-pull-${status}` },
+        operation: 'documents.create',
+        payload: { title: 'one' },
+      },
+      { flush: false },
+    );
+
+    connected.set(true);
+    const flush = service.flush();
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(2));
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(false);
+    rejectPostPull({ status });
+    await expect(flush).resolves.toBeUndefined();
+    expectAwaitingPull(1);
+    expect(handleError).not.toHaveBeenCalled();
+
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(true);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(3));
+    expect(execute).toHaveBeenCalledOnce();
+    expect(handleError).not.toHaveBeenCalled();
   });
 
   it('partial flushのACK後pull失敗scopeをOutbox削除後もreconnectで再pullする', async () => {
@@ -3632,6 +3673,72 @@ describe('OfflineSyncService', () => {
     await service.initialize();
     await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(pullError));
     await expect(service.flush()).rejects.toThrow('pull failed');
+  });
+
+  it('lifecycle遷移のない通常408はErrorHandlerへ渡してflushもrejectする', async () => {
+    const timeout = { status: 408, statusText: 'Request Timeout' };
+    pull.mockRejectedValue(timeout);
+    connected.set(true);
+    await service.initialize();
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(timeout));
+    await expect(service.flush()).rejects.toBe(timeout);
+  });
+
+  it('pull開始前に完了したbackground往復では後続の通常408を隠さない', async () => {
+    await service.initialize({ flush: false });
+    let releaseDiscovery!: () => void;
+    let notifyDiscovery!: () => void;
+    const discoveryStarted = new Promise<void>((resolve) => (notifyDiscovery = resolve));
+    const discoveryGate = new Promise<void>((resolve) => (releaseDiscovery = resolve));
+    beforeGetCommands = async () => {
+      notifyDiscovery();
+      await discoveryGate;
+    };
+    const timeout = { status: 408, statusText: 'Request Timeout' };
+    pull.mockRejectedValueOnce(timeout).mockResolvedValue(undefined);
+
+    connected.set(true);
+    await discoveryStarted;
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(false);
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(true);
+    releaseDiscovery();
+
+    await vi.waitFor(() => expect(handleError).toHaveBeenCalledWith(timeout));
+  });
+
+  it.each([0, 408])('background遷移をまたいだpullのstatus %sは報告せずforeground復帰後に再同期する', async (status) => {
+    let rejectSuspendedPull!: (error: unknown) => void;
+    pull.mockImplementationOnce(
+      () => new Promise<void>((_resolve, reject) => (rejectSuspendedPull = reject)),
+    );
+    connected.set(true);
+    await service.initialize();
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledOnce());
+
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(false);
+    rejectSuspendedPull({ status, statusText: status === 408 ? 'Request Timeout' : 'Unknown Error' });
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(handleError).not.toHaveBeenCalled();
+
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(true);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledTimes(2));
+    expect(handleError).not.toHaveBeenCalled();
+  });
+
+  it('initial inactiveとbackground中はpullせずforegroundで開始する', async () => {
+    appActive.set(false);
+    connected.set(true);
+    await service.initialize();
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(pull).not.toHaveBeenCalled();
+
+    lifecycleRevision.update((revision) => revision + 1);
+    appActive.set(true);
+    await vi.waitFor(() => expect(pull).toHaveBeenCalledOnce());
   });
 
   it('background error reporting preserves the microtask boundary and absorbs reporter rejection', async () => {

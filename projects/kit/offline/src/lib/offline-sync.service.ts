@@ -168,6 +168,8 @@ export class OfflineSyncService {
   readonly #pendingPullScopes = new Map<string, OfflineScope>();
   #activeUserId: OfflinePrincipalId | null = null;
   #flushPromise: Promise<void> | null = null;
+  #flushLifecycleRevision = 0;
+  #resumeAfterFlush = false;
   #partialFlushInFlight = false;
   #chainedFullFlush: Promise<void> | null = null;
   readonly #flushTransitions = new Set<Promise<void>>();
@@ -198,18 +200,19 @@ export class OfflineSyncService {
   constructor() {
     effect(() => {
       const connected = this.#network.connected();
+      const appActive = this.#appActive();
       // The network transition may be observed after an explicit flush has already
       // persisted a fatal pull attention. Do not let that stale transition restart
       // the intentionally stopped loop; auth/session refresh remains able to retry.
       const hasFatalPullAttention = untracked(() => this.#pullAttentions().length > 0);
-      if (this.#initialized && connected && !hasFatalPullAttention) this.#flushInBackground();
+      if (this.#initialized && connected && appActive && !hasFatalPullAttention) this.#flushInBackground();
     });
   }
 
   async initialize(options: { flush?: boolean } = {}): Promise<void> {
     const generation = this.#generation;
     if (!(await this.#restoreCurrentGeneration(generation))) return;
-    if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
+    if (options.flush !== false && this.#canSynchronize()) this.#flushInBackground();
   }
 
   #ensureInitialized(): Promise<void> {
@@ -258,7 +261,7 @@ export class OfflineSyncService {
     await this.#discoverScopes();
     await this.#restoreInterruptedCommands();
     await this.#refreshState();
-    if (this.#network.connected()) this.#flushInBackground();
+    if (this.#canSynchronize()) this.#flushInBackground();
   }
 
   /** Restores local outbox visibility without enabling pull or replay transport. */
@@ -734,7 +737,7 @@ export class OfflineSyncService {
       removeCommandIds,
     });
     await this.#refreshState().catch((error) => this.#reportError(error));
-    if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
+    if (options.flush !== false && this.#canSynchronize()) this.#flushInBackground();
   }
 
   #normalizedLocalOnlyFootprint(
@@ -840,7 +843,7 @@ export class OfflineSyncService {
     await this.#restoreInterruptedCommands();
     await this.#refreshState();
     await this.#hooks.onCommandRemoved?.(command).catch((error) => this.#reportError(error));
-    if (options.flush !== false && this.#network.connected()) this.#flushInBackground();
+    if (options.flush !== false && this.#canSynchronize()) this.#flushInBackground();
   }
 
   /** Clears a retry backoff/auth block selected explicitly by the user and sends the durable command now. */
@@ -867,7 +870,7 @@ export class OfflineSyncService {
       });
       return true;
     });
-    if (retried && this.#network.connected()) await this.flush();
+    if (retried && this.#canSynchronize()) await this.flush();
   }
 
   async discardAllPending(): Promise<void> {
@@ -908,8 +911,12 @@ export class OfflineSyncService {
   }
 
   #beginFlush(explicitFull: boolean): Promise<void> {
+    const lifecycleRevision = this.#lifecycleRevision();
     const isPartial = !explicitFull && this.#foregroundScopePolicy !== null;
     if (this.#flushPromise) {
+      if (lifecycleRevision !== this.#flushLifecycleRevision && this.#canSynchronize()) {
+        this.#resumeAfterFlush = true;
+      }
       if (explicitFull && this.#partialFlushInFlight) {
         if (!this.#chainedFullFlush) {
           const generation = this.#generation;
@@ -939,7 +946,13 @@ export class OfflineSyncService {
         this.#flushPromise = null;
         this.#partialFlushInFlight = false;
       }
+      const resumeAfterFlush = this.#resumeAfterFlush;
+      this.#resumeAfterFlush = false;
+      if (resumeAfterFlush && this.#canSynchronize()) {
+        queueMicrotask(() => this.#flushInBackground());
+      }
     });
+    this.#flushLifecycleRevision = lifecycleRevision;
     this.#flushPromise = promise;
     this.#partialFlushInFlight = isPartial;
     this.#flushTransitions.add(promise);
@@ -948,7 +961,7 @@ export class OfflineSyncService {
 
   async #runFlush(generation: number, explicitFull: boolean): Promise<void> {
     if (!this.#isCurrent(generation)) return;
-    if (!this.#network.connected()) {
+    if (!this.#canSynchronize()) {
       await this.#refreshState(generation);
       return;
     }
@@ -961,7 +974,8 @@ export class OfflineSyncService {
     let fatalPullFailure: unknown | null = null;
     const pulledScopeKeys = new Set<string>();
     for (const scope of pullScopes) {
-      if (!this.#isCurrent(generation) || !this.#network.connected()) return;
+      if (!this.#isCurrent(generation) || !this.#canSynchronize()) return;
+      const pullLifecycleRevision = this.#lifecycleRevision();
       const pullScope = async (): Promise<void> => {
         await this.#pull.pull(scope);
         await this.#markScopeReconciled(scope, generation);
@@ -972,6 +986,7 @@ export class OfflineSyncService {
         (error: unknown) => ({ status: 'rejected' as const, error }),
       );
       if (pull.status === 'rejected') {
+        if (this.#isInterruptedTransportFailure(pull.error, pullLifecycleRevision)) return;
         prePullFailures.push(pull.error);
         if (this.#isFatalPullFailure(pull.error)) {
           // Auth/upgrade-driven recovery only: stop remaining scopes immediately.
@@ -986,7 +1001,7 @@ export class OfflineSyncService {
     }
     const dirtyScopes = new Map<string, OfflineScope>();
     const sendWorkerFailures: unknown[] = [];
-    while (this.#network.connected() && this.#isCurrent(generation) && fatalPullFailure === null) {
+    while (this.#canSynchronize() && this.#isCurrent(generation) && fatalPullFailure === null) {
       const known = await this.#readKnownCommands();
       const groups = this.#eligibleAggregateGroups(known).filter((group) =>
         group.some(
@@ -1000,7 +1015,7 @@ export class OfflineSyncService {
       const pendingBefore = known.filter((command) => command.state === 'pending' || command.state === 'retry_wait').length;
       let cursor = 0;
       const workers = Array.from({ length: Math.min(MAX_PARALLEL_AGGREGATES, groups.length) }, async () => {
-        while (cursor < groups.length) {
+        while (cursor < groups.length && this.#canSynchronize()) {
           const group = groups[cursor++];
           if (group && this.#isCurrent(generation)) await this.#sendAggregate(group, generation, dirtyScopes, pulledScopeKeys);
         }
@@ -1025,7 +1040,8 @@ export class OfflineSyncService {
     if (fatalPullFailure === null) {
       const postPullScopes = [...this.#pendingPullScopes.values()];
       for (const scope of postPullScopes) {
-        if (!this.#isCurrent(generation) || !this.#network.connected()) break;
+        if (!this.#isCurrent(generation) || !this.#canSynchronize()) break;
+        const pullLifecycleRevision = this.#lifecycleRevision();
         // A command response may contain only the aggregate's base row. Pull once per dirty scope so
         // sibling-table journal entries are visible before completed Outbox state reaches product UI.
         const pullScope = async (): Promise<void> => {
@@ -1037,6 +1053,7 @@ export class OfflineSyncService {
           (error: unknown) => ({ status: 'rejected' as const, error }),
         );
         if (pull.status === 'rejected') {
+          if (this.#isInterruptedTransportFailure(pull.error, pullLifecycleRevision)) return;
           if (this.#isFatalPullFailure(pull.error)) {
             fatalPullFailure = fatalPullFailure ?? pull.error;
             await this.#persistFatalPullAttentions(pull.error, scope, postPullScopes, generation);
@@ -1079,6 +1096,24 @@ export class OfflineSyncService {
     // classification elsewhere in this service). Same classifier for pre-pull and post-send pull.
     if (status === 401 || status === 403 || status === 409) return true;
     return error instanceof OfflineReplicaSchemaMismatchError;
+  }
+
+  #isInterruptedTransportFailure(error: unknown, lifecycleRevision: number): boolean {
+    if (this.#lifecycleRevision() === lifecycleRevision) return false;
+    const status = this.#errorStatus(error);
+    return status === 0 || status === 408;
+  }
+
+  #canSynchronize(): boolean {
+    return this.#appActive() && this.#network.connected();
+  }
+
+  #appActive(): boolean {
+    return this.#network.appActive?.() ?? true;
+  }
+
+  #lifecycleRevision(): number {
+    return this.#network.lifecycleRevision?.() ?? 0;
   }
 
   #pullAttentionReason(error: unknown): OfflinePullAttentionReason | null {
@@ -1705,7 +1740,7 @@ export class OfflineSyncService {
     this.#retryTimer = setTimeout(
       () => {
         this.#retryTimer = null;
-        if (this.#network.connected()) this.#flushInBackground();
+        if (this.#canSynchronize()) this.#flushInBackground();
       },
       Math.max(0, retryAt - Date.now()),
     );
@@ -1716,6 +1751,7 @@ export class OfflineSyncService {
     this.#flushPromise = null;
     this.#partialFlushInFlight = false;
     this.#chainedFullFlush = null;
+    this.#resumeAfterFlush = false;
     this.#scheduleRetry(null);
   }
 
