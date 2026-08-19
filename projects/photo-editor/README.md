@@ -1,13 +1,36 @@
 # @rdlabo/ionic-angular-photo-editor
 
+## Overview
+
 This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor.
 
-**Documentation:** [Read the full documentation](https://docs.rdlabo.dev/projects/ionic-angular-photo-editor)
+## Features
+
+### Choose by editing goal
+
+| Goal | Guide |
+| --- | --- |
+| Load a photo from camera or album | [PhotoFileService](./docs/photo-file.md) |
+| Crop and edit in a modal | [Photo Editor](./docs/editor.md) |
+| Browse images in a modal | [Photo Viewer](./docs/viewer.md) |
+| Override editor colors | [Theme](./docs/theme.md) |
+
+## Quick start
+
+After [Installation](#installation), load a photo:
+
+```typescript
+import { PhotoFileService } from '@rdlabo/ionic-angular-photo-editor';
+
+const files = await this.photoFileService.loadPhoto(1);
+```
+
+Then present the editor or viewer. Details: [PhotoFileService](./docs/photo-file.md), [Photo Editor](./docs/editor.md), [Photo Viewer](./docs/viewer.md).
 
 ## Installation
 
 ```bash
-npm install @rdlabo/ionic-angular-photo-editor 
+npm install @rdlabo/ionic-angular-photo-editor
 ```
 
 If you use capacitor, you need to install plugin:
@@ -26,154 +49,16 @@ If you public your project to the web, you need to add the following input tag t
 </div>
 ```
 
-## Theme
 
-Default color is set, but user can overwrite it: https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/pages/core.scss
+## Documentation
 
-### How to overwrite
+Start with [Installation](#installation), then pick a guide.
 
-```scss
-:root {
-  --ion-photo-editor-background: #2a2a2a;
-  --ion-photo-editor-background-tint: #414141;
+- [PhotoFileService](./docs/photo-file.md) — camera and album.
+- [Photo Editor](./docs/editor.md) — crop and edit in a modal.
+- [Photo Viewer](./docs/viewer.md) — browse images in a modal.
+- [Theme](./docs/theme.md) — CSS variables.
 
-  --ion-photo-editor-color: #f0f0f0;
-  --ion-photo-editor-color-tint: #dbdbdb;
-
-  --ion-photo-editor-primary: #4d8dff;
-  --ion-photo-editor-danger: #f24c58;
-  --ion-photo-editor-success: #2dd55b;
-}
-```
-
-## Usage
-
-### PhotoFileService
-
-```typescript
-import { PhotoFileService } from '@rdlabo/ionic-angular-photo-editor';
-
-export class AppComponent {
-  private photoFileService = inject(PhotoFileService);
-
-  constructor() {
-    this.photoFileService.photoMaxSize = 1000;
-    this.photoFileService.labels = {
-      camera: 'Camera',
-      album: 'Album',
-      cancel: 'Cancel',
-    };
-  }
-  
-  async upload() {
-    const file = await this.photoFileService.loadPhoto();
-    if (file) {
-      // upload file
-    }
-  }
-}
-````
-
-#### Options
-##### photoMaxSize
-
-The maximum size of the photo. Default is 1000.
-
-##### labels
-
-If set, the label is overwritten.
-
-
-### PhotoEditorPage
-
-```typescript
-import { PhotoEditorPage, IPhotoEditorDismiss } from '@rdlabo/ionic-angular-photo-editor';
-
-(async () => {
-  const modal = await this.modalCtrl.create({
-    component: PhotoEditorPage,
-    componentProps: {
-      requireSquare: false,
-      value: 'https://picsum.photos/200/300',
-      label: {
-        save: '送信', // change '保存' to '送信'
-      },
-    },
-  });
-  await modal.present();
-  const { data } = await modal.onWillDismiss<IPhotoEditorDismiss>();
-  if (data?.value) {
-    console.log(data.value);
-  }
-})();
-```
-
-### Options
-
-#### requireSquare: boolean
-
-If true, the image must be cropped to a square at first.
-
-#### value: string
-
-The image url or base64 string.
-
-#### labels: IDictionaryForEditor
-
-If set, the label is overwritten.
-
-List is [here](https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).
-
-
-### PhotoViewerPage
-
-```typescript
-import { PhotoViewerPage, IPhotoViewerDismiss } from '@rdlabo/ionic-angular-photo-editor';
-
-(async () => {
-  const modal = await this.modalCtrl.create({
-    component: PhotoViewerPage,
-    componentProps: {
-      imageUrls: [
-        'https://picsum.photos/200/300',
-        'https://picsum.photos/200/300',
-      ],
-      index: 0,
-      isCircle: false,
-    },
-  });
-  await modal.present();
-  const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
-  if (data?.delete) {
-    // User delete image
-  }
-})();
-```
-
-### Options
-
-#### imageUrls: string[]
-
-The image url or base64 string[].
-
-#### index: number
-
-The index of imageUrls.
-
-#### isCircle: boolean
-
-If set, the image is displayed in a circle.
-
-#### enableDelete: boolean
-
-If true, the delete button is displayed.
-
-#### enableFooterSafeArea: boolean
-
-If true, enable footer safe area for iOS.
-
-#### labels: IDictionaryForViewer
-
-If set, the label is overwritten.
-
-List is [here](https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/dictionaries.ts).
+<!-- rdlabo-docs-omit -->
+**Full documentation:** [https://docs.rdlabo.dev/projects/ionic-angular-photo-editor](https://docs.rdlabo.dev/projects/ionic-angular-photo-editor)
+<!-- /rdlabo-docs-omit -->
