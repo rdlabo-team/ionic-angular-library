@@ -93,7 +93,7 @@ async function createRepository(replicaSchema = schema): Promise<OfflineReposito
     providers: [
       IonicOfflineRepository,
       { provide: KitStorageService, useValue: storage },
-      { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test', replicaSchema } },
+      { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test', databaseEncryption: false, replicaSchema } },
       { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
     ],
   });
@@ -281,7 +281,7 @@ describe('natural-key pull reconciliation', () => {
         OfflineReplicaPullService,
         IonicOfflineRepository,
         { provide: KitStorageService, useValue: storage },
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test', replicaSchema: schema } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test', databaseEncryption: false, replicaSchema: schema } },
         { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
         { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
         { provide: OFFLINE_COMMAND_HOOKS, useValue: { entityType: (command: OfflineCommand) => command.aggregateType } },

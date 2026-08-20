@@ -152,7 +152,7 @@ describe('OfflineReplicaPullService', () => {
         OfflineReplicaPullService,
         IonicOfflineRepository,
         { provide: KitStorageService, useValue: storage },
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema, mode } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema, mode } },
         { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
         { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
         { provide: OFFLINE_REPLICA_PROJECTOR, useValue: projector },
@@ -1969,7 +1969,7 @@ describe('OfflineReplicaPullService', () => {
     TestBed.configureTestingModule({
       providers: [
         OfflineReplicaPullService,
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema } },
         { provide: OFFLINE_REPLICA_PULLER, useValue: { pull } },
         {
           provide: OFFLINE_COMMAND_HOOKS,

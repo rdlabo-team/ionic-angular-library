@@ -5,7 +5,7 @@ import type { OfflineCommandExecutor, OfflineCommandResult } from './offline-com
 import { OFFLINE_COMMAND_EXECUTOR, OFFLINE_SYNC_CONTEXT } from './offline-command-executor';
 import type { OfflineCommandHooks } from './offline-command-hooks';
 import { OFFLINE_COMMAND_HOOKS } from './offline-command-hooks';
-import type { OfflineKitOptions } from './offline-kit-options';
+import type { OfflineKitEncryptionOptions, OfflineKitOptions } from './offline-kit-options';
 import { OFFLINE_KIT_OPTIONS } from './offline-kit-options';
 import { OfflineCoordinatorService } from './offline-coordinator.service';
 import {
@@ -34,7 +34,7 @@ import {
 } from './sqlite-offline-repository';
 
 /** Configuration for the standard offline repository, outbox, and request-policy runtime. */
-interface ProvideOfflineOptionsBase extends OfflineKitOptions {
+interface ProvideOfflineOptionsBase extends Omit<OfflineKitOptions, 'databaseEncryption' | 'createEncryptionKey'> {
   /** Product policies that map URLs and DTOs to generic replica/outbox operations. */
   requestPolicies: readonly Type<OfflineRequestPolicy>[];
   /** Optional product hooks for entity projection and command cleanup. */
@@ -48,37 +48,35 @@ interface ProvideOfflineOptionsBase extends OfflineKitOptions {
 }
 
 /** Full replica pull and durable Outbox synchronization. */
-export interface ProvideSynchronizedOfflineOptions extends ProvideOfflineOptionsBase {
-  mode?: 'synchronized';
-  /** Creates the encrypted native database key on first install. */
-  createEncryptionKey: () => Promise<string>;
-  /** Product policies that replace matched writes with atomic local-first mutations. */
-  mutationPolicies?: readonly Type<OfflineMutationRequestPolicy>[];
-  /** Product adapter that sends opaque commands to its API. */
-  commandExecutor: Type<OfflineCommandExecutor>;
-  /** Product transport for explicit cursor-based server delta pulls. */
-  replicaPuller: Type<OfflineReplicaPuller>;
-  /**
-   * Required pure adapter that rematerializes one aggregate from its
-   * authoritative confirmed base/localOnly values and remaining Outbox intents.
-   *
-   * Kit calls it inside {@link OfflineReplicaMutationCoordinator} after enqueue,
-   * replacement, discard, transport success, and pull acknowledgement. Do not
-   * call the projector from product code.
-   */
-  aggregateIntentProjector: Type<OfflineAggregateIntentProjector>;
-}
+export type ProvideSynchronizedOfflineOptions = ProvideOfflineOptionsBase &
+  OfflineKitEncryptionOptions & {
+    mode?: 'synchronized';
+    /** Product policies that replace matched writes with atomic local-first mutations. */
+    mutationPolicies?: readonly Type<OfflineMutationRequestPolicy>[];
+    /** Product adapter that sends opaque commands to its API. */
+    commandExecutor: Type<OfflineCommandExecutor>;
+    /** Product transport for explicit cursor-based server delta pulls. */
+    replicaPuller: Type<OfflineReplicaPuller>;
+    /**
+     * Required pure adapter that rematerializes one aggregate from its
+     * authoritative confirmed base/localOnly values and remaining Outbox intents.
+     *
+     * Kit calls it inside {@link OfflineReplicaMutationCoordinator} after enqueue,
+     * replacement, discard, transport success, and pull acknowledgement. Do not
+     * call the projector from product code.
+     */
+    aggregateIntentProjector: Type<OfflineAggregateIntentProjector>;
+  };
 
 /** Server- or external-source read cache with no mutation transport or Outbox. */
-export interface ProvideReadCacheOfflineOptions extends ProvideOfflineOptionsBase {
-  mode: 'readCacheOnly';
-  /** Creates the encrypted native cache database key on first install. Unused by the web repository. */
-  createEncryptionKey: () => Promise<string>;
-  mutationPolicies?: never;
-  mutationPersistence?: never;
-  commandExecutor?: never;
-  replicaPuller?: never;
-}
+export type ProvideReadCacheOfflineOptions = ProvideOfflineOptionsBase &
+  OfflineKitEncryptionOptions & {
+    mode: 'readCacheOnly';
+    mutationPolicies?: never;
+    mutationPersistence?: never;
+    commandExecutor?: never;
+    replicaPuller?: never;
+  };
 
 export type ProvideOfflineOptions = ProvideSynchronizedOfflineOptions | ProvideReadCacheOfflineOptions;
 
@@ -102,7 +100,7 @@ const READ_CACHE_ONLY_REPLICA_PULLER: OfflineReplicaPuller = {
  * Provide the standard scoped offline runtime.
  *
  * @remarks
- * Web uses Ionic Storage. Native iOS/Android uses encrypted `@capacitor-community/sqlite`. The application owns
+ * Web uses Ionic Storage. Native iOS/Android uses `@capacitor-community/sqlite`, encrypted by default. The application owns
  * URL/DTO policy and command execution; the kit owns persistence, ordering, retries, and session
  * isolation.
  *
@@ -111,24 +109,39 @@ const READ_CACHE_ONLY_REPLICA_PULLER: OfflineReplicaPuller = {
  */
 export function provideOffline(options: ProvideOfflineOptions): EnvironmentProviders {
   const synchronized = options.mode !== 'readCacheOnly';
+  const kitOptions: OfflineKitOptions =
+    options.databaseEncryption === false
+      ? {
+          mode: options.mode ?? 'synchronized',
+          databaseName: options.databaseName,
+          databaseEncryption: false,
+          createEncryptionKey: options.createEncryptionKey,
+          replicaSchema: options.replicaSchema,
+          wireProtocol: options.wireProtocol,
+          outboxLimits: options.outboxLimits,
+          mutationPersistence: options.mutationPersistence,
+          onStorageUnavailable: options.onStorageUnavailable,
+        }
+      : {
+          mode: options.mode ?? 'synchronized',
+          databaseName: options.databaseName,
+          databaseEncryption: options.databaseEncryption ?? true,
+          createEncryptionKey: options.createEncryptionKey,
+          replicaSchema: options.replicaSchema,
+          wireProtocol: options.wireProtocol,
+          outboxLimits: options.outboxLimits,
+          mutationPersistence: options.mutationPersistence,
+          onStorageUnavailable: options.onStorageUnavailable,
+        };
   return makeEnvironmentProviders([
     ...(synchronized ? [options.commandExecutor, options.replicaPuller] : []),
     {
       provide: OFFLINE_KIT_OPTIONS,
-      useValue: {
-        mode: options.mode ?? 'synchronized',
-        databaseName: options.databaseName,
-        createEncryptionKey: options.createEncryptionKey,
-        replicaSchema: options.replicaSchema,
-        wireProtocol: options.wireProtocol,
-        outboxLimits: options.outboxLimits,
-        mutationPersistence: options.mutationPersistence,
-        onStorageUnavailable: options.onStorageUnavailable,
-      },
+      useValue: kitOptions,
     },
     {
       provide: COMMUNITY_SQLITE,
-      useValue: options.sqliteConnection ? createCommunitySqliteDriver(options.sqliteConnection) : null,
+      useValue: options.sqliteConnection ? createCommunitySqliteDriver(options.sqliteConnection, options.databaseEncryption ?? true) : null,
     },
     {
       provide: OFFLINE_REPOSITORY,

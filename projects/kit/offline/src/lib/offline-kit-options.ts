@@ -26,14 +26,33 @@ export interface OfflineMutationPersistenceOptions {
   defaultEnabled?: boolean;
 }
 
-/** Product-independent native offline persistence settings. */
-export interface OfflineKitOptions {
+/**
+ * Native SQLite encryption settings for {@link OfflineKitOptions}.
+ *
+ * Encryption is the default: omit `databaseEncryption` or set it to `true`, and
+ * `createEncryptionKey` is required. The factory may be omitted only when
+ * `databaseEncryption` is explicitly `false`.
+ */
+export type OfflineKitEncryptionOptions =
+  | {
+      /** Enables SQLCipher for native SQLite. Defaults to `true`. */
+      databaseEncryption?: true;
+      /** Creates the native database encryption key on first install. Required when encryption is enabled. */
+      createEncryptionKey: () => Promise<string>;
+    }
+  | {
+      /** Disables SQLCipher and opens a plaintext native SQLite database. */
+      databaseEncryption: false;
+      /** Unused when native encryption is disabled. */
+      createEncryptionKey?: () => Promise<string>;
+    };
+
+/** Product-independent native offline persistence settings shared by all encryption modes. */
+interface OfflineKitOptionsBase {
   /** Runtime transport mode. Defaults to full synchronized replica/outbox behavior. */
   mode?: 'synchronized' | 'readCacheOnly';
-  /** Encrypted SQLite database name used on iOS and Android. */
+  /** SQLite database name used on iOS and Android. */
   databaseName: string;
-  /** Creates the native database encryption key on first install. Required on iOS and Android. */
-  createEncryptionKey?: () => Promise<string>;
   /** Versioned product replica schema applied to native SQLite during initialization. */
   replicaSchema: OfflineReplicaSchemaBundle;
   /**
@@ -67,6 +86,15 @@ export interface OfflineKitOptions {
    */
   onStorageUnavailable?: (error: OfflineStorageUnavailableError) => void | Promise<void>;
 }
+
+/**
+ * Product-independent native offline persistence settings.
+ *
+ * Encryption is the default: omit `databaseEncryption` or set it to `true`, and
+ * `createEncryptionKey` is required. The factory may be omitted only when
+ * `databaseEncryption` is explicitly `false`.
+ */
+export type OfflineKitOptions = OfflineKitOptionsBase & OfflineKitEncryptionOptions;
 
 /** Exact versioned wire contract exchanged by pull transport. */
 export interface OfflineWireProtocolFingerprint {

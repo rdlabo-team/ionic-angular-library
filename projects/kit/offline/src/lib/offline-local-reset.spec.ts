@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  migrateOfflineDatabaseEncryption,
   recoverOfflineLocalReset,
   requestOfflineLocalReset,
   type OfflineLocalResetMarkerStore,
@@ -63,6 +64,30 @@ describe('offline local reset', () => {
     ]);
     expect(sqlite.createConnection).toHaveBeenNthCalledWith(1, 'product-offline', true, 'secret', 1, false);
     expect(sqlite.createConnection).toHaveBeenNthCalledWith(2, 'product-media', true, 'secret', 1, false);
+  });
+
+  it('uses plaintext connections when databaseEncryption is disabled', async () => {
+    const events: string[] = [];
+    const markerStore = store({
+      get: vi.fn(async () => ({ value: 'requested' })),
+      remove: vi.fn(async () => {
+        events.push('remove-marker');
+      }),
+    });
+    const sqlite = connection(events);
+
+    await expect(
+      recoverOfflineLocalReset({
+        markerStore,
+        markerKey: 'product:offline-reset',
+        sqliteConnection: sqlite,
+        kitCompatibleDatabaseNames: ['product-offline'],
+        databaseEncryption: false,
+        nativePlatform: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(sqlite.createConnection).toHaveBeenCalledWith('product-offline', false, 'no-encryption', 1, false);
   });
 
   it('does nothing outside native or without a requested marker', async () => {
@@ -170,6 +195,134 @@ describe('offline local reset', () => {
     ).rejects.toBe(failure);
 
     expect(markerStore.remove).not.toHaveBeenCalled();
+  });
+
+  describe('migrateOfflineDatabaseEncryption', () => {
+    it('deletes databases with plaintext connections when the source mode is plaintext', async () => {
+      const markerStore = store({
+        get: vi.fn(async () => ({ value: null })),
+        set: vi.fn(async () => undefined),
+      });
+      const sqlite = connection([]);
+
+      await expect(
+        migrateOfflineDatabaseEncryption({
+          markerStore,
+          markerKey: 'product:encryption-migration',
+          migrationVersion: 'plaintext-v1',
+          sqliteConnection: sqlite,
+          kitCompatibleDatabaseNames: ['product-offline', 'product-media'],
+          sourceDatabaseEncryption: false,
+          nativePlatform: true,
+        }),
+      ).resolves.toBe(true);
+
+      expect(sqlite.createConnection).toHaveBeenNthCalledWith(1, 'product-offline', false, 'no-encryption', 1, false);
+      expect(sqlite.createConnection).toHaveBeenNthCalledWith(2, 'product-media', false, 'no-encryption', 1, false);
+      expect(markerStore.set).toHaveBeenCalledWith({ key: 'product:encryption-migration', value: 'plaintext-v1' });
+    });
+
+    it('detects legacy encrypted databases before deleting them', async () => {
+      const markerStore = store({
+        get: vi.fn(async () => ({ value: null })),
+        set: vi.fn(async () => undefined),
+      });
+      const sqlite = {
+        ...connection([]),
+        isDatabaseEncrypted: vi.fn(async () => ({ result: true })),
+      };
+
+      await migrateOfflineDatabaseEncryption({
+        markerStore,
+        markerKey: 'product:encryption-migration',
+        migrationVersion: 'plaintext-v1',
+        sqliteConnection: sqlite,
+        kitCompatibleDatabaseNames: ['product-offline'],
+        sourceDatabaseEncryption: 'detect',
+        nativePlatform: true,
+      });
+
+      expect(sqlite.isDatabaseEncrypted).toHaveBeenCalledWith('product-offline');
+      expect(sqlite.createConnection).toHaveBeenCalledWith('product-offline', true, 'secret', 1, false);
+    });
+
+    it('writes the completion marker only after all deletions, cleanup, and secret clearing', async () => {
+      const events: string[] = [];
+      const markerStore = store({
+        get: vi.fn(async () => ({ value: null })),
+        set: vi.fn(async () => {
+          events.push('marker');
+        }),
+      });
+      const sqlite = {
+        ...connection(events),
+        clearEncryptionSecret: vi.fn(async () => {
+          events.push('clear-secret');
+        }),
+      };
+
+      await migrateOfflineDatabaseEncryption({
+        markerStore,
+        markerKey: 'product:encryption-migration',
+        migrationVersion: 'plaintext-v1',
+        sqliteConnection: sqlite,
+        kitCompatibleDatabaseNames: ['product-offline'],
+        sourceDatabaseEncryption: false,
+        clearEncryptionSecret: true,
+        nativePlatform: true,
+        additionalCleanup: async () => {
+          events.push('product-cleanup');
+        },
+      });
+
+      expect(events).toEqual(['consistency', 'is-database', 'create', 'delete', 'close', 'product-cleanup', 'clear-secret', 'marker']);
+    });
+
+    it('skips migration when the completion marker matches the target version', async () => {
+      const markerStore = store({
+        get: vi.fn(async () => ({ value: 'plaintext-v1' })),
+      });
+      const sqlite = connection([]);
+
+      await expect(
+        migrateOfflineDatabaseEncryption({
+          markerStore,
+          markerKey: 'product:encryption-migration',
+          migrationVersion: 'plaintext-v1',
+          sqliteConnection: sqlite,
+          kitCompatibleDatabaseNames: ['product-offline'],
+          sourceDatabaseEncryption: false,
+          nativePlatform: true,
+        }),
+      ).resolves.toBe(false);
+
+      expect(sqlite.checkConnectionsConsistency).not.toHaveBeenCalled();
+      expect(markerStore.set).not.toHaveBeenCalled();
+    });
+
+    it('retains incomplete state when deletion fails before writing the completion marker', async () => {
+      const markerStore = store({
+        get: vi.fn(async () => ({ value: null })),
+      });
+      const sqlite = connection([]);
+      const failure = new Error('delete failed');
+      vi.mocked(await sqlite.createConnection('unused', false, 'no-encryption', 1, false)).delete.mockRejectedValueOnce(failure);
+      vi.mocked(sqlite.createConnection).mockClear();
+
+      await expect(
+        migrateOfflineDatabaseEncryption({
+          markerStore,
+          markerKey: 'product:encryption-migration',
+          migrationVersion: 'plaintext-v1',
+          sqliteConnection: sqlite,
+          kitCompatibleDatabaseNames: ['product-offline'],
+          sourceDatabaseEncryption: false,
+          nativePlatform: true,
+        }),
+      ).rejects.toBe(failure);
+
+      expect(markerStore.set).not.toHaveBeenCalled();
+    });
   });
 
   function store(overrides: Partial<OfflineLocalResetMarkerStore> = {}): OfflineLocalResetMarkerStore {

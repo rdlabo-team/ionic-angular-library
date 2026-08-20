@@ -158,6 +158,7 @@ describe('createRandomOfflineEncryptionKey', () => {
 describe('createCommunitySqliteDriver', () => {
   const createDatabase = (): CommunitySqliteDatabase => ({
     open: vi.fn(async () => undefined),
+    execute: vi.fn(async () => ({})),
     run: vi.fn(async () => ({})),
     query: vi.fn(async () => ({ values: [{ id: 1 }] })),
     beginTransaction: vi.fn(async () => ({})),
@@ -184,6 +185,26 @@ describe('createCommunitySqliteDriver', () => {
     expect(database.open).toHaveBeenCalledOnce();
   });
 
+  it('never reads or sets a secret when encrypted=false and opens a plaintext connection', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: false })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => database),
+    };
+    const createEncryptionKey = vi.fn(async () => 'must-not-be-read');
+    const driver = createCommunitySqliteDriver(connection, false);
+
+    await expect(driver.open({ databaseName: 'product-offline', createEncryptionKey })).resolves.toEqual({
+      databaseId: 'product-offline',
+    });
+    expect(createEncryptionKey).not.toHaveBeenCalled();
+    expect(connection.isSecretStored).not.toHaveBeenCalled();
+    expect(connection.setEncryptionSecret).not.toHaveBeenCalled();
+    expect(connection.createConnection).toHaveBeenCalledWith('product-offline', false, 'no-encryption', 1, false);
+    expect(database.open).toHaveBeenCalledOnce();
+  });
+
   it('later opens use the plugin secret without generating or receiving it again', async () => {
     const database = createDatabase();
     const connection: CommunitySqliteConnection = {
@@ -197,6 +218,51 @@ describe('createCommunitySqliteDriver', () => {
 
     expect(createEncryptionKey).not.toHaveBeenCalled();
     expect(connection.setEncryptionSecret).not.toHaveBeenCalled();
+  });
+
+  it('executes schema statements with one native database call', async () => {
+    const database = createDatabase();
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => database),
+    };
+    const driver = createCommunitySqliteDriver(connection);
+    await driver.open({ databaseName: 'product-offline' });
+
+    await driver.executeBatch?.({
+      databaseId: 'product-offline',
+      statements: ['CREATE TABLE first (id INTEGER)', 'CREATE TABLE second (id INTEGER)'],
+    });
+
+    expect(database.execute).toHaveBeenCalledExactlyOnceWith('CREATE TABLE first (id INTEGER);\nCREATE TABLE second (id INTEGER)', false);
+    expect(database.run).not.toHaveBeenCalled();
+  });
+
+  it('falls back to sequential run when database.execute is unavailable', async () => {
+    const database: CommunitySqliteDatabase = {
+      open: vi.fn(async () => undefined),
+      run: vi.fn(async () => ({})),
+      query: vi.fn(async () => ({ values: [{ id: 1 }] })),
+      beginTransaction: vi.fn(async () => ({})),
+      commitTransaction: vi.fn(async () => ({})),
+      rollbackTransaction: vi.fn(async () => ({})),
+    };
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => database),
+    };
+    const driver = createCommunitySqliteDriver(connection);
+    await driver.open({ databaseName: 'product-offline' });
+
+    await driver.executeBatch?.({
+      databaseId: 'product-offline',
+      statements: ['CREATE TABLE first (id INTEGER)', 'CREATE TABLE second (id INTEGER)'],
+    });
+
+    expect(database.run).toHaveBeenNthCalledWith(1, 'CREATE TABLE first (id INTEGER)', [], false);
+    expect(database.run).toHaveBeenNthCalledWith(2, 'CREATE TABLE second (id INTEGER)', [], false);
   });
 
   it('rejects first open when the generator returns an empty key', async () => {
@@ -244,14 +310,51 @@ describe('createCommunitySqliteDriver', () => {
   });
 
   it('returns one canonical driver for repeated use of the same connection owner', () => {
-    const connection: CommunitySqliteConnection = {
+    const encryptedConnection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => createDatabase()),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const plaintextConnection: CommunitySqliteConnection = {
       isSecretStored: vi.fn(async () => ({ result: true })),
       setEncryptionSecret: vi.fn(async () => undefined),
       createConnection: vi.fn(async () => createDatabase()),
       closeConnection: vi.fn(async () => undefined),
     };
 
-    expect(createCommunitySqliteDriver(connection)).toBe(createCommunitySqliteDriver(connection));
+    expect(createCommunitySqliteDriver(encryptedConnection)).toBe(createCommunitySqliteDriver(encryptedConnection));
+    expect(createCommunitySqliteDriver(plaintextConnection, false)).toBe(createCommunitySqliteDriver(plaintextConnection, false));
+  });
+
+  it('rejects reusing a cached encrypted driver as plaintext', () => {
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => createDatabase()),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const encrypted = createCommunitySqliteDriver(connection, true);
+
+    expect(() => createCommunitySqliteDriver(connection, false)).toThrow(
+      'Cannot reuse a Community SQLite connection with a different encryption mode (cached encrypted=true, requested encrypted=false)',
+    );
+    expect(createCommunitySqliteDriver(connection, true)).toBe(encrypted);
+  });
+
+  it('rejects reusing a cached plaintext driver as encrypted', () => {
+    const connection: CommunitySqliteConnection = {
+      isSecretStored: vi.fn(async () => ({ result: true })),
+      setEncryptionSecret: vi.fn(async () => undefined),
+      createConnection: vi.fn(async () => createDatabase()),
+      closeConnection: vi.fn(async () => undefined),
+    };
+    const plaintext = createCommunitySqliteDriver(connection, false);
+
+    expect(() => createCommunitySqliteDriver(connection, true)).toThrow(
+      'Cannot reuse a Community SQLite connection with a different encryption mode (cached encrypted=false, requested encrypted=true)',
+    );
+    expect(createCommunitySqliteDriver(connection, false)).toBe(plaintext);
   });
 
   it('does not hide orphan close failure or attempt a second create', async () => {

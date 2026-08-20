@@ -86,7 +86,7 @@ describe('OfflineAggregateIntentProjector', () => {
       TestBed.configureTestingModule({
         providers: [
           OfflineReplicaMutationCoordinator,
-          { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+          { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema } },
           { provide: OFFLINE_AGGREGATE_INTENT_PROJECTOR, useValue: { project } },
         ],
       });
@@ -248,7 +248,7 @@ describe('OfflineAggregateIntentProjector', () => {
           OfflineSyncService,
           { provide: OFFLINE_REPOSITORY, useValue: repository },
           { provide: OfflineNetworkService, useValue: { connected: signal(false) } },
-          { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+          { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema } },
           { provide: OfflineReplicaPullService, useValue: { pull: vi.fn(async () => undefined) } },
           { provide: ErrorHandler, useValue: { handleError: vi.fn() } },
           {

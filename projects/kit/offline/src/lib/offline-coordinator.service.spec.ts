@@ -90,6 +90,7 @@ describe('OfflineCoordinatorService', () => {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
+            databaseEncryption: false,
             replicaSchema: emptyReplicaSchema,
             onStorageUnavailable: options.onStorageUnavailable,
             mutationPersistence,
@@ -411,6 +412,7 @@ describe('OfflineCoordinatorService', () => {
           provide: OFFLINE_KIT_OPTIONS,
           useValue: {
             databaseName: 'test-offline',
+            databaseEncryption: false,
             replicaSchema: emptyReplicaSchema,
           },
         },

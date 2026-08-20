@@ -255,7 +255,7 @@ describe('IonicOfflineRepository', () => {
       providers: [
         IonicOfflineRepository,
         { provide: KitStorageService, useValue: storage },
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema } },
         { provide: OFFLINE_REPOSITORY, useExisting: IonicOfflineRepository },
       ],
     });

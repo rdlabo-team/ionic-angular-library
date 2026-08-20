@@ -177,7 +177,7 @@ describe('OfflineSyncService', () => {
     pull = vi.fn(async () => undefined);
     handleError = vi.fn();
     onCommandRemoved = vi.fn(async () => undefined);
-    options = { databaseName: 'test-offline', replicaSchema };
+    options = { databaseName: 'test-offline', databaseEncryption: false, replicaSchema };
     execute.mockReset();
     execute.mockResolvedValue({ response: null });
     provesCommandNotCommitted.mockReset();
@@ -3292,7 +3292,7 @@ describe('OfflineSyncService', () => {
         OfflineSyncService,
         { provide: OFFLINE_REPOSITORY, useValue: repository },
         { provide: OfflineNetworkService, useValue: { connected } },
-        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema } },
+        { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema } },
         { provide: OfflineReplicaPullService, useValue: { pull } },
         { provide: ErrorHandler, useValue: { handleError: vi.fn() } },
         { provide: OFFLINE_RETRY_RANDOM, useValue: random },
@@ -5104,7 +5104,10 @@ describe('OfflineSyncService', () => {
           OfflineSyncService,
           { provide: OFFLINE_REPOSITORY, useValue: repository },
           { provide: OfflineNetworkService, useValue: { connected } },
-          { provide: OFFLINE_KIT_OPTIONS, useValue: { databaseName: 'test-offline', replicaSchema: userReplicaSchema } },
+          {
+            provide: OFFLINE_KIT_OPTIONS,
+            useValue: { databaseName: 'test-offline', databaseEncryption: false, replicaSchema: userReplicaSchema },
+          },
           { provide: OfflineReplicaPullService, useValue: { pull } },
           { provide: ErrorHandler, useValue: { handleError } },
           {

@@ -30,7 +30,7 @@ describe('OfflineMutationPersistenceService', () => {
   });
 
   it('keeps historical always-enabled admission when no preference adapter is configured', async () => {
-    const { service, admission } = setup({ databaseName: 'test', replicaSchema: {} as never });
+    const { service, admission } = setup({ databaseName: 'test', databaseEncryption: false, replicaSchema: {} as never });
 
     await service.initialize();
 
@@ -272,6 +272,7 @@ describe('OfflineMutationPersistenceService', () => {
     }
     return {
       databaseName: 'test',
+      databaseEncryption: false,
       replicaSchema: {} as never,
       mutationPersistence: { adapter: TestMutationPersistenceAdapter, defaultEnabled },
     };

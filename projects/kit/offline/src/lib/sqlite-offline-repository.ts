@@ -56,6 +56,8 @@ import {
 /** Minimal native SQLite driver surface required by the offline repository. */
 export interface CommunitySqliteDriver {
   open(options: { databaseName: string; createEncryptionKey?: () => Promise<string> }): Promise<{ databaseId: string }>;
+  /** Executes multiple schema statements through one native bridge call when the driver supports it. */
+  executeBatch?(options: { databaseId: string; statements: readonly string[] }): Promise<void>;
   execute(options: { databaseId: string; statement: string; values?: SQLiteValue[] }): Promise<unknown>;
   query(options: { databaseId: string; statement: string; values?: SQLiteValue[] }): Promise<{
     columns?: string[];
@@ -69,6 +71,7 @@ export interface CommunitySqliteDriver {
 /** Open community SQLite database surface used by the standard driver. */
 export interface CommunitySqliteDatabase {
   open(): Promise<void>;
+  execute?(statements: string, transaction?: boolean): Promise<unknown>;
   run(statement: string, values?: unknown[], transaction?: boolean): Promise<unknown>;
   query(statement: string, values?: unknown[]): Promise<{ values?: unknown[] }>;
   beginTransaction(): Promise<unknown>;
@@ -77,7 +80,7 @@ export interface CommunitySqliteDatabase {
 }
 
 /**
- * Community SQLite connection surface used to provision encrypted databases.
+ * Community SQLite connection surface used to provision native databases.
  *
  * One object must exclusively own a native plugin connection registry. Consumers must not create another
  * wrapper over the same native plugin or call `closeConnection` while its canonical driver is active.
@@ -113,7 +116,13 @@ export async function createRandomOfflineEncryptionKey(): Promise<string> {
 }
 
 const settledSqliteOperation = async (): Promise<void> => undefined;
-const communitySqliteDrivers = new WeakMap<CommunitySqliteConnection, CommunitySqliteDriver>();
+
+interface CachedCommunitySqliteDriver {
+  driver: CommunitySqliteDriver;
+  encrypted: boolean;
+}
+
+const communitySqliteDrivers = new WeakMap<CommunitySqliteConnection, CachedCommunitySqliteDriver>();
 
 function sqliteErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -144,12 +153,13 @@ function settleCommunitySqliteCreation(creation: Promise<CommunitySqliteDatabase
 async function createReloadSafeCommunitySqliteDatabase(
   connection: CommunitySqliteConnection,
   databaseName: string,
+  encrypted: boolean,
 ): Promise<CommunitySqliteDatabase> {
   const create = () =>
     connection.createConnection(
       databaseName,
-      COMMUNITY_SQLITE_ENCRYPTED,
-      COMMUNITY_SQLITE_MODE,
+      encrypted,
+      encrypted ? COMMUNITY_SQLITE_MODE : 'no-encryption',
       COMMUNITY_SQLITE_VERSION,
       COMMUNITY_SQLITE_READONLY,
     );
@@ -163,17 +173,30 @@ async function createReloadSafeCommunitySqliteDatabase(
 }
 
 /**
- * Create the canonical encrypted `@capacitor-community/sqlite` driver for a connection owner.
+ * Create the canonical `@capacitor-community/sqlite` driver for a connection owner.
  *
- * The supplied connection is the identity and exclusive owner of its native plugin connections. Repeated
- * calls with the same object return the same driver so normal concurrent access cannot be mistaken for a
- * WebView-reload orphan. Consumers must route database access through this driver and must not close or
- * replace the connection while the driver is active. A real WebView reload creates a new JavaScript owner,
- * allowing the driver to close the native connection orphaned by the previous owner and recreate it.
+ * Native databases are encrypted by default. Pass `encrypted: false` for plaintext. The supplied
+ * connection is the identity and exclusive owner of its native plugin connections. Repeated calls
+ * with the same object and the same encryption mode return the same driver so normal concurrent
+ * access cannot be mistaken for a WebView-reload orphan. A later call with a different encryption
+ * mode throws instead of silently reusing the cached driver. Consumers must route database access
+ * through this driver and must not close or replace the connection while the driver is active. A
+ * real WebView reload creates a new JavaScript owner, allowing the driver to close the native
+ * connection orphaned by the previous owner and recreate it.
  */
-export function createCommunitySqliteDriver(connection: CommunitySqliteConnection): CommunitySqliteDriver {
-  const currentDriver = communitySqliteDrivers.get(connection);
-  if (currentDriver) return currentDriver;
+export function createCommunitySqliteDriver(
+  connection: CommunitySqliteConnection,
+  encrypted: boolean = COMMUNITY_SQLITE_ENCRYPTED,
+): CommunitySqliteDriver {
+  const cached = communitySqliteDrivers.get(connection);
+  if (cached) {
+    if (cached.encrypted !== encrypted) {
+      throw new Error(
+        `Cannot reuse a Community SQLite connection with a different encryption mode (cached encrypted=${String(cached.encrypted)}, requested encrypted=${String(encrypted)})`,
+      );
+    }
+    return cached.driver;
+  }
 
   const databases = new Map<string, CommunitySqliteDatabase>();
   const openings = new Map<string, Promise<CommunitySqliteDatabase>>();
@@ -184,6 +207,7 @@ export function createCommunitySqliteDriver(connection: CommunitySqliteConnectio
     return value;
   };
   const ensureSecret = (createEncryptionKey?: () => Promise<string>): Promise<void> => {
+    if (!encrypted) return settledSqliteOperation();
     if (secretInitialization) return secretInitialization;
     const initialization = (async () => {
       const stored = await connection.isSecretStored();
@@ -207,7 +231,7 @@ export function createCommunitySqliteDriver(connection: CommunitySqliteConnectio
 
     const opening = (async () => {
       await ensureSecret(createEncryptionKey);
-      const value = await createReloadSafeCommunitySqliteDatabase(connection, databaseName);
+      const value = await createReloadSafeCommunitySqliteDatabase(connection, databaseName, encrypted);
       await value.open();
       databases.set(databaseKey, value);
       return value;
@@ -229,6 +253,15 @@ export function createCommunitySqliteDriver(connection: CommunitySqliteConnectio
       await openDatabase(databaseName, createEncryptionKey);
       return { databaseId: databaseName };
     },
+    async executeBatch({ databaseId, statements }) {
+      const target = database(databaseId);
+      if (statements.length === 0) return;
+      if (target.execute) {
+        await target.execute(statements.join(';\n'), false);
+        return;
+      }
+      for (const statement of statements) await target.run(statement, [], false);
+    },
     async execute({ databaseId, statement, values = [] }) {
       await database(databaseId).run(statement, values, false);
     },
@@ -246,7 +279,7 @@ export function createCommunitySqliteDriver(connection: CommunitySqliteConnectio
       await database(databaseId).rollbackTransaction();
     },
   };
-  communitySqliteDrivers.set(connection, driver);
+  communitySqliteDrivers.set(connection, { driver, encrypted });
   return driver;
 }
 
@@ -632,7 +665,11 @@ export class SqliteOfflineRepository implements OfflineRepository {
       createEncryptionKey: this.#wrapCreateEncryptionKey(this.#options.createEncryptionKey),
     });
     this.#databaseId = databaseId;
-    for (const statement of SCHEMA) await this.#execute(databaseId, statement);
+    if (this.#sqlite.executeBatch) {
+      await this.#sqlite.executeBatch({ databaseId, statements: SCHEMA });
+    } else {
+      for (const statement of SCHEMA) await this.#execute(databaseId, statement);
+    }
     const metadata = await this.#queryDatabase(databaseId, 'SELECT schema_version FROM offline_metadata WHERE id = 1');
     if (metadata.length === 0) {
       await this.#execute(databaseId, 'INSERT INTO offline_metadata (id, schema_version, last_user_id) VALUES (1, ?, NULL)', [

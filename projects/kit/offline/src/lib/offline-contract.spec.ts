@@ -113,17 +113,80 @@ describe('shared offline boundary contracts', () => {
     expect(() => assertSupportedOfflineMode('android', 'synchronized')).not.toThrow();
   });
 
-  it('requires an encryption key factory for synchronized providers at compile time', () => {
+  it('allows synchronized providers without an encryption key when databaseEncryption is disabled', () => {
+    const compileOnly = (): void => {
+      provideOffline({
+        databaseName: 'plaintext-offline',
+        databaseEncryption: false,
+        replicaSchema: defineOfflineReplicaSchema({ version: 1, entities: [], migrations: [] }),
+        requestPolicies: [],
+        commandExecutor: class {} as never,
+        replicaPuller: class {} as never,
+        aggregateIntentProjector: class {
+          project() {
+            return { baseRow: null };
+          }
+        },
+      });
+    };
+    void compileOnly;
+  });
+
+  it('allows a read cache without an encryption key when databaseEncryption is disabled', () => {
+    const compileOnly = (): void => {
+      provideOffline({
+        mode: 'readCacheOnly',
+        databaseName: 'plaintext-read-cache',
+        databaseEncryption: false,
+        replicaSchema: defineOfflineReplicaSchema({ version: 1, entities: [], migrations: [] }),
+        requestPolicies: [],
+      });
+    };
+    void compileOnly;
+  });
+
+  it('requires an encryption key factory for synchronized providers when encryption is enabled or omitted', () => {
     type Options = import('./offline-provider').ProvideSynchronizedOfflineOptions;
-    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    type Encrypted = Exclude<Options, { databaseEncryption: false }>;
+    type IsRequired = Record<string, never> extends Pick<Encrypted, 'createEncryptionKey'> ? false : true;
     const createEncryptionKeyIsRequired: IsRequired = true;
     expect(createEncryptionKeyIsRequired).toBe(true);
   });
 
-  it('requires an encryption key factory for native read-cache persistence too', () => {
+  it('requires an encryption key factory for native read-cache persistence when encryption is enabled or omitted', () => {
     type Options = import('./offline-provider').ProvideReadCacheOfflineOptions;
-    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    type Encrypted = Exclude<Options, { databaseEncryption: false }>;
+    type IsRequired = Record<string, never> extends Pick<Encrypted, 'createEncryptionKey'> ? false : true;
     const createEncryptionKeyIsRequired: IsRequired = true;
     expect(createEncryptionKeyIsRequired).toBe(true);
+  });
+
+  it('treats createEncryptionKey as optional on synchronized providers only when encryption is disabled', () => {
+    type Options = Extract<import('./offline-provider').ProvideSynchronizedOfflineOptions, { databaseEncryption: false }>;
+    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    const createEncryptionKeyIsRequired: IsRequired = false;
+    expect(createEncryptionKeyIsRequired).toBe(false);
+  });
+
+  it('treats createEncryptionKey as optional on native read-cache persistence only when encryption is disabled', () => {
+    type Options = Extract<import('./offline-provider').ProvideReadCacheOfflineOptions, { databaseEncryption: false }>;
+    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    const createEncryptionKeyIsRequired: IsRequired = false;
+    expect(createEncryptionKeyIsRequired).toBe(false);
+  });
+
+  it('requires an encryption key factory on OfflineKitOptions when encryption is enabled or omitted', () => {
+    type Options = import('./offline-kit-options').OfflineKitOptions;
+    type Encrypted = Exclude<Options, { databaseEncryption: false }>;
+    type IsRequired = Record<string, never> extends Pick<Encrypted, 'createEncryptionKey'> ? false : true;
+    const createEncryptionKeyIsRequired: IsRequired = true;
+    expect(createEncryptionKeyIsRequired).toBe(true);
+  });
+
+  it('treats createEncryptionKey as optional on OfflineKitOptions only when encryption is disabled', () => {
+    type Options = Extract<import('./offline-kit-options').OfflineKitOptions, { databaseEncryption: false }>;
+    type IsRequired = Record<string, never> extends Pick<Options, 'createEncryptionKey'> ? false : true;
+    const createEncryptionKeyIsRequired: IsRequired = false;
+    expect(createEncryptionKeyIsRequired).toBe(false);
   });
 });
