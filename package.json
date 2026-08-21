@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-library",
-  "version": "21.7.0",
+  "version": "22.0.0",
   "repository": {
     "type": "git",
     "url": "git@github.com:rdlabo-dev/ionic-angular-library.git"
@@ -9,7 +9,7 @@
     "url": "git@github.com:rdlabo-dev/ionic-angular-library.git/issues"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": "^22.22.3 || ^24.15.0 || ^26.0.0"
   },
   "scripts": {
     "ng": "ng",

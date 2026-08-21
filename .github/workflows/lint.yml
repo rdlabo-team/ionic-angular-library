@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        project: [ demo, kit, photo-editor, scroll-header, scroll-strategies]
+        project: [demo, kit, photo-editor, scroll-header, scroll-strategies]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -64,6 +64,36 @@ jobs:
           cache-dependency-path: '**/package-lock.json'
       - run: npm ci
       - run: npm run test:actions
+  angular-21-compat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+          cache: npm
+          cache-dependency-path: '**/package-lock.json'
+      - run: npm ci
+      - name: Install the Angular 21 compatibility toolchain
+        run: >-
+          npm install --no-save --force
+          @angular/animations@^21.2.0
+          @angular/build@^21.2.0
+          @angular/cdk@^21.2.0
+          @angular/cli@^21.2.0
+          @angular/common@^21.2.0
+          @angular/compiler@^21.2.0
+          @angular/compiler-cli@^21.2.0
+          @angular/core@^21.2.0
+          @angular/forms@^21.2.0
+          @angular/platform-browser@^21.2.0
+          @angular/platform-browser-dynamic@^21.2.0
+          @angular/router@^21.2.0
+          @angular/service-worker@^21.2.0
+          ng-packagr@^21.2.0
+          typescript@~5.9.3
+      - name: Build libraries and consuming demo with Angular 21
+        run: npm run build
   e2e:
     runs-on: ubuntu-latest
     container:

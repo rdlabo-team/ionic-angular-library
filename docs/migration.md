@@ -2,7 +2,7 @@
 
 ## Angular 21–22 and Ionic 9
 
-The 21.x package line supports Angular 21 and 22 with Ionic 9. Ionic 9 requires Angular 18 or later; native applications also require Capacitor 7 or later.
+The 22.x package line supports Angular 21 and 22 with Ionic 9. Ionic 9 requires Angular 18 or later; native applications also require Capacitor 7 or later.
 
 Read the upstream [Ionic 9 breaking changes](https://github.com/ionic-team/ionic-framework/blob/main/BREAKING.md#version-9x) and the [Angular version compatibility table](https://angular.dev/reference/versions) before upgrading your application.
 
@@ -56,6 +56,8 @@ Check application templates, styles, and tests for the following Ionic 9 changes
 - Set `handleBehavior="none"` on sheet modals only when the handle must retain its previous inert behavior; the new default is `cycle`.
 - Use `ion-router-outlet` for URL-based routing. `ion-nav` now manages only an imperative, URL-less navigation stack.
 - Do not rely on `ion-select` emitting `ionChange` when a confirmed value did not change. Use dismissal events when confirmation itself matters.
+- Do not rely on the `selected` dismissal role from the `ion-select` action-sheet interface; listen for `ionChange` when the selected value changes.
+- Check floating labels on `ion-input`, `ion-select`, and `ion-textarea` with slotted content. Slotted content alone no longer causes the label to float.
 - Review custom selectors and shadow-part styles for `ion-input`, `ion-select`, and `ion-textarea`, whose internal structures changed.
 - Review Material Design textarea layouts: the new minimum height is 72px.
 

@@ -10,7 +10,7 @@ Migration guide: [Angular 21–22 and Ionic 9](docs/migration.md)
 
 | Angular | Ionic | Package version |
 | ------- | ----- | --------------- |
-| v21–22  | v9    | 21.x.x          |
+| v21–22  | v9    | 22.x.x          |
 | v20     | v8    | 20.x.x          |
 | v19     | v8    | 19.x.x          |
 | v18     | v8    | 2.x.x           |
