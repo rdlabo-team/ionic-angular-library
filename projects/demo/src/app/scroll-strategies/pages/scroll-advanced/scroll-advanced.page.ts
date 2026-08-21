@@ -19,7 +19,7 @@ import {
   IonToolbar,
   ViewDidEnter,
   ViewWillLeave,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { InfiniteScrollCustomEvent, RefresherCustomEvent } from '@ionic/angular';
 import { ScrollAdvancedItem } from '../../scroll-strategies.type';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';

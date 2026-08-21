@@ -9,7 +9,7 @@ import {
   IonTitle,
   IonToolbar,
   NavController,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { map } from 'rxjs/operators';
 import { DemoAuthService } from '../../auth.service';
 

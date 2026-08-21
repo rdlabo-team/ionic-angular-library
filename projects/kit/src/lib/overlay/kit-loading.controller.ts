@@ -1,6 +1,6 @@
 import { inject, Injectable } from '@angular/core';
-import type { LoadingOptions } from '@ionic/angular/standalone';
-import { LoadingController } from '@ionic/angular/standalone';
+import type { LoadingOptions } from '@ionic/angular';
+import { LoadingController } from '@ionic/angular';
 
 const settledLoadingOperation = async (): Promise<void> => undefined;
 

@@ -11,7 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { IonicSlides, ModalController } from '@ionic/angular/standalone';
+import { IonicSlides, ModalController } from '@ionic/angular';
 import { Navigation, Zoom } from 'swiper/modules';
 import { fromEvent, Subscription, throttleTime, withLatestFrom, zipWith } from 'rxjs';
 import { SwiperContainer } from 'swiper/element';

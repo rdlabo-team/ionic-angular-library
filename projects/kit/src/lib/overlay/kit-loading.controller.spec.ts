@@ -1,6 +1,6 @@
 import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { LoadingController } from '@ionic/angular/standalone';
+import { LoadingController } from '@ionic/angular';
 
 import { KitLoadingController } from './kit-loading.controller';
 

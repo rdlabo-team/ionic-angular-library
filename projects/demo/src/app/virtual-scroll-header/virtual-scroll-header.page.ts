@@ -14,7 +14,7 @@ import {
   IonTitle,
   IonToolbar,
   Platform,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { CdkFixedSizeVirtualScroll, CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import iconsData from 'ionicons/dist/ionicons.json';
 import { FixVirtualScrollElementDirective, VirtualScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';

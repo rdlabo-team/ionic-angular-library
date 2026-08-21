@@ -12,7 +12,7 @@ import {
   IonNote,
   IonTitle,
   IonToolbar,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { DemoAuthService } from '../../auth.service';
 import { environment } from '../../../../../environments/environment';
 

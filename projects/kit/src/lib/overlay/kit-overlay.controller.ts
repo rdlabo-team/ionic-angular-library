@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import type { InputSignalWithTransform } from '@angular/core';
-import type { ModalOptions, PopoverOptions, ToastOptions } from '@ionic/angular/standalone';
-import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
+import type { ModalOptions, PopoverOptions, ToastOptions } from '@ionic/angular';
+import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { Capacitor } from '@capacitor/core';
 import { Keyboard } from '@capacitor/keyboard';

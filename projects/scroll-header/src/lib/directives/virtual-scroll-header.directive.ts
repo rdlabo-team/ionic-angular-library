@@ -1,5 +1,5 @@
 import { contentChild, Directive, ElementRef, inject, OnDestroy, OnInit, signal } from '@angular/core';
-import { IonContent, IonHeader } from '@ionic/angular/standalone';
+import { IonContent, IonHeader } from '@ionic/angular';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { fromEvent, Subscription } from 'rxjs';
 import { waitFindDom } from '../util';

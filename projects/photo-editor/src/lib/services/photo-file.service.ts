@@ -1,5 +1,5 @@
 import { inject, Injectable, signal } from '@angular/core';
-import { ActionSheetController, Platform } from '@ionic/angular/standalone';
+import { ActionSheetController, Platform } from '@ionic/angular';
 import { Camera, CameraResultType, CameraSource, ImageOptions } from '@capacitor/camera';
 import ImageEditor from 'tui-image-editor';
 import { PhotoEditorErrors } from '../photoEditorErrors';

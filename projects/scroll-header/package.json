@@ -1,14 +1,14 @@
 {
   "name": "@rdlabo/ionic-angular-scroll-header",
-  "version": "21.7.0",
+  "version": "22.0.0",
   "repository": {
     "type": "git",
     "url": "git@github.com:rdlabo-dev/ionic-angular-library.git"
   },
   "peerDependencies": {
-    "@angular/cdk": "^21.0.0",
-    "@angular/common": "^21.0.0",
-    "@angular/core": "^21.0.0"
+    "@angular/cdk": ">=21.0.0 <23.0.0",
+    "@angular/common": ">=21.0.0 <23.0.0",
+    "@angular/core": ">=21.0.0 <23.0.0"
   },
   "dependencies": {
     "tslib": "^2.3.0"

@@ -13,7 +13,7 @@ import {
   IonListHeader,
   IonTitle,
   IonToolbar,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import iconsData from 'ionicons/dist/ionicons.json';
 import { ScrollHeaderDirective } from '@rdlabo/ionic-angular-scroll-header';
 

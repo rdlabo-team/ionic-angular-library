@@ -3,7 +3,7 @@
 import { ApplicationConfig, importProvidersFrom, provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { FormsModule, ReactiveFormsModule } from '@angular/forms';
-import { IonNav, IonRouterOutlet, ModalController, NavController, NavParams, PopoverController } from '@ionic/angular/standalone';
+import { IonNav, IonRouterOutlet, ModalController, NavController, NavParams, PopoverController } from '@ionic/angular';
 import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
 
 import { IonRouterOutletMock } from './mocks/angular/ion-router-outlet';
@@ -13,7 +13,7 @@ import { PopoverControllerMock } from './mocks/angular/popover-controller';
 import { MockAngularDelegate } from './mocks/angular/angular-delegate';
 
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { AngularDelegate } from '@ionic/angular';
+import { AngularDelegate } from '@ionic/angular/common';
 
 /**
  * Standalone configuration for Angular tests

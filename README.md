@@ -2,20 +2,25 @@ These libraries is a collection of components and services that are useful for d
 
 Documentation: [Ionic Angular Kit](https://docs.rdlabo.dev/projects/ionic-angular-kit) · [Photo Editor](https://docs.rdlabo.dev/projects/ionic-angular-photo-editor) · [Scroll Header](https://docs.rdlabo.dev/projects/ionic-angular-scroll-header) · [Scroll Strategies](https://docs.rdlabo.dev/projects/ngx-cdk-scroll-strategies)
 
+Migration guide: [Angular 21–22 and Ionic 9](docs/migration.md)
+
 [Demo site is here.](https://rdlabo-ionic-angular-library.netlify.app/)
 
 ## Support Version
 
-| Angular | Package version |
-| ------- | --------------- |
-| v20     | 20.x.x          |
-| v19     | 19.x.x          |
-| v18     | 2.x.x           |
+| Angular | Ionic | Package version |
+| ------- | ----- | --------------- |
+| v21–22  | v9    | 22.x.x          |
+| v20     | v8    | 20.x.x          |
+| v19     | v8    | 19.x.x          |
+| v18     | v8    | 2.x.x           |
+
+Ionic 9 native applications require Capacitor 7 or later. See the [migration guide](docs/migration.md) before upgrading an existing application.
 
 ## packages
 
-| package name                        | description                                                                                | path                                                                                                                           |
-| ----------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------ |
+| package name                        | description                                                                                | path                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | @rdlabo/ionic-angular-kit           | Auth guards, Firebase flows, storage, overlay, HTTP interceptor, and other fleet helpers.  | [/projects/kit](https://github.com/rdlabo-dev/ionic-angular-library/tree/main/projects/kit#readme)                            |
 | @rdlabo/ionic-angular-photo-editor  | This is a photo editor and viewer for modal page of Ionic Angular project using Capacitor. | [/project/photo-editor](https://github.com/rdlabo-dev/ionic-angular-library/tree/main/projects/photo-editor#readme)           |
 | @rdlabo/ionic-angular-scroll-header | This is directive for scroll with Header.                                                  | [/project/scroll-header](https://github.com/rdlabo-dev/ionic-angular-library/tree/main/projects/scroll-header#readme)         |
