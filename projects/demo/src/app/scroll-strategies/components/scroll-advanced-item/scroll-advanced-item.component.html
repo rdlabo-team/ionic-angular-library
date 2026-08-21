@@ -1,6 +1,6 @@
 <ion-item>
   <ion-avatar slot="start">
-    <ion-img [src]="item().photo"></ion-img>
+    <img [src]="item().photo" loading="lazy" alt="" />
   </ion-avatar>
   <ion-label class="ion-text-wrap">
     <h2>{{ item().name }}</h2>
