@@ -12,8 +12,10 @@ Use matching Angular major versions throughout the application. Angular 22 uses 
 
 ```bash
 npx ng update @angular/core@22 @angular/cli@22
-npm install @ionic/angular@^9
+npx @ionic/migrate
 ```
+
+`@ionic/migrate` is the recommended path for Ionic applications: it updates the Ionic packages and applies the available source migrations. Review its changes together with the manual audit below. The migrator does not support Angular library workspaces such as this repository, so library maintainers must apply the Ionic changes manually.
 
 For a native application, upgrade Capacitor separately and follow its migration guide:
 
