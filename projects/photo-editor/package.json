@@ -1,6 +1,6 @@
 {
   "name": "@rdlabo/ionic-angular-photo-editor",
-  "version": "22.0.0",
+  "version": "22.0.0-0",
   "repository": {
     "type": "git",
     "url": "git@github.com:rdlabo-dev/ionic-angular-library.git"
