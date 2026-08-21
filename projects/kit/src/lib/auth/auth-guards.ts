@@ -2,7 +2,7 @@ import type { EnvironmentProviders } from '@angular/core';
 import { inject, InjectionToken, makeEnvironmentProviders, provideAppInitializer } from '@angular/core';
 import type { CanActivateFn, RouterStateSnapshot, UrlTree } from '@angular/router';
 import { Router } from '@angular/router';
-import { NavController } from '@ionic/angular/standalone';
+import { NavController } from '@ionic/angular';
 import type { Observable } from 'rxjs';
 import { of, throwError } from 'rxjs';
 import { catchError, map, mergeMap } from 'rxjs/operators';

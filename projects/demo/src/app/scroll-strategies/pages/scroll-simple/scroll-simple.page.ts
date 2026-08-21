@@ -12,7 +12,7 @@ import {
   IonInfiniteScrollContent,
   IonTitle,
   IonToolbar,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
 import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';

@@ -11,7 +11,7 @@ import {
   IonTitle,
   IonToolbar,
   NavController,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import type { Subscription } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { firstValueFrom, timer } from 'rxjs';

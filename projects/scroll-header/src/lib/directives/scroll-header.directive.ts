@@ -1,5 +1,5 @@
 import { contentChild, Directive, ElementRef, HostListener, inject, OnInit, signal } from '@angular/core';
-import { IonContent, IonHeader, ScrollDetail } from '@ionic/angular/standalone';
+import { IonContent, IonHeader, ScrollDetail } from '@ionic/angular';
 import { waitFindDom } from '../util';
 
 @Directive({

@@ -1,6 +1,6 @@
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { IonContent, IonHeader } from '@ionic/angular/standalone';
+import { IonContent, IonHeader } from '@ionic/angular';
 import { ScrollHeaderDirective } from './scroll-header.directive';
 import { testConfig } from '../../../../util/test.config';
 

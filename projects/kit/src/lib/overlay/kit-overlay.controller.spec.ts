@@ -1,6 +1,6 @@
 import { Component, input, provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular/standalone';
+import { AlertController, ModalController, PopoverController, ToastController } from '@ionic/angular';
 import { Capacitor } from '@capacitor/core';
 import { Haptics } from '@capacitor/haptics';
 

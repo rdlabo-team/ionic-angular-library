@@ -14,7 +14,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { IonContent, ModalController, RangeCustomEvent, ViewDidEnter, ViewDidLeave } from '@ionic/angular/standalone';
+import { IonContent, ModalController, RangeCustomEvent, ViewDidEnter, ViewDidLeave } from '@ionic/angular';
 import ImageEditor from 'tui-image-editor';
 import { filterPreset } from '../../filter-preset';
 import { Subscription } from 'rxjs';

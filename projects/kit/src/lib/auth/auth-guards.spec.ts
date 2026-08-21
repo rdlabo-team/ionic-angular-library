@@ -2,7 +2,7 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import type { ActivatedRouteSnapshot, RouterStateSnapshot, UrlTree } from '@angular/router';
 import { Router } from '@angular/router';
-import { NavController } from '@ionic/angular/standalone';
+import { NavController } from '@ionic/angular';
 import type { Observable } from 'rxjs';
 import { of, Subject } from 'rxjs';
 import { throwError } from 'rxjs';

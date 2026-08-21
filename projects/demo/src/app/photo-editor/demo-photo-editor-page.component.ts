@@ -16,7 +16,7 @@ import {
   IonTitle,
   IonToolbar,
   ModalController,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileService, PhotoViewerPage } from 'photo-editor';
 
 @Component({

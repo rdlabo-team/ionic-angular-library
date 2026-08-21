@@ -14,7 +14,7 @@ import {
   IonTitle,
   IonToolbar,
   NavController,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { KitAuthInputDirective } from '@rdlabo/ionic-angular-kit';
 import type { Subscription } from 'rxjs';
 import { DemoAuthService } from '../../auth.service';

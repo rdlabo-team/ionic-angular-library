@@ -1,4 +1,4 @@
-import { ActionSheetController } from '@ionic/angular/standalone';
+import { ActionSheetController } from '@ionic/angular';
 
 import { kitPresentLanguageActionSheet } from './kit-language-action-sheet';
 

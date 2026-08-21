@@ -1,4 +1,4 @@
-import type { AlertController } from '@ionic/angular/standalone';
+import type { AlertController } from '@ionic/angular';
 import { kitPresentAuthFailedAlert } from './kit-auth-failed-alert';
 
 const OPTS = { header: 'ログインできませんでした', subHeader: 'E_AUTH', message: '詳細メッセージ', closeText: '閉じる' };

@@ -1,6 +1,6 @@
 import { Component, ElementRef, viewChild } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { IonContent, IonHeader } from '@ionic/angular/standalone';
+import { IonContent, IonHeader } from '@ionic/angular';
 import { VirtualScrollHeaderDirective } from './virtual-scroll-header.directive';
 import { CdkFixedSizeVirtualScroll, CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { testConfig } from '../../../../util/test.config';

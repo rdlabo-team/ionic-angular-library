@@ -12,7 +12,7 @@ import {
   IonList,
   IonTitle,
   IonToolbar,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { RouterLink } from '@angular/router';
 
 @Component({

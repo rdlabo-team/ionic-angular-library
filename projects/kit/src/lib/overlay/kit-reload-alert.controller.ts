@@ -1,5 +1,5 @@
 import { inject, Injectable } from '@angular/core';
-import { AlertController } from '@ionic/angular/standalone';
+import { AlertController } from '@ionic/angular';
 import { KIT_OVERLAY_CONFIG } from './overlay-config';
 
 /**

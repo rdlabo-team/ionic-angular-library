@@ -1,5 +1,5 @@
 import { inject, Injectable } from '@angular/core';
-import { AlertController } from '@ionic/angular/standalone';
+import { AlertController } from '@ionic/angular';
 
 /**
  * Content for {@link KitMaintenanceController.present}.

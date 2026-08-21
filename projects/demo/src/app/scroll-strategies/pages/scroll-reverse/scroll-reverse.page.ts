@@ -13,7 +13,7 @@ import {
   IonToolbar,
   ViewDidEnter,
   ViewDidLeave,
-} from '@ionic/angular/standalone';
+} from '@ionic/angular';
 import { CdkDynamicSizeVirtualScroll, itemDynamicSize } from '@rdlabo/ngx-cdk-scroll-strategies';
 import { CdkVirtualForOf, CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { FixVirtualScrollElementDirective } from '@rdlabo/ionic-angular-scroll-header';

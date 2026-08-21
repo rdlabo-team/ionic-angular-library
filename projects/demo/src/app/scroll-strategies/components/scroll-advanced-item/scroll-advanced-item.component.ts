@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, input, OnInit, output } from '@angular/core';
 import { ScrollAdvancedItem } from '../../scroll-strategies.type';
-import { IonAvatar, IonButton, IonButtons, IonIcon, IonImg, IonItem, IonLabel } from '@ionic/angular/standalone';
+import { IonAvatar, IonButton, IonButtons, IonIcon, IonImg, IonItem, IonLabel } from '@ionic/angular';
 import { ScrollAdvancedCalcService } from '../../scroll-advanced-calc.service';
 
 @Component({
