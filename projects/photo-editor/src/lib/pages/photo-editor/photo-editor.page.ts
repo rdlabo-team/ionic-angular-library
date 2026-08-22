@@ -25,7 +25,7 @@ import { dictionaryForEditor } from '../../dictionaries';
 import { initializeEditorIcons, waitToFindDom } from '../util';
 
 @Component({
-  selector: 'app-editor-image',
+  selector: 'rdlabo-photo-editor',
   templateUrl: './photo-editor.page.html',
   styleUrls: ['../core.scss', './photo-editor.page.scss'],
   imports: [CommonModule, FormsModule, ...ionComponents],

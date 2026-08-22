@@ -23,7 +23,7 @@ import { BooleanInput, coerceBooleanProperty, coerceNumberProperty, NumberInput 
 import { initializeViewerIcons, waitToFindDom } from '../util';
 
 @Component({
-  selector: 'app-photo-image',
+  selector: 'rdlabo-photo-viewer',
   templateUrl: './photo-viewer.page.html',
   styleUrls: ['../core.scss', './photo-viewer.page.scss'],
   imports: [...ionComponents],

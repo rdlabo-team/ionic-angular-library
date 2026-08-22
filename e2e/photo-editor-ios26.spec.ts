@@ -30,7 +30,7 @@ test.describe('Photo editor iOS 26 header button color scheme', () => {
     await page.locator('html').evaluate((element) => element.classList.add('ion-palette-dark'));
     await page.getByText('Launch Photo Editor', { exact: true }).click();
 
-    const header = page.locator('ion-modal app-editor-image ion-header');
+    const header = page.locator('ion-modal rdlabo-photo-editor ion-header');
     await header.evaluate((element) => {
       element.classList.remove('photo-editor-header-buttons-dark');
       element.classList.add('photo-editor-header-buttons-light');
@@ -48,7 +48,7 @@ test.describe('Photo editor iOS 26 header button color scheme', () => {
     await page.locator('html').evaluate((element) => element.classList.remove('ion-palette-dark'));
     await page.getByText('Launch Photo Viewer', { exact: true }).click();
 
-    const header = page.locator('ion-modal app-photo-image ion-header');
+    const header = page.locator('ion-modal rdlabo-photo-viewer ion-header');
     const button = header.locator('ion-buttons[slot="start"] ion-button');
     await button.evaluate((element) => element.classList.add('ion-activated'));
 
