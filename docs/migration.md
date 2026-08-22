@@ -41,17 +41,23 @@ import { providePhotoEditor } from '@rdlabo/ionic-angular-photo-editor';
 import { createTuiImageEditor } from '@rdlabo/ionic-angular-photo-editor/editor/tui';
 import { loadCapacitorPhotoCamera } from '@rdlabo/ionic-angular-photo-editor/file/capacitor';
 
-providePhotoEditor({
-  createImageEditor: createTuiImageEditor,
-  loadCamera: loadCapacitorPhotoCamera, // omit for browser-only applications
-});
+export const appConfig = {
+  providers: [
+    providePhotoEditor({
+      createImageEditor: createTuiImageEditor,
+      loadCamera: loadCapacitorPhotoCamera, // omit for browser-only applications
+    }),
+  ],
+};
 ```
 
 Install `tui-image-editor` only when importing `/editor/tui`, `@capacitor/camera` only when importing `/file/capacitor`, and `swiper` only when importing `/viewer`. The root, `/editor`, and `/file` entry points no longer hide runtime imports of these optional peers. Without the corresponding configured adapter, editing/resizing or native selection fails with `PhotoLoadError('unavailable')`.
 
-#### Rename toolbarColorScheme
+#### Add the required toolbarColorScheme
 
-`headerButtonColorScheme` is now `toolbarColorScheme`. It remains required on both modals.
+Both modals require the new `toolbarColorScheme` prop in v22. Version 21 did not expose a toolbar color-scheme prop, so add it to every editor and viewer presentation. Choose `dark` for a dark/black `ion-toolbar` and `light` for a light/white toolbar; only the consuming application can determine the toolbar appearance.
+
+`PhotoViewerProps.imageUrls` is also required in v22; it was optional in the v21 declaration. Pass the current image array explicitly, including `[]` when there are no images.
 
 ```typescript
 import { PhotoEditorProps } from '@rdlabo/ionic-angular-photo-editor';
@@ -107,7 +113,18 @@ if (data?.action === 'delete') {
 }
 ```
 
-Removed types: `IPhotoEditorDismiss`, `IPhotoViewerDismiss`, `IDictionaryForEditor`, `IDictionaryForViewer`, `IDictionaryForService`. Use `PhotoEditorResult`, `PhotoViewerResult`, `PhotoEditorLabels`, `PhotoViewerLabels`, and `PhotoFileLabels` instead.
+Removed types and replacements:
+
+| Removed v21 export      | v22 replacement     |
+| ----------------------- | ------------------- |
+| `IPhotoEditorDismiss`   | `PhotoEditorResult` |
+| `IPhotoViewerDismiss`   | `PhotoViewerResult` |
+| `IDictionaryForEditor`  | `PhotoEditorLabels` |
+| `IDictionaryForViewer`  | `PhotoViewerLabels` |
+| `IDictionaryForService` | `PhotoFileLabels`   |
+| `IFilter`               | `PhotoFilter`       |
+| `IFilterPreset`         | `PhotoFilterPreset` |
+| `ISize`                 | `PhotoSize`         |
 
 #### PhotoFileService API
 
@@ -117,16 +134,20 @@ photoFileService.photoMaxSize = 1000;
 photoFileService.labels = { camera: '…', album: '…', cancel: '…' };
 const files = await photoFileService.loadPhoto(2);
 
-// After — register defaults once
-providePhotoEditor({
-  maxPhotoSize: 1000,
-  fileLabels: { … },
-  createImageEditor: createTuiImageEditor,
-  loadCamera: loadCapacitorPhotoCamera,
-});
+// After — register defaults once in ApplicationConfig.providers
+export const appConfig = {
+  providers: [
+    providePhotoEditor({
+      maxPhotoSize: 1000,
+      fileLabels: { camera: 'Camera', album: 'Album', cancel: 'Cancel' },
+      createImageEditor: createTuiImageEditor,
+      loadCamera: loadCapacitorPhotoCamera,
+    }),
+  ],
+};
 
 // Per call
-const files = await photoFileService.loadPhoto({ limit: 2, maxSize: 1000, labels: { … } });
+const files = await photoFileService.loadPhoto({ limit: 2, maxSize: 1000, labels: { camera: 'Camera' } });
 ```
 
 Cancellation and validation failures now throw `PhotoLoadError` with `code: 'cancelled' | 'invalid-type' | 'unavailable'` instead of returning empty arrays or generic errors.
@@ -170,7 +191,13 @@ Do not import the adapter when the application does not use the iOS 26 theme. Se
 
 The `'autofill'` mode is removed. [WebKit bug 226023](https://bugs.webkit.org/show_bug.cgi?id=226023) (iOS autofill not propagating from `ion-input` to Angular forms) is fixed in the v22 minimum iOS/iPadOS 16.4 runtime, so the workaround is no longer shipped. Applications that must continue supporting an older iOS version cannot remove their app-local workaround and should remain on the v21 library line.
 
-Remove `kitAuthInput="autofill"` from password and other non-email fields. Do not add the attribute unless email persistence is intended.
+Remove both `kitAuthInput="autofill"` and the value-less `kitAuthInput` attribute from password and other non-email fields. In v21, a value-less attribute selected the default autofill mode; v22 has no default mode. Keep the directive only when email persistence is intended, and set it explicitly to `"email"` or `"email-remember"`.
+
+```html
+<!-- v21 password fields: remove either form entirely -->
+<ion-input type="password" kitAuthInput />
+<ion-input type="password" kitAuthInput="autofill" />
+```
 
 Email persistence modes are unchanged:
 

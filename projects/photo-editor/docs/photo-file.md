@@ -50,11 +50,11 @@ export class AppComponent {
 
 Opens the platform photo picker and returns normalized data URLs.
 
-| Option    | Default                                       | Description                                    |
-| --------- | --------------------------------------------- | ---------------------------------------------- |
-| `limit`   | `1`                                           | Maximum number of images (album and web only). |
-| `maxSize` | `providePhotoEditor().maxPhotoSize` or `1000` | Longest edge in pixels after resize.           |
-| `labels`  | configured `fileLabels`                       | Action sheet button text (Capacitor only).     |
+| Option    | Default                             | Description                                    |
+| --------- | ----------------------------------- | ---------------------------------------------- |
+| `limit`   | `1`                                 | Maximum number of images (album and web only). |
+| `maxSize` | configured `maxPhotoSize` or `1000` | Longest edge in pixels after resize.           |
+| `labels`  | configured `fileLabels`             | Action sheet button text (Capacitor only).     |
 
 ### Browser behavior
 
@@ -71,11 +71,11 @@ Register `loadCapacitorPhotoCamera` from `/file/capacitor`; the base `/file` ent
 
 Expected failures throw `PhotoLoadError`:
 
-| Code           | When                                      |
-| -------------- | ----------------------------------------- |
-| `cancelled`    | User dismissed the picker or action sheet |
-| `invalid-type` | Selected file is not an image (web only)  |
-| `unavailable`  | File could not be read or resized         |
+| Code           | When                                                     |
+| -------------- | -------------------------------------------------------- |
+| `cancelled`    | User dismissed the picker or action sheet                |
+| `invalid-type` | Selected file is not an image (web only)                 |
+| `unavailable`  | Permission, plugin, picker, file-read, or resize failure |
 
 ## Default labels (ja)
 
@@ -92,12 +92,16 @@ When no `fileLabels` or per-request `labels` are supplied:
 Register application-wide defaults in `app.config.ts`:
 
 ```typescript
-providePhotoEditor({
-  maxPhotoSize: 1200,
-  fileLabels: { camera: '…', album: '…', cancel: '…' },
-  createImageEditor: createTuiImageEditor,
-  loadCamera: loadCapacitorPhotoCamera, // omit in browser-only applications
-});
+export const appConfig = {
+  providers: [
+    providePhotoEditor({
+      maxPhotoSize: 1200,
+      fileLabels: { camera: '…', album: '…', cancel: '…' },
+      createImageEditor: createTuiImageEditor,
+      loadCamera: loadCapacitorPhotoCamera, // omit in browser-only applications
+    }),
+  ],
+};
 ```
 
 `PhotoFileService` reads these adapters plus `maxPhotoSize` and `fileLabels` from this configuration. Per-request `maxSize` and `labels` override them for a single call. A resize requires `createImageEditor`; a native picker requires `loadCamera`. Missing adapters throw `PhotoLoadError` with `code: 'unavailable'`.

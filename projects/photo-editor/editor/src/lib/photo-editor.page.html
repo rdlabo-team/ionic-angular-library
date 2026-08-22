@@ -87,7 +87,13 @@
     </ion-buttons>
     } @if (['brightness'].includes(this.footerMenu())) {
     <div class="ion-padding ion-margin">
-      <ion-range [pin]="true" [min]="-100" [max]="100" (ionChange)="changeRange($any($event))"></ion-range>
+      <ion-range
+        [attr.aria-label]="dictionary().brightness"
+        [pin]="true"
+        [min]="-100"
+        [max]="100"
+        (ionChange)="changeRange($any($event))"
+      ></ion-range>
     </div>
     }
   </ion-toolbar>

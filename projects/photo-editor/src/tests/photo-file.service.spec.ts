@@ -191,11 +191,18 @@ describe('PhotoFileService', () => {
     });
   });
 
-  it('reports unavailable camera capture as cancelled', async () => {
+  it('reports an explicit native camera cancellation as cancelled', async () => {
     dismissData = 'camera';
-    getPhoto.mockRejectedValue(new Error('camera unavailable'));
+    getPhoto.mockRejectedValue(new Error('User cancelled photos app'));
 
     await expect(service.loadPhoto()).rejects.toMatchObject({ code: 'cancelled' });
+  });
+
+  it('reports native permission and plugin failures as unavailable', async () => {
+    dismissData = 'camera';
+    getPhoto.mockRejectedValue(new Error('Camera permission denied'));
+
+    await expect(service.loadPhoto()).rejects.toMatchObject({ code: 'unavailable' });
   });
 
   it('loads album paths in order with the configured maximum size', async () => {

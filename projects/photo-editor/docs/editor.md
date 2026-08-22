@@ -6,7 +6,9 @@ import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor/editor';
 import { createTuiImageEditor } from '@rdlabo/ionic-angular-photo-editor/editor/tui';
 
 // app.config.ts
-providePhotoEditor({ createImageEditor: createTuiImageEditor });
+export const appConfig = {
+  providers: [providePhotoEditor({ createImageEditor: createTuiImageEditor })],
+};
 
 (async () => {
   const componentProps = {

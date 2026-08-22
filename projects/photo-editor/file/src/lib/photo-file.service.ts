@@ -71,9 +71,11 @@ export class PhotoFileService {
         width: maxSize,
         source: 'camera',
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        throw this.#nativePickerError(error);
+      });
     if (!image?.dataUrl) {
-      throw new PhotoLoadError('cancelled');
+      throw new PhotoLoadError('unavailable');
     }
     if (!image.dataUrl.includes('capacitor://localhost')) {
       return [image.dataUrl];
@@ -83,10 +85,9 @@ export class PhotoFileService {
 
   async #getPicturesFromAlbum(limit: number, maxSize: number): Promise<string[]> {
     const camera = await this.#config.loadCamera();
-    const images = await camera.pickImages({ quality: 100, width: maxSize, limit }).catch(() => undefined);
-    if (!images) {
-      throw new PhotoLoadError('cancelled');
-    }
+    const images = await camera.pickImages({ quality: 100, width: maxSize, limit }).catch((error: unknown) => {
+      throw this.#nativePickerError(error);
+    });
     return Promise.all(
       images.photos.slice(0, limit).map(({ webPath }) => {
         if (!webPath) {
@@ -172,6 +173,14 @@ export class PhotoFileService {
         throw error instanceof PhotoLoadError ? error : new PhotoLoadError('unavailable', { cause: error });
       })
       .finally(() => editor.destroy());
+  }
+
+  #nativePickerError(error: unknown): PhotoLoadError {
+    if (error instanceof PhotoLoadError) {
+      return error;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return new PhotoLoadError(/cancelled|canceled/i.test(message) ? 'cancelled' : 'unavailable', { cause: error });
   }
 
   async #resizePhoto(editor: Awaited<ReturnType<PhotoImageEditorFactory>>, filePath: string, maxPhotoSize: number): Promise<string> {

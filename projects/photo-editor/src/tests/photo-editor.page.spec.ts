@@ -102,13 +102,17 @@ describe('PhotoEditorPage', () => {
   });
 
   it('merges custom labels without replacing the remaining dictionary', async () => {
-    componentRef.setInput('labels', { save: 'Upload', close: 'Close editor' });
+    componentRef.setInput('labels', { save: 'Upload', close: 'Close editor', brightness: 'Exposure' });
     fixture.detectChanges();
     await fixture.whenStable();
 
     expect(fixture.nativeElement.textContent).toContain('Upload');
     expect(fixture.nativeElement.textContent).toContain('切り抜き・回転');
     expect(fixture.nativeElement.querySelector('ion-button').getAttribute('aria-label')).toBe('Close editor');
+
+    state.footerMenu.set('brightness');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('ion-range').getAttribute('aria-label')).toBe('Exposure');
   });
 
   it.each([
