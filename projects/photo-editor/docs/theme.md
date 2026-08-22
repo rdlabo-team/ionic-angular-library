@@ -1,8 +1,6 @@
 Override the editor colors after [Installation](../README.md#installation).
 
-Default color is set, but user can overwrite it: https://github.com/rdlabo-dev/ionic-angular-library/blob/v21.6.2/projects/photo-editor/src/lib/pages/core.scss
-
-## How to overwrite
+Default colors are defined in the library stylesheet. Override them with CSS variables:
 
 ```scss
 :root {
@@ -21,9 +19,11 @@ Default color is set, but user can overwrite it: https://github.com/rdlabo-dev/i
 }
 ```
 
-## Header button color scheme
+Source reference: [`core.scss`](https://github.com/rdlabo-dev/ionic-angular-library/blob/main/projects/photo-editor/src/lib/pages/core.scss).
 
-`PhotoEditorPage` and `PhotoViewerPage` require `headerButtonColorScheme: 'light' | 'dark'` in their modal `componentProps`. Select `dark` for a dark/black `ion-toolbar` and `light` for a light/white toolbar. The consumer must choose because the library cannot reliably infer the final toolbar appearance from CSS, translucency, or runtime theme overrides.
+## Toolbar color scheme
+
+`PhotoEditorPage` and `PhotoViewerPage` require `toolbarColorScheme: 'light' | 'dark'` in modal `componentProps`. Select `dark` for a dark/black `ion-toolbar` and `light` for a light/white toolbar. The consumer must choose because the library cannot reliably infer the final toolbar appearance from CSS, translucency, or runtime theme overrides.
 
 For `@rdlabo/ionic-theme-ios26` v3, import the optional integration stylesheet after the iOS 26 theme and dark-mode styles:
 

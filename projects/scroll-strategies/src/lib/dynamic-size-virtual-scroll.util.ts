@@ -7,39 +7,6 @@ export const sumItemSize = (dynamicSize: itemDynamicSize[], endIndex: number): n
 };
 
 /**
- * Retains the package's legacy pixel-to-index calculation for compatibility.
- * @deprecated Use `calculateItemCountForPixelDistance` for mathematically continuous results.
- */
-export const calcIndex = (dynamicSize: itemDynamicSize[], itemSizeRange: number, startIndex = 0, isReverse = false): number => {
-  let sum = 0;
-  let diffIndex = 0;
-  const item = isReverse ? [...dynamicSize].reverse() : dynamicSize;
-  if (isReverse) {
-    startIndex = dynamicSize.length - startIndex;
-  }
-  const calculatedIndex = item.reduce((acc, currentValue, index) => {
-    if (index < startIndex || acc !== -1) {
-      return acc;
-    }
-    sum += currentValue.itemSize;
-    if (sum >= itemSizeRange) {
-      if (sum === itemSizeRange) {
-        return index - startIndex;
-      }
-      const diff = sum - itemSizeRange;
-      const getOver = item[index].itemSize - diff;
-      diffIndex = getOver / item[index].itemSize;
-      return Math.max(0, index - 1 + diffIndex - startIndex);
-    }
-    if (index === item.length - 1) {
-      return index - startIndex + 1;
-    }
-    return acc;
-  }, -1);
-  return calculatedIndex === -1 ? 0 : calculatedIndex;
-};
-
-/**
  * Converts a pixel distance into an exact fractional item count.
  *
  * Forward measurement starts at `startIndex`. Reverse measurement starts immediately before

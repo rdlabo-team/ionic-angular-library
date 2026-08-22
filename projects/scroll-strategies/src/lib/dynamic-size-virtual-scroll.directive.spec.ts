@@ -1,7 +1,7 @@
 import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
-import { CdkDynamicSizeVirtualScroll, _dynamicSizeVirtualScrollStrategyFactory } from './dynamic-size-virtual-scroll-strategy';
+import { CdkVirtualScrollViewport, VIRTUAL_SCROLL_STRATEGY } from '@angular/cdk/scrolling';
+import { CdkDynamicSizeVirtualScroll, DynamicSizeVirtualScrollStrategy } from './dynamic-size-virtual-scroll-strategy';
 import { itemDynamicSize } from './dynamic-size-virtual-scroll.util';
 import { testConfig } from '../../../util/test.config';
 
@@ -33,6 +33,11 @@ describe('CdkDynamicSizeVirtualScroll', () => {
       .query((element) => element.nativeElement.tagName.toLowerCase() === 'cdk-virtual-scroll-viewport')
       .injector.get(CdkDynamicSizeVirtualScroll);
 
+  const getStrategy = (): DynamicSizeVirtualScrollStrategy =>
+    fixture.debugElement
+      .query((element) => element.nativeElement.tagName.toLowerCase() === 'cdk-virtual-scroll-viewport')
+      .injector.get(VIRTUAL_SCROLL_STRATEGY) as DynamicSizeVirtualScrollStrategy;
+
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: testConfig.providers,
@@ -44,7 +49,7 @@ describe('CdkDynamicSizeVirtualScroll', () => {
 
   it('exposes the directive scroll offset from the installed strategy', () => {
     const directive = getDirective();
-    directive._scrollStrategy.measureScrollOffset = 42;
+    getStrategy().measureScrollOffset = 42;
 
     expect(directive.scrollOffset).toBe(42);
   });
@@ -66,8 +71,7 @@ describe('CdkDynamicSizeVirtualScroll', () => {
   });
 
   it('updates the strategy when measured item sizes change', () => {
-    const directive = getDirective();
-    const updateSpy = vi.spyOn(directive._scrollStrategy, 'updateItemAndBufferSize');
+    const updateSpy = vi.spyOn(getStrategy(), 'updateItemAndBufferSize');
     const sizes = [{ itemSize: 40 }, { itemSize: 60 }, { itemSize: 80 }];
 
     host.sizes.set(sizes);
@@ -77,8 +81,7 @@ describe('CdkDynamicSizeVirtualScroll', () => {
   });
 
   it('coerces numeric string buffer inputs before updating the strategy', () => {
-    const directive = getDirective();
-    const updateSpy = vi.spyOn(directive._scrollStrategy, 'updateItemAndBufferSize');
+    const updateSpy = vi.spyOn(getStrategy(), 'updateItemAndBufferSize');
 
     host.minBufferPx.set('15');
     host.maxBufferPx.set('45');
@@ -93,9 +96,7 @@ describe('CdkDynamicSizeVirtualScroll', () => {
     expect(() => fixture.detectChanges()).toThrow(/index 0/);
   });
 
-  it('provides the directive strategy through the factory helper', () => {
-    const directive = getDirective();
-
-    expect(_dynamicSizeVirtualScrollStrategyFactory(directive)).toBe(directive._scrollStrategy);
+  it('provides the directive strategy through the CDK token', () => {
+    expect(getStrategy()).toBeInstanceOf(DynamicSizeVirtualScrollStrategy);
   });
 });

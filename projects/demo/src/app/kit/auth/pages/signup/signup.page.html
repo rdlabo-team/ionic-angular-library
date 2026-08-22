@@ -30,7 +30,6 @@
           labelPlacement="floating"
           autocomplete="new-password"
           [formField]="loginForm.password"
-          kitAuthInput="autofill"
         ></ion-input>
       </ion-item>
     </ion-list>
@@ -38,10 +37,8 @@
     <div class="ion-text-center ion-padding-top">
       <ion-button data-testid="auth-signup" type="submit" [disabled]="isLoading() || !loginForm().valid()">
         @if (isLoading()) {
-          <ion-spinner name="crescent"></ion-spinner>
-        } @else {
-          Create account
-        }
+        <ion-spinner name="crescent"></ion-spinner>
+        } @else { Create account }
       </ion-button>
     </div>
   </form>

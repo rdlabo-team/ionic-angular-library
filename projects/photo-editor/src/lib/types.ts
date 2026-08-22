@@ -1,20 +1,42 @@
-export interface IFilter {
+/** Filter options supported by the bundled photo editor presets. */
+export type PhotoFilterOptions =
+  | { blur: number }
+  | { brightness: number }
+  | { noise: number }
+  | { blocksize: number }
+  | { color: string; distance: number; useAlpha?: boolean }
+  | { mode: string; color: string; alpha?: number }
+  | { maskObjId: number }
+  | null;
+
+/** Rendered filter preview and the operation applied when it is selected. */
+export interface PhotoFilter {
   name: string;
   type: string;
-  option: any;
+  option: PhotoFilterOptions;
   data: string;
   width: number;
   height: number;
 }
 
-export interface ISize {
+/** Two-dimensional pixel size. */
+export interface PhotoSize {
   width: number;
   height: number;
 }
 
-export interface IDictionaryForEditor {
+/** Localized labels rendered by {@link PhotoEditorPage}. */
+export interface PhotoEditorLabels {
   save: string;
+  close: string;
+  back: string;
+  apply: string;
   crop: string;
+  rotate: string;
+  cropCover: string;
+  crop16x9: string;
+  cropSquare: string;
+  cropFree: string;
   filter: string;
   brightness: string;
   original: string;
@@ -27,35 +49,41 @@ export interface IDictionaryForEditor {
   emboss: string;
 }
 
-export interface IFilterPreset {
+/** A filter offered in the editor's preset menu. */
+export interface PhotoFilterPreset {
   name: string;
   type: string;
-  option: any;
+  option: PhotoFilterOptions;
 }
 
-export interface IPhotoEditorDismiss {
+/** Successful result returned when the editor saves an image. */
+export interface PhotoEditorResult {
+  action: 'save';
   value: string;
 }
 
-export interface IPhotoViewerDismiss {
-  delete: {
-    index: number;
-    value: string;
-  };
+/** Result returned when the viewer asks the consumer to delete an image. */
+export interface PhotoViewerResult {
+  action: 'delete';
+  index: number;
+  value: string;
 }
 
-export interface IDictionaryForViewer {
+/** Localized labels rendered by {@link PhotoViewerPage}. */
+export interface PhotoViewerLabels {
+  close: string;
   delete: string;
 }
 
-export interface IDictionaryForService {
+/** Localized labels used by the native photo source chooser. */
+export interface PhotoFileLabels {
   camera: string;
   album: string;
   cancel: string;
 }
 
-/** Color scheme used by photo editor and viewer header buttons. */
-export type PhotoEditorHeaderButtonColorScheme = 'light' | 'dark';
+/** Color scheme of the toolbar behind photo editor and viewer header buttons. */
+export type PhotoToolbarColorScheme = 'light' | 'dark';
 
 /** Props for presenting {@link PhotoViewerPage} via Ionic Modal `componentProps`. */
 export interface PhotoViewerProps {
@@ -64,14 +92,36 @@ export interface PhotoViewerProps {
   isCircle?: boolean;
   enableDelete?: boolean;
   enableFooterSafeArea?: boolean;
-  labels?: Partial<IDictionaryForViewer>;
-  headerButtonColorScheme: PhotoEditorHeaderButtonColorScheme;
+  labels?: Partial<PhotoViewerLabels>;
+  imageAlt?: string | ((url: string, index: number) => string);
+  toolbarColorScheme: PhotoToolbarColorScheme;
 }
 
 /** Props for presenting {@link PhotoEditorPage} via Ionic Modal `componentProps`. */
 export interface PhotoEditorProps {
   requireSquare?: boolean;
   value: string;
-  labels?: Partial<IDictionaryForEditor>;
-  headerButtonColorScheme: PhotoEditorHeaderButtonColorScheme;
+  labels?: Partial<PhotoEditorLabels>;
+  toolbarColorScheme: PhotoToolbarColorScheme;
+}
+
+/** Per-request options for {@link PhotoFileService.loadPhoto}. */
+export interface PhotoLoadOptions {
+  limit?: number;
+  maxSize?: number;
+  labels?: Partial<PhotoFileLabels>;
+}
+
+/** Error codes produced by expected photo selection failures. */
+export type PhotoLoadErrorCode = 'cancelled' | 'invalid-type' | 'unavailable';
+
+/** Typed error produced by expected photo selection failures. */
+export class PhotoLoadError extends Error {
+  constructor(
+    readonly code: PhotoLoadErrorCode,
+    options?: ErrorOptions,
+  ) {
+    super(code, options);
+    this.name = 'PhotoLoadError';
+  }
 }
