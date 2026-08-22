@@ -50,5 +50,22 @@ describe('dynamic size virtual scroll utilities', () => {
   it('rejects invalid sizes and buffers', () => {
     expect(() => validateConfiguration(items(50, 0), 20, 50)).toThrow(/index 1/);
     expect(() => validateConfiguration(items(50), -1, 50)).toThrow(/buffers/);
+    expect(() => validateConfiguration(items(50), 50, 20)).toThrow(/buffers/);
+    expect(() => validateConfiguration(items(Number.NaN), 20, 50)).toThrow(/index 0/);
+  });
+
+  it('returns zero when summing before the first item', () => {
+    expect(sumItemSize(items(30, 70), 0)).toBe(0);
+  });
+
+  it('clamps offset lookups to list boundaries', () => {
+    const prefixSums = createPrefixSums(items(40, 60), 2);
+    expect(indexAtOffset(prefixSums, 0)).toBe(0);
+    expect(indexAtOffset(prefixSums, 999)).toBe(1);
+    expect(endIndexForOffset(prefixSums, 0)).toBe(1);
+  });
+
+  it('treats negative pixel distances as zero item count', () => {
+    expect(calculateItemCountForPixelDistance(items(30, 70), -10)).toBe(0);
   });
 });

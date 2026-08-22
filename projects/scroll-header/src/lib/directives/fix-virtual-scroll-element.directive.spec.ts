@@ -33,4 +33,12 @@ describe('FixVirtualScrollElementDirective', () => {
     const directiveInstance = directiveEl.injector.get(FixVirtualScrollElementDirective);
     expect(directiveInstance).toBeTruthy();
   });
+
+  it('moves the virtual scroll spacer before the content wrapper', () => {
+    const viewport = fixture.nativeElement.querySelector('cdk-virtual-scroll-viewport');
+    const children = Array.from(viewport.children) as HTMLElement[];
+
+    expect(children[0].classList.contains('cdk-virtual-scroll-spacer')).toBe(true);
+    expect(children.at(-1)?.classList.contains('cdk-virtual-scroll-content-wrapper')).toBe(true);
+  });
 });
