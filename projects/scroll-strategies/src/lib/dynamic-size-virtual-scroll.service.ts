@@ -75,12 +75,11 @@ export class DynamicSizeVirtualScrollService {
     y: number | undefined | null,
     duration = 0,
   ): Promise<void> {
+    const isHorizontal = el.orientation === 'horizontal';
+    const target = isHorizontal ? x : y;
     if (duration < 32) {
-      if (y != null) {
-        el.scrollToOffset(y);
-      }
-      if (x != null) {
-        el.scrollToOffset(x);
+      if (target != null) {
+        el.scrollToOffset(target);
       }
       return;
     }
@@ -88,22 +87,16 @@ export class DynamicSizeVirtualScrollService {
     let resolve!: () => void;
     let startTime = 0;
     const promise = new Promise<void>((r) => (resolve = r));
-    const fromY = el.measureScrollOffset('top');
-    const fromX = el.measureScrollOffset('left');
-
-    const deltaY = y != null ? y - fromY : 0;
-    const deltaX = x != null ? x - fromX : 0;
+    const from = el.measureScrollOffset(isHorizontal ? 'left' : 'top');
+    const delta = target != null ? target - from : 0;
 
     // scroll loop
     const step = (timeStamp: number) => {
       const linearTime = Math.min(1, (timeStamp - startTime) / duration) - 1;
       const easedT = Math.pow(linearTime, 3) + 1;
 
-      if (deltaY !== 0) {
-        el.scrollToOffset(Math.floor(easedT * deltaY + fromY));
-      }
-      if (deltaX !== 0) {
-        el.scrollToOffset(Math.floor(easedT * deltaX + fromX));
+      if (delta !== 0) {
+        el.scrollToOffset(Math.floor(easedT * delta + from));
       }
 
       if (easedT < 1) {
