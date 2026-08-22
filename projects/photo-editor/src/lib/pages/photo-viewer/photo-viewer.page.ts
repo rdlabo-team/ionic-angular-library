@@ -16,14 +16,14 @@ import { Navigation, Zoom } from 'swiper/modules';
 import { fromEvent, Subscription, throttleTime, withLatestFrom, zipWith } from 'rxjs';
 import { SwiperContainer } from 'swiper/element';
 import { ionComponents } from '../../ion-components';
-import { IDictionaryForViewer, IPhotoViewerDismiss } from '../../types';
+import { IDictionaryForViewer, IPhotoViewerDismiss, PhotoEditorHeaderButtonColorScheme } from '../../types';
 import { register } from 'swiper/element/bundle';
 import { dictionaryForViewer } from '../../dictionaries';
 import { BooleanInput, coerceBooleanProperty, coerceNumberProperty, NumberInput } from '@angular/cdk/coercion';
 import { initializeViewerIcons, waitToFindDom } from '../util';
 
 @Component({
-  selector: 'app-photo-image',
+  selector: 'rdlabo-photo-viewer',
   templateUrl: './photo-viewer.page.html',
   styleUrls: ['../core.scss', './photo-viewer.page.scss'],
   imports: [...ionComponents],
@@ -45,6 +45,7 @@ export class PhotoViewerPage implements OnInit, OnDestroy {
     transform: coerceBooleanProperty,
   });
   readonly labels = input<Partial<IDictionaryForViewer>>();
+  readonly headerButtonColorScheme = input.required<PhotoEditorHeaderButtonColorScheme>();
   readonly setLabels = effect(() => {
     if (this.labels()) {
       this.dictionary.update((value) => ({ ...value, ...this.labels() }));

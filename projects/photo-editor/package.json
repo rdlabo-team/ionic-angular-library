@@ -18,5 +18,11 @@
   "dependencies": {
     "tslib": "^2.3.0"
   },
+  "exports": {
+    "./css/*": {
+      "style": "./css/*",
+      "default": "./css/*"
+    }
+  },
   "sideEffects": false
 }

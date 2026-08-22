@@ -1,0 +1,114 @@
+ion-header.photo-editor-header-buttons-light {
+  --ion-text-color-rgb: 0, 0, 0;
+  --ios26-glass-background-rgb: 255, 255, 255;
+  --ios26-glass-box-shadow-color-rgb: 220, 220, 220;
+  --ios26-glass-border-color-rgb: 255, 255, 255;
+  --ios26-button-color-selected-rgb: 16, 16, 16;
+}
+ion-header.photo-editor-header-buttons-light ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear), ion-menu-button.menu-button-hidden)):has(.ion-activated) {
+  background: rgba(var(--ios26-glass-background-rgb), 0.72);
+  backdrop-filter: blur(2px) saturate(360%);
+  box-shadow: inset 0 0 8px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.2), 0 0 10px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.82);
+  border-top: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 1);
+  border-right: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 1);
+  border-left: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 0.6);
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  box-shadow: inset 0 0 8px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.2), 0 0 8px -4px rgba(var(--ios26-glass-box-shadow-color-rgb), 0.92);
+}
+ion-header.photo-editor-header-buttons-light ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear), ion-menu-button.menu-button-hidden)) ion-button:not(.ios26-disabled).button-clear.ion-activated {
+  color: rgba(var(--ion-text-color-rgb), 0.1);
+  --color: rgba(var(--ion-text-color-rgb), 0.1);
+}
+ion-header.photo-editor-header-buttons-light ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear), ion-menu-button.menu-button-hidden)) ion-button:not(.ios26-disabled).button-clear.ion-activated.ion-color {
+  color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb)), 0.1);
+  --color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb)), 0.1);
+}
+ion-header.photo-editor-header-buttons-light ion-button.ios:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear) {
+  --color: rgba(var(--ion-text-color-rgb), 0.1);
+}
+ion-header.photo-editor-header-buttons-light ion-button.ios:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear).ion-color {
+  --color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb)), 0.1);
+}
+ion-header.photo-editor-header-buttons-light ion-button.ios:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear)::part(native) {
+  background: rgba(var(--ios26-glass-background-rgb), 0.72);
+  backdrop-filter: blur(2px) saturate(360%);
+  box-shadow: inset 0 0 8px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.2), 0 0 10px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.82);
+  border-top: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 1);
+  border-right: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 0.8);
+  border-bottom: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 1);
+  border-left: 0.5px solid rgba(var(--ios26-glass-border-color-rgb), 0.6);
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+  box-shadow: inset 0 0 8px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.2), 0 0 8px -4px rgba(var(--ios26-glass-box-shadow-color-rgb), 0.92);
+}
+ion-header.photo-editor-header-buttons-light ion-button.ios:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear) ion-icon {
+  color: rgba(var(--ion-text-color-rgb), 0.1) !important;
+}
+
+ion-header.photo-editor-header-buttons-dark {
+  --ion-text-color-rgb: 255, 255, 255;
+  --ios26-glass-background-rgb: 62, 62, 62;
+  --ios26-glass-box-shadow-color-rgb: 0, 0, 0 / 0;
+  --ios26-glass-border-color-rgb: 68, 68, 68;
+  --ios26-button-color-selected-rgb: 255, 255, 255;
+  --ios26-content-box-shadow-rgb: 0, 0, 0;
+}
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))):has(.ion-activated) {
+  background: rgba(var(--ios26-button-color-selected-rgb), 0.56);
+  backdrop-filter: blur(7px) saturate(180%);
+  box-shadow: inset 0 0 16px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.55);
+  border-top: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.8);
+  border-right: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.4);
+  border-bottom: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.8);
+  border-left: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.6);
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))) ion-button:not(.ios26-disabled).button-clear.ion-activated {
+  color: rgb(var(--ion-text-color-rgb, 0, 0, 0));
+}
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))) ion-button:not(.ios26-disabled).button-clear.ion-activated.ion-color {
+  color: rgb(var(--ion-color-base-rgb, var(--ion-text-color-rgb, 0, 0, 0)));
+}
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))) ion-button:not(.ios26-disabled).ion-activated,
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))) ion-back-button:not(.ios26-disabled).ion-activated {
+  --color: rgba(var(--ion-text-color-rgb, 0, 0, 0), 1);
+}
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))) ion-button:not(.ios26-disabled).ion-activated.ion-color,
+ion-header.photo-editor-header-buttons-dark ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear))) ion-back-button:not(.ios26-disabled).ion-activated.ion-color {
+  --color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb, 0, 0, 0)), 1);
+}
+ion-header.photo-editor-header-buttons-dark ion-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear),
+ion-header.photo-editor-header-buttons-dark ion-back-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear) {
+  --color: rgba(var(--ion-text-color-rgb, 0, 0, 0), 1);
+}
+ion-header.photo-editor-header-buttons-dark ion-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear).ion-color,
+ion-header.photo-editor-header-buttons-dark ion-back-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear).ion-color {
+  --color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb, 0, 0, 0)), 1);
+}
+ion-header.photo-editor-header-buttons-dark ion-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear)::part(native),
+ion-header.photo-editor-header-buttons-dark ion-back-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear)::part(native) {
+  background: rgba(var(--ios26-button-color-selected-rgb), 0.56);
+  backdrop-filter: blur(7px) saturate(180%);
+  box-shadow: inset 0 0 16px 0 rgba(var(--ios26-glass-box-shadow-color-rgb), 0.55);
+  border-top: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.8);
+  border-right: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.4);
+  border-bottom: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.8);
+  border-left: 0.8px solid rgba(var(--ios26-button-color-selected-rgb), 0.6);
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+ion-header.photo-editor-header-buttons-dark ion-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear) ion-icon,
+ion-header.photo-editor-header-buttons-dark ion-back-button:not(.ios26-disabled).ion-activated:not(.button-solid):not(.button-outline):not(.button-clear) ion-icon {
+  color: rgb(255, 255, 255) !important;
+}

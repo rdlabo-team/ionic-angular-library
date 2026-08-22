@@ -19,13 +19,13 @@ import ImageEditor from 'tui-image-editor';
 import { filterPreset } from '../../filter-preset';
 import { Subscription } from 'rxjs';
 import { toObservable } from '@angular/core/rxjs-interop';
-import { IDictionaryForEditor, IFilter, IPhotoEditorDismiss, ISize } from '../../types';
+import { IDictionaryForEditor, IFilter, IPhotoEditorDismiss, ISize, PhotoEditorHeaderButtonColorScheme } from '../../types';
 import { ionComponents } from '../../ion-components';
 import { dictionaryForEditor } from '../../dictionaries';
 import { initializeEditorIcons, waitToFindDom } from '../util';
 
 @Component({
-  selector: 'app-editor-image',
+  selector: 'rdlabo-photo-editor',
   templateUrl: './photo-editor.page.html',
   styleUrls: ['../core.scss', './photo-editor.page.scss'],
   imports: [CommonModule, FormsModule, ...ionComponents],
@@ -40,6 +40,7 @@ export class PhotoEditorPage implements OnInit, OnDestroy, ViewDidEnter, ViewDid
     transform: coerceBooleanProperty,
   });
   readonly labels = input<Partial<IDictionaryForEditor> | undefined>(undefined);
+  readonly headerButtonColorScheme = input.required<PhotoEditorHeaderButtonColorScheme>();
   readonly setLabels = effect(() => {
     if (this.labels()) {
       this.dictionary.update((value) => ({ ...value, ...this.labels() }));

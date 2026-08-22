@@ -27,6 +27,14 @@
   //--ion-color-photo-editor-success-tint: var(--ion-photo-editor-success, #42d96b);
 }
 
+ion-header.photo-editor-header-buttons-light ion-button:not(.ion-color) {
+  --color: var(--ion-photo-editor-header-button-color-on-light, #222428);
+}
+
+ion-header.photo-editor-header-buttons-dark ion-button:not(.ion-color) {
+  --color: var(--ion-photo-editor-header-button-color-on-dark, #f4f5f8);
+}
+
 .ion-color-photo-editor-primary {
   --ion-color-base: var(--ion-color-photo-editor-primary);
   //--ion-color-base-rgb: var(--ion-color-photo-editor-primary-rgb);

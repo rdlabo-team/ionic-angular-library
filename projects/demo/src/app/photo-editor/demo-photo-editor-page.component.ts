@@ -71,6 +71,7 @@ export class DemoPhotoEditorPage {
       componentProps: {
         requireSquare: false,
         value: photoData,
+        headerButtonColorScheme: 'dark',
       },
     });
     await modal.present();
@@ -88,6 +89,7 @@ export class DemoPhotoEditorPage {
         index: 1,
         isCircle: false,
         enableDelete: true,
+        headerButtonColorScheme: 'dark',
         labels: {
           delete: 'Delete',
         },

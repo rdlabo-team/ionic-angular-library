@@ -1,7 +1,12 @@
-<ion-header [translucent]="true">
+<ion-header
+  [translucent]="true"
+  [class.photo-editor-header-buttons-dark]="headerButtonColorScheme() === 'dark'"
+  [class.photo-editor-header-buttons-light]="headerButtonColorScheme() === 'light'"
+  [style.color-scheme]="headerButtonColorScheme()"
+>
   <ion-toolbar>
     <ion-buttons slot="start">
-      <ion-button (click)="modalCtrl.dismiss()" class="viewer-close-button">
+      <ion-button (click)="modalCtrl.dismiss()">
         <ion-icon name="close-outline" slot="icon-only"></ion-icon>
       </ion-button>
     </ion-buttons>

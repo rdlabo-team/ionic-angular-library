@@ -1,0 +1,52 @@
+@use '@rdlabo/ionic-theme-ios26/src/styles/utils/api' as ios26-api;
+@use '@rdlabo/ionic-theme-ios26/src/styles/utils/theme-dark' as ios26-dark;
+
+ion-header.photo-editor-header-buttons-light {
+  --ion-text-color-rgb: 0, 0, 0;
+  --ios26-glass-background-rgb: 255, 255, 255;
+  --ios26-glass-box-shadow-color-rgb: 220, 220, 220;
+  --ios26-glass-border-color-rgb: 255, 255, 255;
+  --ios26-button-color-selected-rgb: 16, 16, 16;
+
+  ion-buttons.ios:not(.ios26-disabled):not(:has(ion-back-button, ion-button:not(.button-clear), ion-menu-button.menu-button-hidden)) {
+    &:has(.ion-activated) {
+      @include ios26-api.glass-background;
+      @include ios26-api.glass-background-button-activated;
+    }
+
+    ion-button:not(.ios26-disabled).button-clear.ion-activated {
+      color: rgba(var(--ion-text-color-rgb), 0.1);
+      --color: rgba(var(--ion-text-color-rgb), 0.1);
+
+      &.ion-color {
+        color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb)), 0.1);
+        --color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb)), 0.1);
+      }
+    }
+  }
+
+  ion-button.ios:not(.ios26-disabled) {
+    &.ion-activated:not(.button-solid):not(.button-outline):not(.button-clear) {
+      --color: rgba(var(--ion-text-color-rgb), 0.1);
+
+      &.ion-color {
+        --color: rgba(var(--ion-color-base-rgb, var(--ion-text-color-rgb)), 0.1);
+      }
+
+      &::part(native) {
+        @include ios26-api.glass-background;
+        @include ios26-api.glass-background-button-activated;
+      }
+
+      ion-icon {
+        color: rgba(var(--ion-text-color-rgb), 0.1) !important;
+      }
+    }
+  }
+}
+
+ion-header.photo-editor-header-buttons-dark {
+  --ion-text-color-rgb: 255, 255, 255;
+  @include ios26-dark.default-variables;
+  @include ios26-dark.ion-button;
+}
