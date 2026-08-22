@@ -20,8 +20,8 @@ export class PhotoFileService {
   /** Opens the platform photo picker and returns normalized data URLs. */
   async loadPhoto(options: PhotoLoadOptions = {}): Promise<string[]> {
     const limit = Math.max(1, Math.trunc(options.limit ?? 1));
-    const maxSize = Math.max(1, Math.trunc(options.maxSize ?? this.#config.maxPhotoSize));
-    const labels = { ...this.#config.fileLabels, ...options.labels } satisfies PhotoFileLabels;
+    const maxSize = Math.max(1, Math.trunc(options.maxSize ?? this.#config.maxSize));
+    const labels = { ...this.#config.labels, ...options.labels } satisfies PhotoFileLabels;
 
     if (!this.#platform.is('capacitor')) {
       return this.#getPictureFromBrowser(limit, maxSize);
@@ -163,12 +163,12 @@ export class PhotoFileService {
     });
   }
 
-  async #loadPhotoFromFilePath(filePath: string, maxPhotoSize: number): Promise<string> {
+  async #loadPhotoFromFilePath(filePath: string, maxSize: number): Promise<string> {
     const editor = await this.#config.createImageEditor(document.createElement('div'), {
-      cssMaxWidth: maxPhotoSize,
-      cssMaxHeight: maxPhotoSize,
+      cssMaxWidth: maxSize,
+      cssMaxHeight: maxSize,
     });
-    return this.#resizePhoto(editor, filePath, maxPhotoSize)
+    return this.#resizePhoto(editor, filePath, maxSize)
       .catch((error: unknown) => {
         throw error instanceof PhotoLoadError ? error : new PhotoLoadError('unavailable', { cause: error });
       })
@@ -183,7 +183,7 @@ export class PhotoFileService {
     return new PhotoLoadError(/cancelled|canceled/i.test(message) ? 'cancelled' : 'unavailable', { cause: error });
   }
 
-  async #resizePhoto(editor: Awaited<ReturnType<PhotoImageEditorFactory>>, filePath: string, maxPhotoSize: number): Promise<string> {
+  async #resizePhoto(editor: Awaited<ReturnType<PhotoImageEditorFactory>>, filePath: string, maxSize: number): Promise<string> {
     const response = await fetch(filePath);
     if (!response.ok) {
       throw new Error(`Unable to load photo: ${response.status}`);
@@ -192,7 +192,7 @@ export class PhotoFileService {
     const loaded = await editor.loadImageFromFile(new File([blob], 'data.png', { type: blob.type }));
     const longestEdge = Math.max(loaded.newWidth, loaded.newHeight);
     return editor.toDataURL({
-      multiplier: longestEdge > 0 ? Math.min(1, maxPhotoSize / longestEdge) : 1,
+      multiplier: longestEdge > 0 ? Math.min(1, maxSize / longestEdge) : 1,
     });
   }
 }

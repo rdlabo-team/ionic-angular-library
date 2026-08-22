@@ -30,7 +30,7 @@ import { loadCapacitorPhotoCamera } from '@rdlabo/ionic-angular-photo-editor/fil
 export const appConfig = {
   providers: [
     providePhotoEditor({
-      maxPhotoSize: 1000,
+      maxSize: 1000,
       createImageEditor: createTuiImageEditor,
       loadCamera: loadCapacitorPhotoCamera,
     }),

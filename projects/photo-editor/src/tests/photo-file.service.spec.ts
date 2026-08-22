@@ -64,8 +64,8 @@ describe('PhotoFileService', () => {
         { provide: Platform, useValue: { is: isPlatform } },
         { provide: ActionSheetController, useValue: { create: createActionSheet } },
         providePhotoEditor({
-          maxPhotoSize: 1200,
-          fileLabels: { camera: 'Take photo', album: 'Choose photo', cancel: 'Close' },
+          maxSize: 1200,
+          labels: { camera: 'Take photo', album: 'Choose photo', cancel: 'Close' },
           createImageEditor: createImageEditor as never,
           loadCamera: loadCapacitorPhotoCamera,
         }),

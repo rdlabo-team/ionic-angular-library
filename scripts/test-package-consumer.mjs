@@ -110,8 +110,9 @@ const editorProps: PhotoEditorProps = { value: 'data:image/png;base64,', toolbar
 const viewerProps: PhotoViewerProps = { imageUrls: [], toolbarColorScheme: 'light', imageAlt: (_, index) => String(index) };
 const editorResult: PhotoEditorResult = { action: 'save', value: editorProps.value };
 const viewerResult: PhotoViewerResult = { action: 'delete', index: 0, value: '' };
+const photoProviders = providePhotoEditor({ maxSize: 1000, labels: { camera: 'Camera' } });
 const symbols = [providePhotoEditor, PhotoEditorPage, createTuiImageEditor, PhotoFileService, loadCapacitorPhotoCamera, PhotoViewerPage, ScrollHeaderDirective, CdkDynamicSizeVirtualScroll];
-void [mode, viewerProps, editorResult, viewerResult, symbols, calculateItemCountForPixelDistance([{ itemSize: 10 }], 5)];
+void [mode, viewerProps, editorResult, viewerResult, photoProviders, symbols, calculateItemCountForPixelDistance([{ itemSize: 10 }], 5)];
 `,
   );
   writeFileSync(

@@ -10,8 +10,8 @@ import { loadCapacitorPhotoCamera } from '@rdlabo/ionic-angular-photo-editor/fil
 export const appConfig = {
   providers: [
     providePhotoEditor({
-      maxPhotoSize: 1000,
-      fileLabels: {
+      maxSize: 1000,
+      labels: {
         camera: 'Camera',
         album: 'Album',
         cancel: 'Cancel',
@@ -50,11 +50,11 @@ export class AppComponent {
 
 Opens the platform photo picker and returns normalized data URLs.
 
-| Option    | Default                             | Description                                    |
-| --------- | ----------------------------------- | ---------------------------------------------- |
-| `limit`   | `1`                                 | Maximum number of images (album and web only). |
-| `maxSize` | configured `maxPhotoSize` or `1000` | Longest edge in pixels after resize.           |
-| `labels`  | configured `fileLabels`             | Action sheet button text (Capacitor only).     |
+| Option    | Default                        | Description                                    |
+| --------- | ------------------------------ | ---------------------------------------------- |
+| `limit`   | `1`                            | Maximum number of images (album and web only). |
+| `maxSize` | configured `maxSize` or `1000` | Longest edge in pixels after resize.           |
+| `labels`  | configured `labels`            | Action sheet button text (Capacitor only).     |
 
 ### Browser behavior
 
@@ -64,7 +64,7 @@ Do not add a static file input to `index.html`.
 
 ### Capacitor behavior
 
-On native platforms, an action sheet asks the user to choose camera or album. Per-request `labels` merge over values from `providePhotoEditor({ fileLabels })`.
+On native platforms, an action sheet asks the user to choose camera or album. Per-request `labels` merge over values from `providePhotoEditor({ labels })`.
 Register `loadCapacitorPhotoCamera` from `/file/capacitor`; the base `/file` entry point stays usable by browser-only applications without `@capacitor/camera`.
 
 ### Errors
@@ -79,7 +79,7 @@ Expected failures throw `PhotoLoadError`:
 
 ## Default labels (ja)
 
-When no `fileLabels` or per-request `labels` are supplied:
+When no global or per-request `labels` are supplied:
 
 | Key    | Default (ja)     |
 | ------ | ---------------- |
@@ -95,8 +95,8 @@ Register application-wide defaults in `app.config.ts`:
 export const appConfig = {
   providers: [
     providePhotoEditor({
-      maxPhotoSize: 1200,
-      fileLabels: { camera: '…', album: '…', cancel: '…' },
+      maxSize: 1200,
+      labels: { camera: '…', album: '…', cancel: '…' },
       createImageEditor: createTuiImageEditor,
       loadCamera: loadCapacitorPhotoCamera, // omit in browser-only applications
     }),
@@ -104,4 +104,4 @@ export const appConfig = {
 };
 ```
 
-`PhotoFileService` reads these adapters plus `maxPhotoSize` and `fileLabels` from this configuration. Per-request `maxSize` and `labels` override them for a single call. A resize requires `createImageEditor`; a native picker requires `loadCamera`. Missing adapters throw `PhotoLoadError` with `code: 'unavailable'`.
+`PhotoFileService` reads these adapters plus the global `maxSize` and `labels` defaults from this configuration. Per-request values with the same names override them for a single call. A resize requires `createImageEditor`; a native picker requires `loadCamera`. Missing adapters throw `PhotoLoadError` with `code: 'unavailable'`.

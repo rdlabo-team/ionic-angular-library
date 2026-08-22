@@ -138,8 +138,8 @@ const files = await photoFileService.loadPhoto(2);
 export const appConfig = {
   providers: [
     providePhotoEditor({
-      maxPhotoSize: 1000,
-      fileLabels: { camera: 'Camera', album: 'Album', cancel: 'Cancel' },
+      maxSize: 1000,
+      labels: { camera: 'Camera', album: 'Album', cancel: 'Cancel' },
       createImageEditor: createTuiImageEditor,
       loadCamera: loadCapacitorPhotoCamera,
     }),
@@ -149,6 +149,8 @@ export const appConfig = {
 // Per call
 const files = await photoFileService.loadPhoto({ limit: 2, maxSize: 1000, labels: { camera: 'Camera' } });
 ```
+
+The global defaults and per-call overrides intentionally use the same `maxSize` and `labels` keys. Values passed to `loadPhoto()` take precedence for that request.
 
 Cancellation and validation failures now throw `PhotoLoadError` with `code: 'cancelled' | 'invalid-type' | 'unavailable'` instead of returning empty arrays or generic errors.
 

@@ -60,15 +60,15 @@ export type PhotoCameraLoader = () => Promise<PhotoCameraAdapter>;
 
 /** Global defaults for photo selection and image editor construction. */
 export interface PhotoEditorConfig {
-  maxPhotoSize?: number;
-  fileLabels?: Partial<PhotoFileLabels>;
+  maxSize?: number;
+  labels?: Partial<PhotoFileLabels>;
   createImageEditor?: PhotoImageEditorFactory;
   loadCamera?: PhotoCameraLoader;
 }
 
 interface ResolvedPhotoEditorConfig {
-  maxPhotoSize: number;
-  fileLabels: PhotoFileLabels;
+  maxSize: number;
+  labels: PhotoFileLabels;
   createImageEditor: PhotoImageEditorFactory;
   loadCamera: PhotoCameraLoader;
 }
@@ -82,8 +82,8 @@ const missingCamera: PhotoCameraLoader = () =>
 export const PHOTO_EDITOR_CONFIG = new InjectionToken<ResolvedPhotoEditorConfig>('PHOTO_EDITOR_CONFIG', {
   providedIn: 'root',
   factory: () => ({
-    maxPhotoSize: 1000,
-    fileLabels: dictionaryForService(),
+    maxSize: 1000,
+    labels: dictionaryForService(),
     createImageEditor: missingImageEditor,
     loadCamera: missingCamera,
   }),
@@ -95,8 +95,8 @@ export function providePhotoEditor(config: PhotoEditorConfig = {}): EnvironmentP
     {
       provide: PHOTO_EDITOR_CONFIG,
       useValue: {
-        maxPhotoSize: config.maxPhotoSize ?? 1000,
-        fileLabels: { ...dictionaryForService(), ...config.fileLabels },
+        maxSize: config.maxSize ?? 1000,
+        labels: { ...dictionaryForService(), ...config.labels },
         createImageEditor: config.createImageEditor ?? missingImageEditor,
         loadCamera: config.loadCamera ?? missingCamera,
       } satisfies ResolvedPhotoEditorConfig,
