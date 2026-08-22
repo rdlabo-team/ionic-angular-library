@@ -54,14 +54,18 @@ export interface IDictionaryForService {
   cancel: string;
 }
 
+/** Color scheme used by photo editor and viewer header buttons. */
+export type PhotoEditorHeaderButtonColorScheme = 'light' | 'dark';
+
 /** Props for presenting {@link PhotoViewerPage} via Ionic Modal `componentProps`. */
 export interface PhotoViewerProps {
-  imageUrls?: string[];
+  imageUrls: string[];
   index?: number;
   isCircle?: boolean;
   enableDelete?: boolean;
   enableFooterSafeArea?: boolean;
   labels?: Partial<IDictionaryForViewer>;
+  headerButtonColorScheme: PhotoEditorHeaderButtonColorScheme;
 }
 
 /** Props for presenting {@link PhotoEditorPage} via Ionic Modal `componentProps`. */
@@ -69,4 +73,5 @@ export interface PhotoEditorProps {
   requireSquare?: boolean;
   value: string;
   labels?: Partial<IDictionaryForEditor>;
+  headerButtonColorScheme: PhotoEditorHeaderButtonColorScheme;
 }

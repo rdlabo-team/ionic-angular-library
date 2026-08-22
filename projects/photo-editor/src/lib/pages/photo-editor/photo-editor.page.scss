@@ -49,14 +49,11 @@ aside {
   }
 }
 
-ion-header,
 ion-footer {
   ion-button {
     --color: var(--editor-color) !important;
   }
-}
 
-ion-footer {
   ion-toolbar {
     ion-text.footer-title {
       color: var(--editor-color) !important;

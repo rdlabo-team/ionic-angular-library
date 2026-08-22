@@ -1,16 +1,18 @@
 Present `PhotoViewerPage` in an Ionic modal. Call this after [Installation](../README.md#installation).
 
 ```typescript
-import { PhotoViewerPage, IPhotoViewerDismiss } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoViewerPage, IPhotoViewerDismiss, PhotoViewerProps } from '@rdlabo/ionic-angular-photo-editor';
 
 (async () => {
+  const componentProps = {
+    imageUrls: ['https://picsum.photos/200/300', 'https://picsum.photos/200/300'],
+    index: 0,
+    isCircle: false,
+    headerButtonColorScheme: 'dark',
+  } satisfies PhotoViewerProps;
   const modal = await this.modalCtrl.create({
     component: PhotoViewerPage,
-    componentProps: {
-      imageUrls: ['https://picsum.photos/200/300', 'https://picsum.photos/200/300'],
-      index: 0,
-      isCircle: false,
-    },
+    componentProps,
   });
   await modal.present();
   const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
@@ -47,3 +49,7 @@ If true, enable footer safe area for iOS.
 If set, the label is overwritten.
 
 List is [here](https://github.com/rdlabo-dev/ionic-angular-library/blob/v21.6.2/projects/photo-editor/src/lib/dictionaries.ts).
+
+#### headerButtonColorScheme: 'light' | 'dark'
+
+Required. Select `dark` for a dark/black `ion-toolbar` and `light` for a light/white toolbar. The library cannot infer the toolbar appearance from CSS, translucent content, or runtime theme overrides.
