@@ -35,16 +35,3 @@ For `@rdlabo/ionic-theme-ios26` v3, import the optional integration stylesheet a
 ```
 
 Use the matching Always or System dark-mode import instead when appropriate. The photo-editor integration stylesheet must remain last so its local header scheme can override the ambient application scheme. Applications that do not use the iOS 26 theme should not import this optional stylesheet; they receive only the regular Ionic button foreground-color switch.
-
-## Migrating to v22
-
-`headerButtonColorScheme` is required in v22. Use a typed props object so Ionic's loose `componentProps` type cannot hide an omitted value:
-
-```typescript
-import { PhotoEditorProps } from '@rdlabo/ionic-angular-photo-editor';
-
-const componentProps = {
-  value,
-  headerButtonColorScheme: 'dark',
-} satisfies PhotoEditorProps;
-```

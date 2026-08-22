@@ -1,75 +1,98 @@
-# Migration guide
+# Library migration guide
 
-## Angular 21–22 and Ionic 9
+This guide covers consumer-facing changes in the packages published from this repository. It does not replace the upstream [Angular update guide](https://angular.dev/update-guide), [Ionic breaking-change guide](https://github.com/ionic-team/ionic-framework/blob/main/BREAKING.md), or [Capacitor upgrade guides](https://capacitorjs.com/docs/updating/overview).
 
-The 22.x package line supports Angular 21 and 22 with Ionic 9. Ionic 9 requires Angular 18 or later; native applications also require Capacitor 7 or later.
+## v21 to v22
 
-Read the upstream [Ionic 9 breaking changes](https://github.com/ionic-team/ionic-framework/blob/main/BREAKING.md#version-9x) and the [Angular version compatibility table](https://angular.dev/reference/versions) before upgrading your application.
+### Compatibility requirements
 
-### 1. Update dependencies
+Version 22 supports Angular 21 and 22. The kit, photo-editor, and scroll-header packages require Ionic 9; scroll-strategies requires only Angular and Angular CDK. Native kit and photo-editor features require Capacitor 7 or 8. Upgrade the host application with the upstream tools first, then update only the rdlabo packages it uses. Keep rdlabo packages on the same release line when an application uses more than one of them.
 
-Use matching Angular major versions throughout the application. Angular 22 uses TypeScript 6.0 and requires a supported Node.js release.
-
-```bash
-npx ng update @angular/core@22 @angular/cli@22
-npx @ionic/migrate
-```
-
-`@ionic/migrate` is the recommended path for Ionic applications: it updates the Ionic packages and applies the available source migrations. Review its changes together with the manual audit below. The migrator does not support Angular library workspaces such as this repository, so library maintainers must apply the Ionic changes manually.
-
-For a native application, upgrade Capacitor separately and follow its migration guide:
+While v22 is available under the npm `beta` dist-tag, install the prerelease with:
 
 ```bash
-npm install @capacitor/core@^8 @capacitor/ios@^8 @capacitor/android@^8
-npm install --save-dev @capacitor/cli@^8
-npx cap migrate
+npm install @rdlabo/ionic-angular-kit@beta \
+  @rdlabo/ionic-angular-photo-editor@beta \
+  @rdlabo/ionic-angular-scroll-header@beta \
+  @rdlabo/ngx-cdk-scroll-strategies@beta
 ```
 
-Capacitor 7 and 8 are supported by these libraries. Keep all Capacitor core and plugin packages on compatible major versions.
+After stable v22 is published, use `@^22` instead of `@beta`. Omit packages that the application does not use. Release maintainers must update this prerelease instruction when promoting v22 to npm `latest`.
 
-### 2. Update Ionic Angular imports
+### @rdlabo/ionic-angular-photo-editor
 
-Ionic 9 exports standalone components and providers from `@ionic/angular` by default. Replace imports from the old standalone entry point:
+#### Choose the header button scheme
 
-```ts
-// Before
-import { IonContent, ModalController, provideIonicAngular } from '@ionic/angular/standalone';
+`PhotoEditorPage` and `PhotoViewerPage` now require `headerButtonColorScheme`. The library cannot infer the final `ion-toolbar` appearance after application CSS, translucency, and runtime theme overrides are applied.
 
-// After
-import { IonContent, ModalController, provideIonicAngular } from '@ionic/angular';
+Use `dark` for a dark or black toolbar and `light` for a light or white toolbar. Define typed props before passing them to Ionic because `ModalController` does not enforce the component's input types.
+
+```typescript
+import { PhotoEditorPage, PhotoEditorProps } from '@rdlabo/ionic-angular-photo-editor';
+
+const componentProps = {
+  value,
+  headerButtonColorScheme: 'dark',
+} satisfies PhotoEditorProps;
+
+await modalController.create({
+  component: PhotoEditorPage,
+  componentProps,
+});
 ```
 
-If the application intentionally uses lazy-loaded Ionic wrappers, import those wrappers from `@ionic/angular/lazy`. `IonicModule` still works in Ionic 9 but is deprecated; new and migrated applications should use `provideIonicAngular()`.
+```typescript
+import { PhotoViewerPage, PhotoViewerProps } from '@rdlabo/ionic-angular-photo-editor';
 
-### 3. Check change detection
+const componentProps = {
+  imageUrls,
+  headerButtonColorScheme: 'dark',
+} satisfies PhotoViewerProps;
 
-Angular 21 is zoneless by default. Angular 22 additionally defaults components without an explicit strategy to `OnPush`.
-
-Prefer signals for state changed after asynchronous work such as overlay dismissal, timers, RxJS subscriptions, or platform events. Otherwise call `ChangeDetectorRef.markForCheck()`. Run the Angular update migrations so existing components retain their intended change-detection behavior.
-
-### 4. Audit Ionic 9 component changes
-
-Check application templates, styles, and tests for the following Ionic 9 changes:
-
-- Replace `autocorrect="on"` or `autocorrect="off"` on `ion-input` and `ion-searchbar` with a boolean property binding, or omit it for the default `false` value.
-- Replace legacy picker components and controller APIs with the inline `ion-picker` component.
-- Set `handleBehavior="none"` on sheet modals only when the handle must retain its previous inert behavior; the new default is `cycle`.
-- Use `ion-router-outlet` for URL-based routing. `ion-nav` now manages only an imperative, URL-less navigation stack.
-- Do not rely on `ion-select` emitting `ionChange` when a confirmed value did not change. Use dismissal events when confirmation itself matters.
-- Do not rely on the `selected` dismissal role from the `ion-select` action-sheet interface; listen for `ionChange` when the selected value changes.
-- Check floating labels on `ion-input`, `ion-select`, and `ion-textarea` with slotted content. Slotted content alone no longer causes the label to float.
-- Review custom selectors and shadow-part styles for `ion-input`, `ion-select`, and `ion-textarea`, whose internal structures changed.
-- Review Material Design textarea layouts: the new minimum height is 72px.
-
-### 5. Verify the application
-
-Build and test both web and native targets after updating:
-
-```bash
-npm run lint
-npm test
-npm run build
-npx cap sync
+await modalController.create({
+  component: PhotoViewerPage,
+  componentProps,
+});
 ```
 
-Test modal sheets, form controls, select overlays, virtual scrolling, navigation gestures, and state updates that occur after asynchronous callbacks on each supported platform.
+`PhotoViewerProps.imageUrls` is now correctly declared as required. It was already a required component input, so ensure every viewer invocation supplies it.
+
+#### Update direct-template selectors
+
+The public components now use package-prefixed selectors:
+
+| Before               | After                   |
+| -------------------- | ----------------------- |
+| `<app-editor-image>` | `<rdlabo-photo-editor>` |
+| `<app-photo-image>`  | `<rdlabo-photo-viewer>` |
+
+No selector update is needed when presenting `PhotoEditorPage` or `PhotoViewerPage` by component class through `ModalController`.
+
+#### Optional iOS 26 theme integration
+
+Applications using `@rdlabo/ionic-theme-ios26` v3 can import the photo-editor adapter after the Ionic and iOS 26 theme styles:
+
+```scss
+@import '@rdlabo/ionic-theme-ios26/dist/css/ionic-theme-ios26.css';
+@import '@ionic/angular/css/palettes/dark.class.css';
+@import '@rdlabo/ionic-theme-ios26/dist/css/ionic-theme-ios26-dark-class.css';
+@import '@rdlabo/ionic-angular-photo-editor/css/ios26-header-button-color-scheme.css';
+```
+
+Do not import the adapter when the application does not use the iOS 26 theme. See the photo editor [theme guide](../projects/photo-editor/docs/theme.md) for color overrides and alternative dark-mode imports.
+
+### @rdlabo/ionic-angular-kit
+
+Version 22 changes the supported host framework range but does not rename or remove kit public APIs. After satisfying the compatibility requirements, existing kit imports and provider configuration remain valid.
+
+### @rdlabo/ionic-angular-scroll-header
+
+Version 22 has no package-specific API migration. Existing `rdlaboScrollHeader`, `rdlaboVirtualScrollHeader`, and `rdlaboFixVirtualScrollElement` usages remain valid after the dependency update.
+
+### @rdlabo/ngx-cdk-scroll-strategies
+
+Version 22 has no package-specific API migration. Existing dynamic-size virtual-scroll configuration remains valid after the dependency update.
+
+### Verification
+
+After applying the relevant package migrations, run the host application's normal checks and exercise the affected UI on each supported platform. For photo-editor, verify both editor and viewer modals against every toolbar color used by the application.
