@@ -1,11 +1,10 @@
-import { contentChild, Directive, ElementRef, HostListener, inject, OnInit, signal } from '@angular/core';
+import { contentChild, Directive, effect, ElementRef, HostListener, inject, signal } from '@angular/core';
 import { IonContent, IonHeader, ScrollDetail } from '@ionic/angular';
-import { waitFindDom } from '../util';
 
 @Directive({
   selector: 'ion-content[rdlaboScrollHeader]',
 })
-export class ScrollHeaderDirective implements OnInit {
+export class ScrollHeaderDirective {
   readonly #elementRef = inject(ElementRef<IonContent>);
 
   readonly scrollHeader = contentChild(IonHeader, { read: ElementRef });
@@ -17,15 +16,19 @@ export class ScrollHeaderDirective implements OnInit {
   readonly #scrollThrottle = 16; // 60fps
   #lastScrollTime = 0;
 
-  async ngOnInit() {
-    await waitFindDom(this.#elementRef.nativeElement, 'ion-header');
-    this.#elementRef.nativeElement.scrollEvents = true;
-    if (
-      this.#elementRef.nativeElement.previousElementSibling &&
-      this.#elementRef.nativeElement.previousElementSibling.classList.contains('native-header')
-    ) {
-      this.#nativeHeader.set(this.#elementRef.nativeElement.previousElementSibling);
-    }
+  constructor() {
+    effect(() => {
+      if (!this.scrollHeader()) {
+        return;
+      }
+      this.#elementRef.nativeElement.scrollEvents = true;
+      if (
+        this.#elementRef.nativeElement.previousElementSibling &&
+        this.#elementRef.nativeElement.previousElementSibling.classList.contains('native-header')
+      ) {
+        this.#nativeHeader.set(this.#elementRef.nativeElement.previousElementSibling);
+      }
+    });
   }
 
   @HostListener('ionScroll', ['$event'])

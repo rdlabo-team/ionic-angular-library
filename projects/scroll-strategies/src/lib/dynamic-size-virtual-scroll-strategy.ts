@@ -244,15 +244,9 @@ export class DynamicSizeVirtualScrollStrategy implements VirtualScrollStrategy {
   }
 }
 
-/**
- * Provider factory for `FixedSizeVirtualScrollStrategy` that simply extracts the already created
- * `FixedSizeVirtualScrollStrategy` from the given directive.
- * @param fixedSizeDir The instance of `CdkFixedSizeVirtualScroll` to extract the
- *     `FixedSizeVirtualScrollStrategy` from.
- */
-export function _dynamicSizeVirtualScrollStrategyFactory(fixedSizeDir: CdkDynamicSizeVirtualScroll) {
-  return fixedSizeDir._scrollStrategy;
-}
+const scrollStrategyAccessor = Symbol('scrollStrategyAccessor');
+
+const dynamicSizeVirtualScrollStrategyFactory = (directive: CdkDynamicSizeVirtualScroll) => directive[scrollStrategyAccessor]();
 
 /** Directive that installs dynamic-size virtual scrolling on a CDK viewport. */
 @Directive({
@@ -260,7 +254,7 @@ export function _dynamicSizeVirtualScrollStrategyFactory(fixedSizeDir: CdkDynami
   providers: [
     {
       provide: VIRTUAL_SCROLL_STRATEGY,
-      useFactory: _dynamicSizeVirtualScrollStrategyFactory,
+      useFactory: dynamicSizeVirtualScrollStrategyFactory,
       deps: [forwardRef(() => CdkDynamicSizeVirtualScroll)],
     },
   ],
@@ -291,8 +285,7 @@ export class CdkDynamicSizeVirtualScroll {
     transform: coerceBooleanProperty,
   });
 
-  /** The scroll strategy used by this directive. */
-  readonly _scrollStrategy = new DynamicSizeVirtualScrollStrategy(
+  readonly #scrollStrategy = new DynamicSizeVirtualScrollStrategy(
     this.itemDynamicSizes(),
     this.minBufferPx(),
     this.maxBufferPx(),
@@ -308,12 +301,16 @@ export class CdkDynamicSizeVirtualScroll {
       }
     });
     effect(() =>
-      this._scrollStrategy.updateItemAndBufferSize(this.itemDynamicSizes(), this.minBufferPx(), this.maxBufferPx(), this.isReverse()),
+      this.#scrollStrategy.updateItemAndBufferSize(this.itemDynamicSizes(), this.minBufferPx(), this.maxBufferPx(), this.isReverse()),
     );
   }
 
   /** For isReverse scroll. Because virtualScroll.measureScrollOffset is not work. **/
   get scrollOffset(): number {
-    return this._scrollStrategy.measureScrollOffset;
+    return this.#scrollStrategy.measureScrollOffset;
+  }
+
+  [scrollStrategyAccessor](): DynamicSizeVirtualScrollStrategy {
+    return this.#scrollStrategy;
   }
 }

@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, OnInit } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import {
@@ -17,7 +17,10 @@ import {
   IonToolbar,
   ModalController,
 } from '@ionic/angular';
-import { IPhotoEditorDismiss, IPhotoViewerDismiss, PhotoEditorPage, PhotoFileService, PhotoViewerPage } from 'photo-editor';
+import { PhotoEditorProps, PhotoEditorResult, PhotoViewerProps, PhotoViewerResult } from 'photo-editor';
+import { PhotoEditorPage } from 'photo-editor/editor';
+import { PhotoFileService } from 'photo-editor/file';
+import { PhotoViewerPage } from 'photo-editor/viewer';
 
 @Component({
   selector: 'app-photo-editor',
@@ -46,37 +49,31 @@ export class DemoPhotoEditorPage {
   private readonly photoFileService = inject(PhotoFileService);
   private readonly modalCtrl = inject(ModalController);
 
-  constructor() {
-    this.photoFileService.photoMaxSize = 1000;
-    this.photoFileService.labels = {
-      camera: 'Camera',
-      album: 'Album',
-      cancel: 'Cancel',
-    };
-  }
-
   async selectPhoto(type: 'editor' | 'viewer') {
+    const labels = { camera: 'Camera', album: 'Album', cancel: 'Cancel' };
     if (type === 'editor') {
-      const data = await this.photoFileService.loadPhoto(1);
+      const data = await this.photoFileService.loadPhoto({ limit: 1, maxSize: 1000, labels });
       await this.launchEditor(data[0]);
     } else {
-      const data = await this.photoFileService.loadPhoto(2);
+      const data = await this.photoFileService.loadPhoto({ limit: 2, maxSize: 1000, labels });
       await this.launchViewer(data);
     }
   }
 
-  async launchEditor(photoData = 'https://picsum.photos/200/300') {
+  async launchEditor(
+    photoData = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAEAQH/2kF7WQAAAABJRU5ErkJggg==',
+  ) {
     const modal = await this.modalCtrl.create({
       component: PhotoEditorPage,
       componentProps: {
         requireSquare: false,
         value: photoData,
-        headerButtonColorScheme: 'dark',
-      },
+        toolbarColorScheme: 'dark',
+      } satisfies PhotoEditorProps,
     });
     await modal.present();
-    const { data } = await modal.onWillDismiss<IPhotoEditorDismiss>();
-    if (data?.value) {
+    const { data } = await modal.onWillDismiss<PhotoEditorResult>();
+    if (data?.action === 'save') {
       console.log(data.value);
     }
   }
@@ -89,16 +86,16 @@ export class DemoPhotoEditorPage {
         index: 1,
         isCircle: false,
         enableDelete: true,
-        headerButtonColorScheme: 'dark',
+        toolbarColorScheme: 'dark',
         labels: {
           delete: 'Delete',
         },
-      },
+      } satisfies PhotoViewerProps,
     });
     await modal.present();
-    const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
-    if (data?.delete) {
-      console.log(data.delete);
+    const { data } = await modal.onWillDismiss<PhotoViewerResult>();
+    if (data?.action === 'delete') {
+      console.log(data);
       // User delete image
     }
   }

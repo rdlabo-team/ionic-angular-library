@@ -10,10 +10,11 @@ npm install @rdlabo/ionic-angular-kit
 
 | Package                            | Supported version |
 | ---------------------------------- | ----------------- |
-| Angular                            | 21.x              |
-| Ionic Angular                      | 8.x               |
+| Angular                            | 21.x–22.x          |
+| Ionic Angular                      | 9.x                |
 | RxJS                               | 7.8.x             |
-| Capacitor core and feature plugins | 6.x through 8.x   |
+| Capacitor core and feature plugins | 7.x–8.x            |
+| iOS/iPadOS deployment target       | 16.4 or later      |
 
 Install `@ionic/storage-angular` when using storage. Other peers are feature-scoped: install only the Capacitor, Firebase, printing, or Live Update packages used by your selected entry points.
 

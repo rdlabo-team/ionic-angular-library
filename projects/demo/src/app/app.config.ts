@@ -5,6 +5,9 @@ import { provideIonicAngular } from '@ionic/angular';
 import { IonicStorageModule } from '@ionic/storage-angular';
 import { provideKitAuth, provideKitOverlay } from '@rdlabo/ionic-angular-kit';
 import { provideKitFirebase } from '@rdlabo/ionic-angular-kit/auth-firebase';
+import { providePhotoEditor } from '@rdlabo/ionic-angular-photo-editor';
+import { createTuiImageEditor } from 'photo-editor/editor/tui';
+import { loadCapacitorPhotoCamera } from 'photo-editor/file/capacitor';
 
 import { routes } from './app.routes';
 import { DemoAuthService } from './kit/auth/auth.service';
@@ -18,6 +21,7 @@ export const appConfig: ApplicationConfig = {
     importProvidersFrom(IonicStorageModule.forRoot({ name: '__kit_demo_db' })),
     provideKitFirebase({ firebaseConfig: environment.firebase }),
     provideKitOverlay({ labels: { close: 'Close', cancel: 'Cancel' } }),
+    providePhotoEditor({ createImageEditor: createTuiImageEditor, loadCamera: loadCapacitorPhotoCamera }),
     provideKitAuth(() => {
       const auth = inject(DemoAuthService);
       return {

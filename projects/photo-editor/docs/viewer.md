@@ -1,55 +1,84 @@
 Present `PhotoViewerPage` in an Ionic modal. Call this after [Installation](../README.md#installation).
 
 ```typescript
-import { PhotoViewerPage, IPhotoViewerDismiss, PhotoViewerProps } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoViewerProps, PhotoViewerResult } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoViewerPage } from '@rdlabo/ionic-angular-photo-editor/viewer';
 
 (async () => {
   const componentProps = {
-    imageUrls: ['https://picsum.photos/200/300', 'https://picsum.photos/200/300'],
+    imageUrls: ['https://picsum.photos/200/300', 'https://picsum.photos/200/301'],
     index: 0,
     isCircle: false,
-    headerButtonColorScheme: 'dark',
+    enableDelete: true,
+    toolbarColorScheme: 'dark',
+    imageAlt: (url, index) => `Photo ${index + 1}`,
+    labels: {
+      delete: 'Delete',
+    },
   } satisfies PhotoViewerProps;
   const modal = await this.modalCtrl.create({
     component: PhotoViewerPage,
     componentProps,
   });
   await modal.present();
-  const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
-  if (data?.delete) {
-    // User delete image
+  const { data } = await modal.onWillDismiss<PhotoViewerResult>();
+  if (data?.action === 'delete') {
+    console.log(data.index, data.value);
   }
 })();
 ```
 
-### Options
+## Modal result
 
-#### imageUrls: string[]
+When the user taps delete, the modal dismisses with:
 
-The image url or base64 string[].
+```typescript
+interface PhotoViewerResult {
+  action: 'delete';
+  index: number;
+  value: string; // URL of the image at index
+}
+```
 
-#### index: number
+Closing or swiping down dismisses with no data.
 
-The index of imageUrls.
+## Options
 
-#### isCircle: boolean
+### imageUrls: string[]
 
-If set, the image is displayed in a circle.
+**Required.** Image URLs or data URLs to display.
 
-#### enableDelete: boolean
+### index: number
 
-If true, the delete button is displayed.
+Initial slide index. Default `0`.
 
-#### enableFooterSafeArea: boolean
+### isCircle: boolean
 
-If true, enable footer safe area for iOS.
+When `true`, images render in a circle.
 
-#### labels: IDictionaryForViewer
+### enableDelete: boolean
 
-If set, the label is overwritten.
+When `true`, shows the delete button.
 
-List is [here](https://github.com/rdlabo-dev/ionic-angular-library/blob/v21.6.2/projects/photo-editor/src/lib/dictionaries.ts).
+### enableFooterSafeArea: boolean
 
-#### headerButtonColorScheme: 'light' | 'dark'
+When `true`, adds footer safe-area padding on iOS.
 
-Required. Select `dark` for a dark/black `ion-toolbar` and `light` for a light/white toolbar. The library cannot infer the toolbar appearance from CSS, translucent content, or runtime theme overrides.
+### toolbarColorScheme: 'light' | 'dark'
+
+**Required.** Use `dark` for a dark/black `ion-toolbar` and `light` for a light/white toolbar. See [Theme](./theme.md).
+
+### imageAlt: string | ((url: string, index: number) => string)
+
+Accessible `alt` text for each slide image. Default is an empty string. Pass a function when alt text depends on the URL or index.
+
+### labels: Partial&lt;PhotoViewerLabels&gt;
+
+Overrides default UI strings. Unspecified keys keep the built-in Japanese defaults:
+
+| Key    | Default (ja) |
+| ------ | ------------ |
+| close  | 閉じる       |
+| delete | 削除         |
+
+The close button also uses `aria-label` from the `close` label.

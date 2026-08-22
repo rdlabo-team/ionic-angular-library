@@ -1,13 +1,12 @@
-import { contentChild, Directive, ElementRef, inject, OnDestroy, OnInit, signal } from '@angular/core';
+import { contentChild, Directive, effect, ElementRef, inject, OnDestroy, signal } from '@angular/core';
 import { IonContent, IonHeader } from '@ionic/angular';
 import { CdkVirtualScrollViewport } from '@angular/cdk/scrolling';
 import { fromEvent, Subscription } from 'rxjs';
-import { waitFindDom } from '../util';
 
 @Directive({
   selector: 'ion-content[rdlaboVirtualScrollHeader]',
 })
-export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
+export class VirtualScrollHeaderDirective implements OnDestroy {
   readonly #elementRef = inject(ElementRef<IonContent>);
 
   readonly virtualScroll = contentChild(CdkVirtualScrollViewport);
@@ -21,27 +20,32 @@ export class VirtualScrollHeaderDirective implements OnInit, OnDestroy {
   readonly #scrollHeaderSize = signal<number>(0);
   readonly #beforeScrollTop = signal<number>(0);
   readonly #scrollSubscription = new Subscription();
+  #initialized = false;
 
-  async ngOnInit() {
-    await Promise.all([
-      waitFindDom(this.#elementRef.nativeElement, 'ion-header'),
-      waitFindDom(this.#elementRef.nativeElement, 'cdk-virtual-scroll-viewport'),
-    ]);
+  constructor() {
+    effect(() => {
+      const header = this.scrollHeader();
+      const viewport = this.virtualScroll();
+      if (!header || !viewport || this.#initialized) {
+        return;
+      }
+      this.#initialized = true;
 
-    this.#elementRef.nativeElement.classList.add('scroll-header-animated');
+      this.#elementRef.nativeElement.classList.add('scroll-header-animated');
 
-    if (
-      this.#elementRef.nativeElement.previousElementSibling &&
-      this.#elementRef.nativeElement.previousElementSibling.classList.contains('native-header')
-    ) {
-      this.#nativeHeader.set(this.#elementRef.nativeElement.previousElementSibling);
-    }
+      if (
+        this.#elementRef.nativeElement.previousElementSibling &&
+        this.#elementRef.nativeElement.previousElementSibling.classList.contains('native-header')
+      ) {
+        this.#nativeHeader.set(this.#elementRef.nativeElement.previousElementSibling);
+      }
 
-    this.#scrollSubscription.add(
-      fromEvent(this.virtualScroll()!.elementRef.nativeElement, 'scroll').subscribe(() => {
-        this.onWindowScroll(this.virtualScroll()!.measureScrollOffset('top'));
-      }),
-    );
+      this.#scrollSubscription.add(
+        fromEvent(viewport.elementRef.nativeElement, 'scroll').subscribe(() => {
+          this.onWindowScroll(viewport.measureScrollOffset('top'));
+        }),
+      );
+    });
   }
 
   ngOnDestroy() {

@@ -23,6 +23,12 @@
       "@rdlabo/ionic-angular-kit/auth-firebase/social": ["./projects/kit/auth-firebase/social/src/public-api.ts"],
       "scroll-strategies": ["./dist/scroll-strategies"],
       "photo-editor": ["./dist/photo-editor"],
+      "@rdlabo/ionic-angular-photo-editor": ["./projects/photo-editor/src/public-api.ts"],
+      "photo-editor/editor": ["./dist/photo-editor/editor"],
+      "photo-editor/editor/tui": ["./dist/photo-editor/editor/tui"],
+      "photo-editor/viewer": ["./dist/photo-editor/viewer"],
+      "photo-editor/file": ["./dist/photo-editor/file"],
+      "photo-editor/file/capacitor": ["./dist/photo-editor/file/capacitor"],
       "scroll-header": ["./dist/scroll-header"]
     },
     "target": "ES2022",

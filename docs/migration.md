@@ -6,7 +6,9 @@ This guide covers consumer-facing changes in the packages published from this re
 
 ### Compatibility requirements
 
-Version 22 supports Angular 21 and 22. The kit, photo-editor, and scroll-header packages require Ionic 9; scroll-strategies requires only Angular and Angular CDK. Native kit and photo-editor features require Capacitor 7 or 8. Upgrade the host application with the upstream tools first, then update only the rdlabo packages it uses. Keep rdlabo packages on the same release line when an application uses more than one of them.
+Version 22 supports Angular 21 and 22. The kit, photo-editor, and scroll-header packages require Ionic 9; scroll-strategies requires only Angular and Angular CDK. Native kit and photo-editor features require Capacitor 7 or 8. **The minimum iOS/iPadOS deployment target is 16.4.** Upgrade the host application with the upstream tools first, then update only the rdlabo packages it uses. Keep rdlabo packages on the same release line when an application uses more than one of them.
+
+Set `platform :ios, '16.4'` in the application Podfile and `IPHONEOS_DEPLOYMENT_TARGET = 16.4` in the Xcode project. This minimum is required because the obsolete auth autofill workaround is removed only after the corresponding WebKit fix shipped in the iOS 16.4 generation.
 
 While v22 is available under the npm `beta` dist-tag, install the prerelease with:
 
@@ -21,52 +23,133 @@ After stable v22 is published, use `@^22` instead of `@beta`. Omit packages that
 
 ### @rdlabo/ionic-angular-photo-editor
 
-#### Choose the header button scheme
+#### Split entry points
 
-`PhotoEditorPage` and `PhotoViewerPage` now require `headerButtonColorScheme`. The library cannot infer the final `ion-toolbar` appearance after application CSS, translucency, and runtime theme overrides are applied.
+Components and services moved to secondary entry points. Import types and configuration from the root package only.
 
-Use `dark` for a dark or black toolbar and `light` for a light or white toolbar. Define typed props before passing them to Ionic because `ModalController` does not enforce the component's input types.
+| Before (v21)                                                            | After (v22)                                                                                 |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor'`  | `import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor/editor'`               |
+| `import { PhotoViewerPage } from '@rdlabo/ionic-angular-photo-editor'`  | `import { PhotoViewerPage } from '@rdlabo/ionic-angular-photo-editor/viewer'`               |
+| `import { PhotoFileService } from '@rdlabo/ionic-angular-photo-editor'` | `import { PhotoFileService } from '@rdlabo/ionic-angular-photo-editor/file'`                |
+| —                                                                       | `import { providePhotoEditor, PhotoEditorProps } from '@rdlabo/ionic-angular-photo-editor'` |
+
+Optional implementations are explicit adapters in v22:
 
 ```typescript
-import { PhotoEditorPage, PhotoEditorProps } from '@rdlabo/ionic-angular-photo-editor';
+import { providePhotoEditor } from '@rdlabo/ionic-angular-photo-editor';
+import { createTuiImageEditor } from '@rdlabo/ionic-angular-photo-editor/editor/tui';
+import { loadCapacitorPhotoCamera } from '@rdlabo/ionic-angular-photo-editor/file/capacitor';
+
+providePhotoEditor({
+  createImageEditor: createTuiImageEditor,
+  loadCamera: loadCapacitorPhotoCamera, // omit for browser-only applications
+});
+```
+
+Install `tui-image-editor` only when importing `/editor/tui`, `@capacitor/camera` only when importing `/file/capacitor`, and `swiper` only when importing `/viewer`. The root, `/editor`, and `/file` entry points no longer hide runtime imports of these optional peers. Without the corresponding configured adapter, editing/resizing or native selection fails with `PhotoLoadError('unavailable')`.
+
+#### Rename toolbarColorScheme
+
+`headerButtonColorScheme` is now `toolbarColorScheme`. It remains required on both modals.
+
+```typescript
+import { PhotoEditorProps } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoEditorPage } from '@rdlabo/ionic-angular-photo-editor/editor';
 
 const componentProps = {
   value,
-  headerButtonColorScheme: 'dark',
+  toolbarColorScheme: 'dark',
 } satisfies PhotoEditorProps;
 
-await modalController.create({
-  component: PhotoEditorPage,
-  componentProps,
-});
+await modalController.create({ component: PhotoEditorPage, componentProps });
 ```
 
 ```typescript
-import { PhotoViewerPage, PhotoViewerProps } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoViewerProps } from '@rdlabo/ionic-angular-photo-editor';
+import { PhotoViewerPage } from '@rdlabo/ionic-angular-photo-editor/viewer';
 
 const componentProps = {
   imageUrls,
-  headerButtonColorScheme: 'dark',
+  toolbarColorScheme: 'dark',
 } satisfies PhotoViewerProps;
 
-await modalController.create({
-  component: PhotoViewerPage,
-  componentProps,
-});
+await modalController.create({ component: PhotoViewerPage, componentProps });
 ```
 
-`PhotoViewerProps.imageUrls` is now correctly declared as required. It was already a required component input, so ensure every viewer invocation supplies it.
+#### Typed modal results
+
+Dismiss payloads are now discriminated by `action`:
+
+```typescript
+// Editor — before
+const { data } = await modal.onWillDismiss<IPhotoEditorDismiss>();
+if (data?.value) {
+  /* saved */
+}
+
+// Editor — after
+const { data } = await modal.onWillDismiss<PhotoEditorResult>();
+if (data?.action === 'save') {
+  /* data.value */
+}
+
+// Viewer — before
+const { data } = await modal.onWillDismiss<IPhotoViewerDismiss>();
+if (data?.delete) {
+  /* data.delete.index, data.delete.value */
+}
+
+// Viewer — after
+const { data } = await modal.onWillDismiss<PhotoViewerResult>();
+if (data?.action === 'delete') {
+  /* data.index, data.value */
+}
+```
+
+Removed types: `IPhotoEditorDismiss`, `IPhotoViewerDismiss`, `IDictionaryForEditor`, `IDictionaryForViewer`, `IDictionaryForService`. Use `PhotoEditorResult`, `PhotoViewerResult`, `PhotoEditorLabels`, `PhotoViewerLabels`, and `PhotoFileLabels` instead.
+
+#### PhotoFileService API
+
+```typescript
+// Before
+photoFileService.photoMaxSize = 1000;
+photoFileService.labels = { camera: '…', album: '…', cancel: '…' };
+const files = await photoFileService.loadPhoto(2);
+
+// After — register defaults once
+providePhotoEditor({
+  maxPhotoSize: 1000,
+  fileLabels: { … },
+  createImageEditor: createTuiImageEditor,
+  loadCamera: loadCapacitorPhotoCamera,
+});
+
+// Per call
+const files = await photoFileService.loadPhoto({ limit: 2, maxSize: 1000, labels: { … } });
+```
+
+Cancellation and validation failures now throw `PhotoLoadError` with `code: 'cancelled' | 'invalid-type' | 'unavailable'` instead of returning empty arrays or generic errors.
+
+Remove any static `<input id="browserPhotoUploader">` from `index.html`. On web, the service creates and removes a hidden file input synchronously when `loadPhoto()` runs; there is no fixed input id.
+
+#### Accessibility and labels
+
+- Pass `imageAlt` on the viewer for meaningful slide `alt` text (string or `(url, index) => string`).
+- Override UI strings with `labels` on editor, viewer, and `loadPhoto({ labels })`. Built-in defaults remain Japanese (for example `保存`, `閉じる`, `削除`, `カメラ撮影`).
 
 #### Update direct-template selectors
-
-The public components now use package-prefixed selectors:
 
 | Before               | After                   |
 | -------------------- | ----------------------- |
 | `<app-editor-image>` | `<rdlabo-photo-editor>` |
 | `<app-photo-image>`  | `<rdlabo-photo-viewer>` |
 
-No selector update is needed when presenting `PhotoEditorPage` or `PhotoViewerPage` by component class through `ModalController`.
+No selector update is needed when presenting pages by component class through `ModalController`.
+
+#### Stop using component internals
+
+Component implementation members are no longer public API. This includes editor state and controllers such as `setLabels`, `modalCtrl`, `filters`, `footerMenu`, `currentCrop`, `currentRotate`, `photoCrop`, and `isCropped`, plus equivalent viewer internals such as `setLabels`, `swiper`, and swipe subscriptions. Use modal `componentProps`, `labels`, `imageAlt`, and the typed dismiss results instead of reading or mutating component instances.
 
 #### Optional iOS 26 theme integration
 
@@ -79,11 +162,27 @@ Applications using `@rdlabo/ionic-theme-ios26` v3 can import the photo-editor ad
 @import '@rdlabo/ionic-angular-photo-editor/css/ios26-header-button-color-scheme.css';
 ```
 
-Do not import the adapter when the application does not use the iOS 26 theme. See the photo editor [theme guide](../projects/photo-editor/docs/theme.md) for color overrides and alternative dark-mode imports.
+Do not import the adapter when the application does not use the iOS 26 theme. See the photo editor [theme guide](../projects/photo-editor/docs/theme.md).
 
 ### @rdlabo/ionic-angular-kit
 
-Version 22 changes the supported host framework range but does not rename or remove kit public APIs. After satisfying the compatibility requirements, existing kit imports and provider configuration remain valid.
+#### Remove kitAuthInput="autofill"
+
+The `'autofill'` mode is removed. [WebKit bug 226023](https://bugs.webkit.org/show_bug.cgi?id=226023) (iOS autofill not propagating from `ion-input` to Angular forms) is fixed in the v22 minimum iOS/iPadOS 16.4 runtime, so the workaround is no longer shipped. Applications that must continue supporting an older iOS version cannot remove their app-local workaround and should remain on the v21 library line.
+
+Remove `kitAuthInput="autofill"` from password and other non-email fields. Do not add the attribute unless email persistence is intended.
+
+Email persistence modes are unchanged:
+
+```html
+<!-- sign-in: prefill + remember + forget on clear -->
+<ion-input type="email" autocomplete="email" kitAuthInput="email" [formField]="form.email" />
+
+<!-- sign-up: remember only -->
+<ion-input type="email" autocomplete="email" kitAuthInput="email-remember" [formField]="form.email" />
+```
+
+`kitAuthInput` is now required on every use (no default). Other kit public APIs are unchanged after satisfying the compatibility requirements above.
 
 ### @rdlabo/ionic-angular-scroll-header
 
@@ -91,8 +190,28 @@ Version 22 has no package-specific API migration. Existing `rdlaboScrollHeader`,
 
 ### @rdlabo/ngx-cdk-scroll-strategies
 
-Version 22 has no package-specific API migration. Existing dynamic-size virtual-scroll configuration remains valid after the dependency update.
+#### Remove calcIndex
+
+`calcIndex` is removed from the public API. Replace it with `calculateItemCountForPixelDistance`:
+
+```typescript
+// Before
+import { calcIndex } from '@rdlabo/ngx-cdk-scroll-strategies';
+const index = calcIndex(sizes, pixelOffset);
+
+// After
+import { calculateItemCountForPixelDistance } from '@rdlabo/ngx-cdk-scroll-strategies';
+const index = calculateItemCountForPixelDistance(sizes, pixelOffset);
+```
+
+This is an intentional semantic correction, not a drop-in rename. The old function could undercount a partially consumed item: for sizes `[{ itemSize: 55 }, { itemSize: 55 }]` and distance `60`, it returned approximately `0.0909`; the replacement returns approximately `1.0909`. Revalidate thresholds, `startIndex`, and reverse-scroll behavior in every consumer rather than relying on the old numeric result.
+
+#### Remove internal strategy factory export
+
+`_dynamicSizeVirtualScrollStrategyFactory` and the public `_scrollStrategy` field on `CdkDynamicSizeVirtualScroll` are removed. They were internal wiring for the CDK `VIRTUAL_SCROLL_STRATEGY` token. Application code should inject `VIRTUAL_SCROLL_STRATEGY` or use `CdkDynamicSizeVirtualScroll.scrollOffset` instead of reaching into the directive.
+
+Existing dynamic-size virtual-scroll template configuration remains valid.
 
 ### Verification
 
-After applying the relevant package migrations, run the host application's normal checks and exercise the affected UI on each supported platform. For photo-editor, verify both editor and viewer modals against every toolbar color used by the application.
+After applying the relevant package migrations, run the host application's normal checks and exercise the affected UI on each supported platform. For photo-editor, verify editor and viewer modals for every `toolbarColorScheme` the application uses, web photo picking without a static file input, and viewer `imageAlt` / label overrides where applicable.

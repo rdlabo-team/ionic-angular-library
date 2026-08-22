@@ -1,5 +1,4 @@
 import {
-  calcIndex,
   calculateItemCountForPixelDistance,
   createPrefixSums,
   endIndexForOffset,
@@ -17,12 +16,6 @@ describe('dynamic size virtual scroll utilities', () => {
   it('sums complete items before an index', () => {
     expect(sumItemSize(items(30, 70, 20), 2)).toBe(100);
     expect(sumItemSize(items(30, 70, 20), 99)).toBe(120);
-  });
-
-  it('preserves the legacy calcIndex results for existing consumers', () => {
-    const sizes = items(55, 55, 42);
-    expect(calcIndex(sizes, 50)).toBe(0);
-    expect(calcIndex(sizes, 60)).toBe(0.09090909090909091);
   });
 
   it('converts pixels to a mathematically continuous item count', () => {

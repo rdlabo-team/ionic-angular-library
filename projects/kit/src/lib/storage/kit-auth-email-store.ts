@@ -10,7 +10,7 @@
  * that later fails to sign in is still remembered by design: the user simply re-enters/corrects it.
  *
  * These live in the main entry (next to {@link KitStorageService}) rather than in `auth-firebase`,
- * so the `KitAutofillDirective` can consume them without the main entry depending on the Firebase
+ * so `KitAuthInputDirective` can consume them without the main entry depending on the Firebase
  * entry.
  */
 
@@ -55,8 +55,7 @@ export const kitRememberEmail = async (store: KitEmailStore, email: string): Pro
  * @param store - the app's storage (e.g. `KitStorageService`)
  * @returns the stored email, or `null` when none has been remembered
  */
-export const kitRecallEmail = (store: KitEmailStore): Promise<string | null> =>
-  store.get<string>(KIT_LAST_AUTH_EMAIL_KEY);
+export const kitRecallEmail = (store: KitEmailStore): Promise<string | null> => store.get<string>(KIT_LAST_AUTH_EMAIL_KEY);
 
 /**
  * Forget the remembered email.
@@ -67,5 +66,4 @@ export const kitRecallEmail = (store: KitEmailStore): Promise<string | null> =>
  *
  * @param store - the app's storage (e.g. `KitStorageService`)
  */
-export const kitForgetEmail = (store: KitEmailStore): Promise<void> =>
-  store.remove(KIT_LAST_AUTH_EMAIL_KEY);
+export const kitForgetEmail = (store: KitEmailStore): Promise<void> => store.remove(KIT_LAST_AUTH_EMAIL_KEY);

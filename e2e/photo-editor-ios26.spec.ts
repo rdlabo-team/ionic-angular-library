@@ -31,6 +31,7 @@ test.describe('Photo editor iOS 26 header button color scheme', () => {
     await page.getByText('Launch Photo Editor', { exact: true }).click();
 
     const header = page.locator('ion-modal rdlabo-photo-editor ion-header');
+    await expect(page.locator('ion-modal .tui-image-editor-canvas-container canvas').first()).toBeAttached();
     await header.evaluate((element) => {
       element.classList.remove('photo-editor-header-buttons-dark');
       element.classList.add('photo-editor-header-buttons-light');

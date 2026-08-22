@@ -50,9 +50,7 @@ const setup = async (mode: KitAuthInputMode, initialEmail = '', seed?: string) =
 };
 
 const fireIonChange = (fixture: { nativeElement: HTMLElement }, value: string) =>
-  fixture.nativeElement
-    .querySelector('input')!
-    .dispatchEvent(new CustomEvent('ionChange', { detail: { value }, bubbles: true }));
+  fixture.nativeElement.querySelector('input')!.dispatchEvent(new CustomEvent('ionChange', { detail: { value }, bubbles: true }));
 
 describe('KitAuthInputDirective', () => {
   afterEach(() => TestBed.resetTestingModule());
@@ -70,11 +68,6 @@ describe('KitAuthInputDirective', () => {
 
     it('"email-remember" never prefills', async () => {
       const { host } = await setup('email-remember', '', 'saved@example.com');
-      expect(host.f.email().value()).toBe('');
-    });
-
-    it('"autofill" never prefills', async () => {
-      const { host } = await setup('autofill', '', 'saved@example.com');
       expect(host.f.email().value()).toBe('');
     });
   });
@@ -97,13 +90,6 @@ describe('KitAuthInputDirective', () => {
     it('does not persist a malformed address', async () => {
       const { fixture, storage } = await setup('email');
       fireIonChange(fixture, 'not-an-email');
-      await new Promise<void>((resolve) => queueMicrotask(resolve));
-      expect(storage.map.has(KIT_LAST_AUTH_EMAIL_KEY)).toBe(false);
-    });
-
-    it('is inert in "autofill" mode', async () => {
-      const { fixture, storage } = await setup('autofill');
-      fireIonChange(fixture, 'x@example.com');
       await new Promise<void>((resolve) => queueMicrotask(resolve));
       expect(storage.map.has(KIT_LAST_AUTH_EMAIL_KEY)).toBe(false);
     });

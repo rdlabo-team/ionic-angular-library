@@ -29,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      - run: npm run test:package-consumer
       - run: npm run test:offline-types:nonstrict
   test:
     runs-on: ubuntu-latest
@@ -94,6 +95,8 @@ jobs:
           typescript@~5.9.3
       - name: Build libraries and consuming demo with Angular 21
         run: npm run build
+      - name: Type-check a consumer against packed Angular 21 artifacts
+        run: npm run test:package-consumer
   e2e:
     runs-on: ubuntu-latest
     container:
