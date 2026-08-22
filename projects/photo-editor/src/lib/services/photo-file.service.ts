@@ -114,24 +114,28 @@ export class PhotoFileService {
         inputFile!.removeEventListener('cancel', cancelMethod, false);
         inputFile!.removeEventListener('change', changeMethod, false);
 
-        if (!(e.target as HTMLInputElement).files || !(e.target as HTMLInputElement).files![0]) {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        inputFile.value = '';
+        if (!file) {
           reject(PhotoEditorErrors.cancel);
+          return;
         }
-        const file = (e.target as HTMLInputElement).files![0];
+        if (file.type.indexOf('image') < 0) {
+          reject(PhotoEditorErrors.type);
+          return;
+        }
         const reader = new FileReader();
 
-        reader.onload = (() => {
-          if (file.type.indexOf('image') < 0) {
-            reject(PhotoEditorErrors.type);
-          }
-
-          return async (event) => {
-            inputFile.value = '';
-            const result = event.target!.result as string;
-            const data = await this.loadPhotoFromFilePath(result);
-            resolve([data]);
-          };
-        })();
+        reader.onload = (event) => {
+          const result = event.target!.result as string;
+          void this.loadPhotoFromFilePath(result).then((data) => resolve([data]), reject);
+        };
+        reader.onerror = () => {
+          reject(reader.error ?? new Error('Failed to read the selected image.'));
+        };
+        reader.onabort = () => {
+          reject(PhotoEditorErrors.cancel);
+        };
 
         reader.readAsDataURL(file);
       };

@@ -184,4 +184,117 @@ describe('DynamicSizeVirtualScrollStrategy', () => {
     expect(() => new DynamicSizeVirtualScrollStrategy(items(50, 0), 20, 50, false)).toThrow(/index 1/);
     expect(() => new DynamicSizeVirtualScrollStrategy(items(50), -1, 50, false)).toThrow(/buffers/);
   });
+
+  it('scrolls to the cumulative offset for a forward index and clamps out-of-range indexes', () => {
+    const sizes = [30, 70, 20];
+    const harness = createViewport(sizes);
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(...sizes), 10, 20, false);
+    strategy.attach(harness.viewport);
+
+    strategy.scrollToIndex(2, 'auto');
+    expect(harness.viewport.scrollToOffset).toHaveBeenCalledWith(100, 'auto');
+
+    vi.mocked(harness.viewport.scrollToOffset).mockClear();
+    strategy.scrollToIndex(-5, 'auto');
+    expect(harness.viewport.scrollToOffset).toHaveBeenCalledWith(0, 'auto');
+
+    vi.mocked(harness.viewport.scrollToOffset).mockClear();
+    strategy.scrollToIndex(99, 'auto');
+    expect(harness.viewport.scrollToOffset).toHaveBeenCalledWith(120, 'auto');
+  });
+
+  it('does not scroll when the viewport is detached or the size model is incomplete', () => {
+    const sizes = [30, 70];
+    const harness = createViewport(sizes);
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(30), 10, 20, false);
+
+    strategy.scrollToIndex(1, 'auto');
+    expect(harness.viewport.scrollToOffset).not.toHaveBeenCalled();
+
+    strategy.attach(harness.viewport);
+    strategy.scrollToIndex(1, 'auto');
+    expect(harness.viewport.scrollToOffset).not.toHaveBeenCalled();
+  });
+
+  it('completes scrolledIndexChange and stops updating after detach', () => {
+    const harness = createViewport([50, 50], { viewportSize: 50 });
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(50, 50), 10, 20, false);
+    let completed = false;
+    strategy.scrolledIndexChange.subscribe({ complete: () => (completed = true) });
+
+    strategy.attach(harness.viewport);
+    const rangeBeforeDetach = { ...harness.range };
+    strategy.detach();
+    harness.range = { start: 99, end: 99 };
+    strategy.onContentScrolled();
+
+    expect(completed).toBe(true);
+    expect(harness.range).toEqual({ start: 99, end: 99 });
+    expect(rangeBeforeDetach.end).toBeGreaterThan(0);
+  });
+
+  it('clears the rendered range when data length becomes zero', () => {
+    const harness = createViewport([50, 50], { viewportSize: 50, scrollOffset: 25 });
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(50, 50), 10, 20, false);
+    const indexes: number[] = [];
+    strategy.scrolledIndexChange.subscribe((index) => indexes.push(index));
+
+    strategy.attach(harness.viewport);
+    harness.dataLength = 0;
+    strategy.onDataLengthChanged();
+
+    expect(harness.range).toEqual({ start: 0, end: 0 });
+    expect(harness.contentOffset).toBe(0);
+    expect(harness.totalContentSize).toBe(0);
+    expect(strategy.measureScrollOffset).toBe(0);
+    expect(indexes.at(-1)).toBe(0);
+  });
+
+  it('expands the end buffer when scrolling near the list end', () => {
+    const sizes = [50, 50, 50, 50, 50];
+    const scrollOffset = 130;
+    const harness = createViewport(sizes, { viewportSize: 50, scrollOffset });
+    harness.viewport.measureScrollOffset = () => scrollOffset;
+    harness.range = { start: 2, end: 4 };
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(...sizes), 40, 80, false);
+
+    strategy.attach(harness.viewport);
+    strategy.onContentScrolled();
+
+    expect(harness.range.end).toBe(5);
+    expect(harness.range.start).toBeLessThan(2);
+  });
+
+  it('rebuilds an invalid rendered range from buffer geometry', () => {
+    const sizes = [40, 60, 80];
+    const harness = createViewport(sizes, { viewportSize: 60, scrollOffset: 70 });
+    harness.range = { start: 3, end: 1 };
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(...sizes), 10, 30, false);
+
+    strategy.attach(harness.viewport);
+
+    expect(harness.range.start).toBeLessThan(harness.range.end);
+    expect(harness.range.end).toBeLessThanOrEqual(sizes.length);
+    expect(harness.contentOffset).toBe(40);
+  });
+
+  it('requests a viewport size check when the viewport height is zero', () => {
+    const harness = createViewport([50, 50], { viewportSize: 0 });
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(50, 50), 10, 20, false);
+    const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0);
+      return 0;
+    });
+
+    strategy.attach(harness.viewport);
+
+    expect(harness.viewport.checkViewportSize).toHaveBeenCalled();
+    rafSpy.mockRestore();
+  });
+
+  it('rejects invalid buffer updates', () => {
+    const strategy = new DynamicSizeVirtualScrollStrategy(items(50), 10, 20, false);
+
+    expect(() => strategy.updateItemAndBufferSize(items(50), 30, 20, false)).toThrow(/buffers/);
+  });
 });
