@@ -83,7 +83,18 @@ describe('kitDomToPng', () => {
     return node;
   }
 
-  afterEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it('pads width/height by 2px on iOS', async () => {
     getPlatform.mockReturnValue('ios');
@@ -123,7 +134,7 @@ describe('kitDomToPng', () => {
         height = 10;
         onload: (() => void) | null = null;
         set src(_v: string) {
-          setTimeout(() => this.onload?.());
+          this.onload?.();
         }
       },
     );
@@ -148,7 +159,7 @@ describe('kitRotationImage', () => {
         height = 10;
         onload: (() => void) | null = null;
         set src(_v: string) {
-          setTimeout(() => this.onload?.());
+          this.onload?.();
         }
       },
     );
